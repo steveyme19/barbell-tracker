@@ -1,0 +1,4 @@
+numpy
+pandas
+matplotlib
+# bleak  (phase 1, BLE)

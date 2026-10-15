@@ -1,0 +1,196 @@
+# Analytics spec (v0): consistency, RPE, history
+
+Everything here works *across* reps, sets, and sessions. It's built on the per-rep
+outputs from [algorithm.md](algorithm.md). Like everything else, it gets prototyped in
+Python first and ported to the app after.
+
+## What "standard" means here
+
+It could mean two things:
+
+- **Consistent:** this rep matches your usual rep.
+- **Correct:** this rep matches an ideal technique.
+
+The sensor can measure the first well. It can barely measure the second, because it
+doesn't know where your body is (algorithm.md §11). So the plan is: consistency against
+your own reps, plus the one "correct" check that *is* measurable, depth (§3 below).
+
+---
+
+## 1. Per-rep features
+
+Everything below is computed from these.
+
+| feature | from (algorithm.md) | notes |
+|---|---|---|
+| ROM | §9 | for squat and bench, also your depth |
+| concentric / eccentric duration | §8 | tempo |
+| MCV, MPV, peak velocity | §9 | speed |
+| velocity profile | §6 | velocity at every 5% of concentric height, divided by MCV. Shape, not speed. |
+| sticking point | velocity profile | height (% of ROM) where velocity dips after its first peak, if it does |
+| path | §11 | forward offset at every 5% of height, separately for down and up |
+| horizontal excursion | §11 | max forward minus max back |
+| max bar tilt | §12 | |
+| quality flags | §10 | |
+
+**Why resample by % of height instead of time:** two reps that trace the exact same
+path at different speeds look identical when sampled by height and different when
+sampled by time. You want to compare shape, so sample by height.
+
+## 2. Consistency
+
+Compare each rep's *shape* features to a reference built from your own reps. Report the
+difference in real units (cm, %), not a made-up score.
+
+| level | what gets compared | reference |
+|---|---|---|
+| rep to rep | each rep in a set | median rep of that set |
+| set to set | each set's median rep | median rep of that lift in this session |
+| session to session | this session's median rep | your baseline: median of the last ~4 sessions of that lift at similar load |
+
+Deviations:
+
+- **path:** RMS distance between the two paths (resampled by height), in cm
+- **depth:** ROM difference, in cm
+- **tempo:** duration difference, in %
+- **velocity profile:** RMS difference of the normalized profiles
+
+**Keep fatigue out of it.** Speed is *supposed* to drop across a hard set. That's not
+inconsistency. So the consistency numbers only use shape features, and speed is
+reported separately as velocity loss.
+
+**Keep load in mind.** Path legitimately changes with load. Session-to-session
+comparisons only use sets within ±10% of the same load (*start*).
+
+**Speed across sessions is its own metric.** Velocity at a fixed load compared to your
+baseline is a readiness and strength trend. Report it separately from technique.
+
+**Noise floor first.** A difference only counts if it's bigger than what the sensor
+reports for reps that are actually identical. Measure that on a **Smith machine**: the
+bar rides on rails, so every rep follows the same straight line. Any path spread the
+device reports there is pure sensor error. Only show deviations bigger than 2× that
+floor (*start*).
+
+**Prove it catches real faults.** Do sets with deliberate faults: let the bar drift
+forward, cut depth by 5 cm, hitch mid-rep. If the numbers can't see a fault you did on
+purpose, they can't see one you didn't.
+
+**No 0-100 score yet.** A score hides the units and invents thresholds. Once you know
+the noise floor and which deviations actually matter in your data, map cm to a score.
+Start with cm.
+
+## 3. Depth check
+
+The one "correct" check the sensor can do. Film one squat at exactly your target depth
+and note its ROM. That's your depth line for that stance and bar position. Flag reps
+that come up short of it by more than the noise floor.
+
+It works because your lockout height barely changes, so ROM tracks depth. Recalibrate
+if you change stance or bar position.
+
+## 4. Sticking point
+
+On a hard concentric, velocity often rises, dips, and rises again. The dip is the
+sticking region. Report where it happens (% of ROM) and track it over weeks. For a
+mid-range bench sticking point, this shows exactly where it is and whether it moves as
+your training changes. It only shows up on heavy reps. Light reps don't dip.
+
+## 5. RPE estimation
+
+This uses the reps-in-reserve RPE scale: RPE 10 = 0 reps left, RPE 9 = 1 left, and so
+on. So estimating RPE means estimating RIR.
+
+### What the research says
+
+- In powerlifters, mean velocity and RPE are strongly related. Velocity at 1RM differs
+  a lot by lift: about 0.23 m/s squat, 0.10 bench, 0.14 deadlift [1].
+- One equation for everyone doesn't work. Individual relationships do [2, 3]. In the back
+  squat, individual RIR-velocity relationships from one session predicted RIR in a later
+  session with mean error under 2 reps [3].
+- Accuracy is best close to failure. In one bench study, RIR 2 and 0 were predicted
+  within about 1 rep [4].
+- It's not a sure thing. One study found velocity-based RIR was off for most reps in
+  recreationally active lifters [5]. A 2026 study on the hex bar deadlift found it not
+  accurate enough to use [6].
+
+### What that means for this project
+
+- **Individual and per lift.** Calibrate on your own data.
+- **Squat and bench first.** For deadlift, show velocity and mark RPE as low confidence.
+- **Expect ~±1 rep near failure, fuzzier further away.** RPE 6 vs 7 will be a guess.
+  That's OK: autoregulation matters most near failure.
+- **The reps that matter most are the hardest to measure.** Grinders are slow, so the
+  integration window is long and drift has more time to grow. And bench at 1RM is only
+  ~0.10 m/s, so a 0.03 m/s error is 30%. Phase 3 has to check accuracy on slow reps
+  specifically.
+
+### Model v1
+
+1. **Calibration sets.** Now and then, take a squat or bench set to failure at a few
+   loads (say 65 to 85%). Safeties set, every time.
+2. **One set to failure labels every rep in it.** A 9-rep set to failure gives you reps
+   with RIR 8, 7, ... 0. Very efficient data.
+3. **Fit per lift:** RIR vs rep MCV, straight line first. Check whether one line works
+   across loads for you (it did on average in [3]).
+4. **Predict:** in a normal set, last-rep MCV → RIR → RPE = 10 - RIR. Show a range
+   ("RPE 8 to 9"), not a fake-precise number.
+5. **Validate honestly.** Fit on some sessions, test on *other* sessions. Never test on
+   reps from a set you fit on. Reps in the same set are near-copies, so that flatters
+   the model. Report mean absolute error in reps.
+6. **Compare with your own RPE calls.** When you and the model disagree, the failure sets
+   tell you who's right.
+7. **Refit every training block.** Getting stronger shifts the relationship.
+
+Only if v1 isn't good enough: add features like velocity loss % and first-rep MCV
+(→ %1RM through the load-velocity profile). Still plain linear regression. The dataset
+is small, so no machine learning.
+
+## 6. Data to start collecting now
+
+These models are only as good as the logged data, and the data takes months to build
+up. Start the habit at the very first bar session (roadmap 2.1), long before any of this
+is built. For every set, log date, lift, load, reps, your RPE, whether it went to
+failure, mount spot, paused at lockout or not, and the raw file name.
+
+Template: `analysis/data/sets_log.csv`.
+
+## 7. History and storage (app)
+
+```
+Session (date, notes)
+  └── Set (lift, load, reps, your RPE, to failure, mount, raw samples)
+        └── Rep (features from §1, quality flags)
+```
+
+- Storage: IndexedDB in the browser.
+- Browser storage can get wiped (clearing site data, low storage). Call
+  `navigator.storage.persist()`, and have an **export button** (JSON + raw CSV) from day
+  one. Exports go into the repo (P2) so Python sees the same data as the app.
+- Same raw file format as everything else, so any session can be re-run with a newer
+  algorithm.
+- Cloud sync is a later decision (O6).
+
+---
+
+## References
+
+From PubMed:
+
+1. Helms ER et al. RPE and velocity relationships for the back squat, bench press, and
+   deadlift in powerlifters. *J Strength Cond Res* 2017.
+   [doi:10.1519/JSC.0000000000001517](https://doi.org/10.1519/JSC.0000000000001517)
+2. García-Ramos A et al. Prediction of the maximum number of repetitions and repetitions
+   in reserve from barbell velocity. *Int J Sports Physiol Perform* 2018.
+   [doi:10.1123/ijspp.2017-0302](https://doi.org/10.1123/ijspp.2017-0302)
+3. Jukic I et al. Modeling the repetitions-in-reserve-velocity relationship. *Physiol Rep*
+   2024. [doi:10.14814/phy2.15955](https://doi.org/10.14814/phy2.15955)
+4. Martínez-Rubio C et al. Estimating repetitions in reserve through movement velocity:
+   applicability across bench press exercise modes and sexes. *J Sports Sci* 2025.
+   [doi:10.1080/02640414.2025.2481363](https://doi.org/10.1080/02640414.2025.2481363)
+5. Mansfield SK et al. The velocity of resistance exercise does not accurately assess
+   repetitions-in-reserve. *Eur J Sport Sci* 2023.
+   [doi:10.1080/17461391.2023.2235314](https://doi.org/10.1080/17461391.2023.2235314)
+6. Chen W et al. Velocity-based monitoring lacks both accuracy and applicability for
+   estimating repetitions in reserve during the hexagonal bar deadlift.
+   *J Strength Cond Res* 2026.
+   [doi:10.1519/JSC.0000000000005549](https://doi.org/10.1519/JSC.0000000000005549)

@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated plots and fake data (regenerate any time)
+analysis/out/
+analysis/data/fake_*.csv
+
+# KiCad
+*-backups/
+fp-info-cache
+*.kicad_prl
+
+# OS
+.DS_Store
+Thumbs.db
