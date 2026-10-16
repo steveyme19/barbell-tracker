@@ -27,15 +27,15 @@ Plans change, and phase 4 depends on what phase 3 finds.
 
 | item | step | price | notes |
 |---|---|---|---|
-| Seeed XIAO nRF52840 Sense, **pre-soldered headers** | 1.1 | $16.90 (Seeed) | Pre-soldered so it drops into a breadboard. The regular one is $15.90. |
+| Seeed XIAO nRF52840 **Sense** 3-pack (unsoldered) | 1.1 | $53.49 (Amazon, Oct 2026) | One for dev, one for the carrier PCB in phase 4, one spare. Must say **Sense**: the plain nRF52840 has no IMU. Phases 1.1 to 1.5 only need USB-C, so headers can wait. |
 | USB-C cable, **data-capable** | 1.1 | have one? | Some USB-C cables only charge. If the board never shows up on the laptop, suspect the cable first. |
-| Breadboard + jumper wires | 1.1 | est. a few $ | |
+| 2.54 mm male headers, breadboard, jumper wires | 1.6 | est. a few $ | Only needed once you wire something external (the laser). Solder headers onto one XIAO then. |
 | 3D-printed calibration cube | 1.3 | filament | Holds the XIAO square so each face can sit flat for the 6-position calibration and the full-turn gyro test. Design it in Fusion. |
 | 3.7 V LiPo, ~400 mAh, **with protection circuit** | 1.5 | $9.15 each at Jameco (Adafruit #3898, sold in pairs) | JST-PH connector. Protection circuit cuts off at 3.0 V and blocks shorts. A spare is handy. |
 | JST-PH 2-pin socket with pigtail wires | 1.5 | est. a few $ | The XIAO has battery solder pads, not a connector. Solder a socket on so the battery unplugs. |
 | *Optional:* TF-Luna lidar | 1.6 | $30.99 (Waveshare) | UART or I2C, 3.3 V logic (works with the XIAO directly). Needs a **3.7 to 5.2 V supply**, so power it from the XIAO's 5 V pin while on USB for the bench test. |
 
-**Phase 1 total: ~$45 core (XIAO + a pair of LiPos + small parts), +$31 for the laser**
+**Phase 1 total: ~$75 core (3-pack + a pair of LiPos + small parts), +$31 for the laser**
 
 Battery life estimate: the XIAO streaming IMU data probably draws something like
 5 to 10 mA, so ~2 days of streaming on 400 mAh. Measure it in 1.5.
@@ -76,14 +76,14 @@ converter), so ~3 h of streaming on 400 mAh. That's why the shutdown pin matters
 
 | item | step | price | notes |
 |---|---|---|---|
-| Second XIAO nRF52840 Sense, **unsoldered** | 4.5 | $15.90 (Seeed) | The carrier board solders it down by its castellated edge pads, so headers would be in the way. Keep the pre-soldered one as your dev board. |
+| Second XIAO nRF52840 Sense, **unsoldered** | 4.5 | from the 3-pack | The carrier board solders it down by its castellated edge pads, so it needs one with no headers. |
 | Carrier PCB, fab'd | 4.5 | est. a few $ + shipping | Shipping usually costs more than the boards. |
 | JST-PH connector, slide switch or button, LED, resistors | 4.5 | est. a few $ | depends on the power plan (switch vs. wake-on-motion) |
 | Pot magnets sized for the final mount | 4.4 | est. a few $ | size from phase 2 testing |
 | Filament (PETG or tougher) + M2/M3 heat-set inserts + screws | 4.4 | est. ~$10 to 20 | it'll get knocked around |
 | *If O8 says yes:* TF-Luna + boost converter | 4.5 | already bought in 1.6 / 2.8 | |
 
-**Phase 4 total: ~$40 to 60**
+**Phase 4 total: ~$25 to 45**
 
 ## Phase 5: analytics
 
@@ -110,6 +110,7 @@ No new hardware.
 
 - XIAO nRF52840 Sense: https://www.seeedstudio.com/Seeed-XIAO-BLE-Sense-nRF52840-p-5253.html
 - XIAO nRF52840 Sense (pre-soldered): https://www.seeedstudio.com/Seeed-Studio-XIAO-nRF52840-Sense-Pre-Soldered-p-6330.html
+- 3-pack price from Quentin's Amazon screenshot, 2026-10-16
 - 400 mAh LiPo (Adafruit #3898 at Jameco): https://www.jameco.com/z/3898-Adafruit-Industries-Lithium-Ion-Polymer-Battery-Ideal-for-Feathers-3-7V-400mAh_2515735.html
 - TF-Luna (Waveshare): https://www.waveshare.com/TF-Luna-LiDAR-Range-Sensor.htm
 - Pololu U1V11F5: https://www.pololu.com/product/2562
