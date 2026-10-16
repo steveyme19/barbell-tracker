@@ -78,6 +78,27 @@ Slow rolls don't matter. A fast spin would wreck the rep.
 Rotate the calibrated acceleration into the world frame using the orientation from
 step 2, then subtract g. Result: vertical acceleration of the bar, up = positive.
 
+**Why not just the magnitude** (what the phone does, D9)? Magnitude counts sideways
+acceleration as upward: `|a| ≈ g + a_v + a_h²/2g`, and that last term is always positive.
+It grows with the *square* of sideways acceleration, so gentle sideways motion barely
+matters and hard shake matters a lot. `analysis/demos/bench_jcurve.py` (fake bench sets,
+real pipeline):
+
+| case | magnitude | orientation, 1° off | orientation, 3° off |
+|---|---|---|---|
+| touch-and-go, 10 cm J-curve | 1.9 mm, 0.5% | 2.7 mm, 0.7% | 6.7 mm, 1.7% |
+| paused on chest, 10 cm J-curve | 4.4 mm, 0.9% | 5.9 mm, 1.2% | 9.9 mm, 2.2% |
+| 10 cm J + 1 m/s² sideways shake | 5.4 mm, 1.1% | 3.0 mm, 0.7% | 7.6 mm, 1.9% |
+| 10 cm J + 2 m/s² sideways shake | 12.6 mm, 2.7% | 3.2 mm, 0.8% | 8.5 mm, 2.1% |
+
+(worst ROM error, worst MCV error over the set)
+
+So the J-curve itself isn't the problem: a smooth 10 cm sweep only has ~0.5 m/s² of
+sideways acceleration. Shake is. Orientation tracking only wins if it's accurate to
+about 1 to 2°, and it's needed anyway for bar path (§11). Orientation error turns
+sideways *displacement* into vertical error (about 10 cm × sin 3° ≈ 5 mm), so the
+gyro calibration in roadmap 1.3 matters.
+
 ## 5. Stillness detection (the drift anchors)
 
 A sample is "still" when, for at least ~150 ms (*start*):
@@ -113,8 +134,19 @@ integrated velocity, so there's no chicken-and-egg problem.
   after has opposite signs. A real stop is entered and left the same way (stop at the
   top, then go down) or from/to rest. On every recording so far this agrees with the
   old check wherever drift was small, and it fixed that set (68.9 ± 1.6 cm). Stills of
-  1 s or more are always accepted. Known blind spot: a slow grinder that coasts for a
-  while before the candidate, so there's no speed-up inside the 0.5 s look-back.
+  1 s or more are accepted without the coasting check.
+- **Slow, smooth grinders look still.** A fake 2.5 s bench grinder only accelerates
+  about 0.3 m/s², so the whole concentric passed the stillness test, got accepted as a
+  1 s+ still, and the rep vanished. Fix, applied to every candidate: integrate velocity
+  across the candidate itself and remove a straight line (a steady sensor bias makes a
+  straight line). What's left is how much velocity rose and fell inside it. Real stills
+  on every recording: 0.2 to 3 cm/s. Coasts: 6 to 7 cm/s. The grinder: 21 cm/s. Cutoff
+  4.5 cm/s. No real recording changed.
+- **Still open:** the same fake grinder eases into lockout so gently that the end still
+  starts ~0.07 s early, while the bar is still moving at 2 cm/s. Forcing v = 0 there costs
+  that rep 3 cm of ROM. Real lockouts usually stop sharper, and the bar should sit much
+  stiller than a hand-held phone, so tighter thresholds on bar data (roadmap 2.2) are
+  the likely fix. Check it with real slow reps in 3.4.
 
 Where you'll find stillness: before the first rep, at lockout between reps,
 deadlifts resting on the floor, after racking.

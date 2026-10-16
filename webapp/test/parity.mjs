@@ -24,6 +24,7 @@ const defaults = [
   "analysis/data/fake_reps_pause.csv",
   "analysis/data/fake_reps_nopause.csv",
   "analysis/data/fake_reps_drift.csv",
+  "analysis/data/fake_bench_grinder.csv",
   "analysis/data/reps_pause.zip",
   "analysis/data/reps_nopause.zip",
   "analysis/data/bar-2026-10-16-1835.csv",

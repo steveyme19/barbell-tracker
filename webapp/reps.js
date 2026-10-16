@@ -14,6 +14,7 @@ export const SETTINGS = {
   COAST_TRUST: 4.0,      // s: past this long since the last anchor, drift is too big for the speed check
   COAST_LOOK: 0.5,       // s: how far before and after a "still" period to look
   COAST_DV: 0.1,         // m/s: speed change on both sides that marks a coast
+  STILL_MAX_HUMP: 0.045, // m/s: velocity can't rise and fall more than this inside a still period
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
@@ -106,12 +107,39 @@ function speedChange(a, t, i, j) {
   return v[v.length - 1];
 }
 
+/** Least-squares straight line through (x, y): returns [slope, intercept] like numpy.polyfit(x, y, 1). */
+function lineFit(x, y) {
+  const n = x.length;
+  let sx = 0, sy = 0;
+  for (let i = 0; i < n; i++) { sx += x[i]; sy += y[i]; }
+  const mx = sx / n, my = sy / n;
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; }
+  const slope = sxy / sxx;
+  return [slope, my - slope * mx];
+}
+
+/** How much velocity rises and falls inside samples s..e, after removing a straight line. */
+function velocityHump(a, t, s, e) {
+  const tw = t.slice(s, e + 1).map((x) => x - t[s]);
+  if (tw.length < 3) return 0;
+  const v = integrate(a.slice(s, e + 1), tw);
+  const [m, b] = lineFit(tw, v);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < v.length; i++) {
+    const r = v[i] - (m * tw[i] + b);
+    lo = Math.min(lo, r); hi = Math.max(hi, r);
+  }
+  return hi - lo;
+}
+
 /** Throw out "still" periods that are really coasting. See confirm_still_runs() in reps.py. */
 export function confirmStillRuns(a, t, fs, runs, S = SETTINGS) {
   const n = Math.trunc(S.COAST_LOOK * fs);
   const confirmed = [runs[0]];
   for (const [s, e] of runs.slice(1)) {
-    if (t[e] - t[s] >= S.LONG_STILL) {   // long stills are always real
+    if (velocityHump(a, t, s, e) > S.STILL_MAX_HUMP) continue;   // speeds up and slows down: moving
+    if (t[e] - t[s] >= S.LONG_STILL) {   // long stills are real
       confirmed.push([s, e]);
       continue;
     }

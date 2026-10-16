@@ -15,12 +15,13 @@ change many times. Raw data lets you re-run old sessions with the new version.
   e.g. `2026-11-03_squat_225_set2.csv`
 
 Fake data from `make_fake_lift.py` and `make_fake_reps.py` (`fake_*.csv`) is ignored by
-git since you can regenerate it any time. The parity test wants these three:
+git since you can regenerate it any time. The parity test wants these four:
 
 ```
 python make_fake_reps.py
 python make_fake_reps.py nopause
 python make_fake_reps.py drift
+python demos/bench_jcurve.py --save
 ```
 
 ## sets_log.csv

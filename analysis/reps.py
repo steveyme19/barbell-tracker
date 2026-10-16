@@ -39,6 +39,7 @@ LONG_STILL = 1.0        # s: stills at least this long are real (nothing coasts 
 COAST_TRUST = 4.0       # s: past this long since the last anchor, drift is too big for the speed check
 COAST_LOOK = 0.5        # s: how far before and after a "still" period to look for speeding up / slowing down
 COAST_DV = 0.1          # m/s: speed change on both sides that marks a coast
+STILL_MAX_HUMP = 0.045  # m/s: velocity can't rise and fall more than this inside a still period
 MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
@@ -84,6 +85,17 @@ def speed_change(a, t, i, j):
     return integrate(a[i:j + 1], t[i:j + 1] - t[i])[-1]
 
 
+def velocity_hump(a, t, s, e):
+    """How much velocity rises and falls inside samples s..e, after removing a straight
+    line (a steady sensor bias makes a straight line, real motion makes a hump)."""
+    tw = t[s:e + 1] - t[s]
+    if len(tw) < 3:
+        return 0.0
+    v = integrate(a[s:e + 1], tw)
+    v = v - np.polyval(np.polyfit(tw, v, 1), tw)
+    return v.max() - v.min()
+
+
 def confirm_still_runs(a, t, fs, runs):
     """Throw out "still" periods that are really the phone coasting at steady speed.
 
@@ -97,11 +109,15 @@ def confirm_still_runs(a, t, fs, runs):
       (or the reverse on the way down). A real stop is entered and left the same
       way (stop at the top, then go down) or from/to rest.
 
-    Stills of LONG_STILL or more are always real.
+    Stills of LONG_STILL or more are real, unless velocity inside them rises and
+    falls (a slow, smooth grinder can look still for a second or more; a coast is
+    never perfectly steady).
     """
     n = int(COAST_LOOK * fs)
     confirmed = [runs[0]]               # the recording starts at rest
     for s, e in runs[1:]:
+        if velocity_hump(a, t, s, e) > STILL_MAX_HUMP:
+            continue
         if t[e] - t[s] >= LONG_STILL:
             confirmed.append((s, e))
             continue
