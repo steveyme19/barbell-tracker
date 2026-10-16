@@ -11,7 +11,8 @@ change many times. Raw data lets you re-run old sessions with the new version.
 - Web app recordings (Save CSV): `bar-<lift>-YYYY-MM-DD-HHMM.csv`, 60 Hz, values rounded
   to 0.1 by the browser. The lift in the name tells `reps.py` which heights repeat
   (older files without one count as phone tests). `bar-2026-10-16-1835.csv` is the first one (6 no-pause reps),
-  `-1844` has pauses, `-1845` is 6 no-pause reps.
+  `-1844` has pauses, `-1845` is 6 no-pause reps (all hand-held squats, from 1844 on), and
+  `-1920` is 5 squats with the same ROM every rep (pause at the top after reps 2 and 4).
 - Later bar sessions: `YYYY-MM-DD_<lift>_<load>_<notes>.csv`,
   e.g. `2026-11-03_squat_225_set2.csv`
 

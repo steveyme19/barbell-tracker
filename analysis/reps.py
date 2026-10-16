@@ -218,7 +218,12 @@ def level_heights(a, t, v, windows, lift=None):
             groups.append(bottoms)
         n_rows = sum(len(g) for g in groups)
         n_h = len(groups)
-        if n_rows < n_h + (2 if w["anchored"] else 1):
+        min_rows = n_h + (2 if w["anchored"] else 1)
+        if w["anchored"] and prof["ends"]:
+            # A barbell rep between two stills at lockout: same height at both ends is
+            # enough for one extra bend (an exact fit, no spare point to check it with).
+            min_rows = n_h + 1
+        if n_rows < min_rows:
             continue
         max_deg = LEVEL_MAX_DEG_BOTH if n_h == 2 else LEVEL_MAX_DEG
         tw = t[i0:i1 + 1] - t[i0]
@@ -227,7 +232,7 @@ def level_heights(a, t, v, windows, lift=None):
         x_raw = integrate(v_raw, tw)
         rows, rhs = [], []
         if w["anchored"]:
-            deg = min(max_deg, n_rows - n_h)
+            deg = min(max_deg, max(2, n_rows - n_h))
             e_end = v_raw[-1]
             # Position drift is the integral of e: T * sum d_k tau^(k+1)/(k+1).
             # Substituting d1 = e_end - d2 - ... leaves unknowns d2..d_deg and the heights.

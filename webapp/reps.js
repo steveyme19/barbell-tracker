@@ -293,7 +293,9 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
     if (prof.bottoms && bottoms.length >= 2) groups.push(bottoms);
     const nRows = groups.reduce((n, g) => n + g.length, 0);
     const nH = groups.length;
-    if (nRows < nH + (w.anchored ? 2 : 1)) continue;
+    let minRows = nH + (w.anchored ? 2 : 1);
+    if (w.anchored && prof.ends) minRows = nH + 1;   // same height at both stills: one exact bend
+    if (nRows < minRows) continue;
     const maxDeg = nH === 2 ? S.LEVEL_MAX_DEG_BOTH : S.LEVEL_MAX_DEG;
     const tw = t.slice(i0, i1 + 1).map((x) => x - t[i0]);
     const T = tw[tw.length - 1];
@@ -304,7 +306,7 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
     let d;
     let sol;
     if (w.anchored) {
-      const deg = Math.min(maxDeg, nRows - nH);
+      const deg = Math.min(maxDeg, Math.max(2, nRows - nH));
       const eEnd = vRaw[vRaw.length - 1];
       groups.forEach((g, gi) => {
         for (const h of g) {

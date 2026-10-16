@@ -203,7 +203,14 @@ worst-rep ROM error):
 | squat | 0.02 m/s² | 2.9 cm | 2.5 cm | 7/10 |
 | squat | 0.05 m/s² | 7.2 cm | 6.3 cm | 7/10 |
 
-Squat only gets the stills, a small gain. Leveling squat bottoms would shrink real depth
+**One rep between two stills at lockout** (paused-at-the-top sets): that's only two
+points, start and end, but they're at the same height, which is enough for one extra
+bend (an exact fit). Fake paused squats with wobbly drift, 10 sets: worst-rep error
+0.9 → 0.4 cm and 2.2 → 0.6 cm, better in 10/10. Your hand-held squat set where every
+rep had the same ROM (`bar-2026-10-16-1920.csv`): spread 3.3 → 1.7 cm with the squat
+profile, and the one rep that came out 80 cm is now 74. Phone test profile: unchanged.
+
+Squat only gets the stills, a small gain on no-pause sets. Leveling squat bottoms would shrink real depth
 differences, which the depth check (analytics.md §3) needs. The phone profile stays at
 lockouts only: on your first web app set, counting the stills made it worse (ROM spread
 1.6 → 1.9 cm). Recheck all of this on bar data (roadmap 2.6).
