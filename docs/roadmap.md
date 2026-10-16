@@ -9,9 +9,12 @@ explain why it works. Per-rep processing is specified in
 
 ## Phase 0: Phone prototyping (no hardware needed)
 
-- [ ] **0.1 Phone lift height.** phyphox CSV → Python → height within ~2 cm.
-      See [01-phone-lift.md](01-phone-lift.md). ← **you are here**
-- [ ] **0.2 Fake reps.** Move the phone up and down like reps. Record one set with a
+- [x] **0.1 Phone lift height.** phyphox CSV → Python → height within ~2 cm.
+      See [01-phone-lift.md](01-phone-lift.md). *Done 2026-10-16: 5 lifts to 27.9 cm,
+      4 of 5 within 2 cm using the tilt-proof magnitude signal (D9).*
+- [x] **0.2 Fake reps.** *Done 2026-10-16 with `analysis/reps.py`: paused set ROM
+      25.2 ± 0.5 cm, no-pause set 27.3 ± 0.8 cm. ← next up is 0.3*
+      Original plan: Move the phone up and down like reps. Record one set with a
       pause at the top of each rep, one set without, and a few slow "grinder" reps where
       you stall halfway up (algorithm.md §8). Implement stillness detection
       (algorithm.md §5), integrate still-to-still (§6), find the bottoms as zero

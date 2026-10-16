@@ -145,6 +145,10 @@ make sure you understand all three panels before moving on.
 Now read through `phone_lift.py` top to bottom. Every numbered comment matches a
 section above.
 
+> **Note (2026-10-16):** `phone_lift.py` now defaults to `AXIS = "magnitude"`, which
+> is tilt-proof (decision D9). To reproduce the tilt exercises below, set
+> `AXIS = "z"` at the top of the script first.
+
 ### Exercise 1: tilt (predict first, then run)
 
 The fake generator can tilt the phone mid-lift. **Write down your prediction

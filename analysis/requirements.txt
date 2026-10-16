@@ -1,4 +1,5 @@
 numpy
 pandas
 matplotlib
+openpyxl   # reads phyphox Excel exports
 # bleak  (phase 1, BLE)

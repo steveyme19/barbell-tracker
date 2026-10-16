@@ -73,6 +73,14 @@ Logging starts at the first bar session.**
 of labeled sets, so the log (`analysis/data/sets_log.csv`) has to start long before the
 model gets built. See analytics.md §5 and §6.
 
+**D9 (2026-10-16): Phone recordings use total acceleration magnitude as the
+vertical signal, not the z axis.**
+*Why:* phyphox's "Acceleration with g" has no gyro, so there's no orientation
+tracking. Magnitude `sqrt(x² + y² + z²)` doesn't care how the phone is tilted, as
+long as the motion is mostly vertical. On the real lifts it fixed the worst one
+(+10.5 cm → -1.0 cm) and fixed the fake 30° tilt case completely. The bar device
+will have a gyro and do proper orientation tracking instead (D3).
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

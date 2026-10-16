@@ -9,10 +9,13 @@ Read docs/01-phone-lift.md first. It explains every step below.
 
 Usage:
     python phone_lift.py data/lift_01.csv 0.74
-                         ^ phyphox CSV     ^ true height in meters (optional)
+                         ^ phyphox export  ^ true height in meters (optional)
+
+The export can be the CSV, the Excel file (.xlsx), or the zip phyphox makes.
 """
 
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -20,23 +23,49 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # ---- Settings you might tweak ----
-AXIS = "z"              # phone axis pointing up (z = straight out of the screen)
-STILL_SECONDS = 1.0     # phone must sit still for at least this long at the start
+AXIS = "magnitude"      # "magnitude" (tilt-proof, recommended) or "z" (screen axis only)
+MIN_STILL_SECONDS = 0.3 # warn if the phone sat still for less than this at the start
 MOTION_THRESHOLD = 0.3  # m/s^2: smoothed |accel| above this counts as "moving"
 SMOOTH_SECONDS = 0.05   # moving-average window used only for motion detection
 PAD_SECONDS = 0.15      # extra still time kept on each side of the motion
 UP_FRACTION = 0.05      # "moving up" = velocity above 5% of peak (for mean velocity)
 
 
+def read_phyphox(path):
+    """Read a phyphox export into a table. Works with the CSV, the Excel file
+    (first sheet is "Raw Data"), or the zip phyphox makes ("Raw Data.csv" inside)."""
+    suffix = Path(path).suffix.lower()
+    if suffix == ".xlsx":
+        return pd.read_excel(path, sheet_name=0)
+    if suffix == ".zip":
+        with zipfile.ZipFile(path) as z:
+            with z.open("Raw Data.csv") as f:
+                return pd.read_csv(f)
+    return pd.read_csv(path)
+
+
 def load_phyphox(path, axis):
-    """Read a phyphox CSV. Returns time (s) and acceleration on one axis (m/s^2)."""
-    df = pd.read_csv(path)
-    print("Columns found:", list(df.columns))
+    """Returns time (s) and the vertical acceleration signal (m/s^2).
+
+    axis = "x", "y" or "z": one phone axis.
+    axis = "magnitude": total acceleration sqrt(x^2 + y^2 + z^2). Without a gyro
+    this is the better choice for hand-held lifts, because it doesn't care how
+    the phone is tilted. It assumes the motion is mostly up and down.
+    """
+    df = read_phyphox(path)
     t = df.iloc[:, 0].to_numpy()  # first column is always time
-    matches = [c for c in df.columns if f"Acceleration {axis}" in c]
-    if not matches:
-        sys.exit(f"Couldn't find an 'Acceleration {axis}' column. Check the names above.")
-    return t, df[matches[0]].to_numpy()
+    cols = {}
+    for name in ("x", "y", "z"):
+        matches = [c for c in df.columns if f"Acceleration {name}" in c]
+        if matches:
+            cols[name] = df[matches[0]].to_numpy()
+    if axis == "magnitude":
+        if len(cols) < 3:
+            sys.exit(f"Need x, y and z columns for magnitude. Found: {list(df.columns)}")
+        return t, np.sqrt(cols["x"] ** 2 + cols["y"] ** 2 + cols["z"] ** 2)
+    if axis not in cols:
+        sys.exit(f"Couldn't find an 'Acceleration {axis}' column. Found: {list(df.columns)}")
+    return t, cols[axis]
 
 
 def integrate(y, t):
@@ -72,7 +101,16 @@ def main():
     # --- 1. Gravity + sensor bias from the still period at the start ---
     # Sitting still, the accelerometer reads +g (plus whatever bias it has).
     # Averaging many samples beats down the noise.
-    still = t < STILL_SECONDS
+    # Find where motion starts (rough guess from the first 0.3 s), then
+    # average everything before that, minus a small safety margin.
+    baseline = np.median(a_raw[t < 0.3])
+    rough = moving_average(np.abs(a_raw - baseline), SMOOTH_SECONDS * fs)
+    if not (rough > MOTION_THRESHOLD).any():
+        sys.exit("Never saw motion. Lower MOTION_THRESHOLD or check the axis.")
+    onset = t[np.argmax(rough > MOTION_THRESHOLD)]
+    still = t < max(onset - 0.1, 0.1)
+    if onset < MIN_STILL_SECONDS:
+        print(f"WARNING: only {onset:.2f} s of stillness at the start. Wait longer before lifting.")
     g_est = a_raw[still].mean()
     noise = a_raw[still].std()
     print(f"Still period: reads {g_est:.3f} m/s^2 (noise std {noise:.3f})")
@@ -87,8 +125,6 @@ def main():
     pad = int(PAD_SECONDS * fs)
     i0 = max(moving_idx[0] - pad, 0)
     i1 = min(moving_idx[-1] + pad, len(t) - 1)
-    if t[i0] < STILL_SECONDS:
-        print("WARNING: motion starts inside the still period. Wait longer before lifting.")
     if t[-1] - t[i1] < 0.3:
         print("WARNING: recording ends right after the motion. Let it sit still longer.")
     print(f"Motion window: {t[i0]:.2f} s to {t[i1]:.2f} s ({t[i1] - t[i0]:.2f} s)")
@@ -113,6 +149,11 @@ def main():
     x = integrate(v, tw)
     x_raw = integrate(v_raw, tw)  # for comparison: no correction
     height = x[-1]
+    peak = x.max()
+    # If the phone went up and came back down (a "rep"), the end height is ~0
+    # and the number that matters is the peak.
+    came_back = abs(height) < 0.5 * peak
+    measured = peak if came_back else height
 
     # --- 6. Lifting metrics (preview of the real thing) ---
     v_peak = v.max()
@@ -126,8 +167,11 @@ def main():
           f"  -> implied accel error {drift_rate:+.4f} m/s^2")
     print(f"Height, no correction:   {x_raw[-1]:.3f} m")
     print(f"Height, with correction: {height:.3f} m")
+    print(f"Peak height:             {peak:.3f} m")
+    if came_back:
+        print("Phone came back down (up-and-down rep), so the PEAK is the measurement.")
     if true_height is not None:
-        err = height - true_height
+        err = measured - true_height
         print(f"True height:             {true_height:.3f} m"
               f"  -> error {err * 100:+.1f} cm ({err / true_height * 100:+.1f}%)")
     print(f"Peak velocity: {v_peak:.2f} m/s")

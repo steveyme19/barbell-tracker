@@ -88,6 +88,22 @@ A sample is "still" when, for at least ~150 ms (*start*):
 **Why these tests:** they use raw sensor magnitudes only. They don't depend on
 integrated velocity, so there's no chicken-and-egg problem.
 
+**Lessons from the first real data (step 0.2, `analysis/reps.py`):**
+
+- **Coasting looks exactly like stillness.** An accelerometer reads zero
+  acceleration both at rest and when moving at constant speed, and the gyro
+  doesn't help (a bar moving straight up doesn't rotate). Mid-rep stretches of
+  near-constant speed passed the test above. Fix: confirm each candidate by
+  integrating from the last confirmed still period. If the speed during the
+  candidate is above ~0.1 m/s, it's coasting, so throw it out. Drift over a few
+  seconds is far smaller than that.
+- **A rolling window shrinks the still period.** A sample only counts as still once
+  its whole window is quiet, so detected periods start half a window late and end
+  half a window early. Widen them back by half a window. Without this, rep end times
+  came out ~0.1 s late.
+- **Hand-held pauses wiggle more than a phone on a table.** The phone version uses a
+  0.15 m/s² wiggle limit. The bar will probably allow tighter.
+
 Where you'll find stillness: before the first rep, at lockout between reps,
 deadlifts resting on the floor, after racking.
 
