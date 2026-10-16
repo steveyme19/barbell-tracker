@@ -55,10 +55,11 @@ with the Python venv active and [Node](https://nodejs.org) installed:
 node webapp/test/parity.mjs
 ```
 
-Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep, plus the same flags.
+Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep, plus the same flags. Each
+file is also checked cut off partway through, which is what the live app sees mid-set.
 Missing fake files get skipped; make them with the three commands in
-`analysis/data/README.md`. Last run (2026-10-16, with lockout leveling and the local
-coasting check): all six test files passed with 0.000 mm difference. Rerun it any time
+`analysis/data/README.md`. Last run (2026-10-16, with provisional mid-set leveling): all
+eight test files, full and cut off, passed with 0.000 mm difference. Rerun it any time
 either version changes.
 
 ## GitHub Pages setup (once)
@@ -89,8 +90,11 @@ The empty `.nojekyll` file in the repo root tells Pages to serve files as-is.
   check, and if it doesn't, the whole set goes uncorrected.
 - Browser motion data comes in at about 60 Hz with every value rounded to 0.1 (m/s² and
   °/s). Fine for this, but it's why the phone is a prototype and not the product.
-- Live results update every 0.5 s. A rep shows up once the phone stops for a moment (a
-  pause, or the end of the set), because that's when its drift can be corrected.
+- Live results update every 0.5 s. Everything since your last pause is **provisional**
+  (gray dashes on the height plot, gray number on top): the drift fix needs a still
+  moment at the end to finish. From the 2nd lockout of a no-pause set it already levels
+  the lockouts, so the numbers are close (about 2 to 3 cm), then they settle when you
+  pause or rack.
 - No-pause sets: with 3+ lockouts between two still moments, the algorithm also assumes
   every lockout is at the same height and removes curved drift with that (algorithm.md
   §6b). Reps that miss the common height by 2+ cm get an "uneven lockout" flag.

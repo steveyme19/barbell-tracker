@@ -16,6 +16,7 @@ How it works (docs/algorithm.md sections 5 to 8):
 Usage:
     python reps.py data/reps_pause.zip
     python reps.py data/reps_pause.zip --json    # results only, for the JS parity test
+    python reps.py data/reps_pause.zip --until=8 # only the first 8 s (what the live app saw then)
 """
 
 import sys
@@ -42,6 +43,7 @@ MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
 LEVEL_MIN_TOPS = 3      # lockouts needed inside one window before we level them
+LEVEL_MIN_TOPS_OPEN = 2 # same, for motion with no still after it yet (live, mid-set)
 LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve
 LEVEL_FLAG = 0.02       # m: flag a rep whose lockout misses the common height by this much
 
@@ -155,29 +157,44 @@ def level_tops(a, t, v, windows):
     d2, d3 and H by least squares so every lockout lands at H. With d2 = d3 = 0 this
     is exactly the straight-line fix. Fewer lockouts = fewer powers (always one
     more lockout than unknowns, so the fit can't be forced through every point).
+
+    Still moving when the data ends (live, mid-set): there's no end still, so d1 is
+    fitted too, from 2+ lockouts. That's provisional until the next still.
     """
     x = integrate(v, t)
     _, highs = turning_points(x, MIN_ROM)
     for w in windows:
         i0, i1 = w["i0"], w["i1"]
         tops = [h for h in highs if i0 < h < i1]
-        if not w["anchored"] or len(tops) < LEVEL_MIN_TOPS:
+        if not w["anchored"]:
+            # only lockouts the bar has already come down from
+            tops = [h for h in tops if x[h] - x[h:i1 + 1].min() >= MIN_ROM]
+        if len(tops) < (LEVEL_MIN_TOPS if w["anchored"] else LEVEL_MIN_TOPS_OPEN):
             continue
-        deg = min(LEVEL_MAX_DEG, len(tops) - 1)
         tw = t[i0:i1 + 1] - t[i0]
         T = tw[-1]
         v_raw = integrate(a[i0:i1 + 1], tw)
         x_raw = integrate(v_raw, tw)
-        e_end = v_raw[-1]
-        # Position drift is the integral of e: T * sum d_k tau^(k+1)/(k+1).
-        # Substituting d1 = e_end - d2 - d3 leaves unknowns d2..d_deg and H.
         rows, rhs = [], []
-        for h in tops:
-            tau = tw[h - i0] / T
-            rows.append([T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2) for k in range(2, deg + 1)] + [1.0])
-            rhs.append(x_raw[h - i0] - T * e_end * tau ** 2 / 2)
-        sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
-        d = [e_end - sol[:-1].sum()] + list(sol[:-1])           # d1, d2, ..., d_deg
+        if w["anchored"]:
+            deg = min(LEVEL_MAX_DEG, len(tops) - 1)
+            e_end = v_raw[-1]
+            # Position drift is the integral of e: T * sum d_k tau^(k+1)/(k+1).
+            # Substituting d1 = e_end - d2 - d3 leaves unknowns d2..d_deg and H.
+            for h in tops:
+                tau = tw[h - i0] / T
+                rows.append([T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2) for k in range(2, deg + 1)] + [1.0])
+                rhs.append(x_raw[h - i0] - T * e_end * tau ** 2 / 2)
+            sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
+            d = [e_end - sol[:-1].sum()] + list(sol[:-1])           # d1, d2, ..., d_deg
+        else:
+            deg = max(1, min(LEVEL_MAX_DEG, len(tops) - 2))         # unknowns d1..d_deg and H
+            for h in tops:
+                tau = tw[h - i0] / T
+                rows.append([T * tau ** (k + 1) / (k + 1) for k in range(1, deg + 1)] + [1.0])
+                rhs.append(x_raw[h - i0])
+            sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
+            d = list(sol[:-1])
         tau = tw / T
         v[i0:i1 + 1] = v_raw - sum(dk * tau ** k for k, dk in enumerate(d, start=1))
         w["leveled"] = True
@@ -250,7 +267,11 @@ def main():
         sys.exit(__doc__)
     path = Path(args[0])
     as_json = "--json" in sys.argv
+    until = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--until=")), None)
     t, a_raw = load_phyphox(path, AXIS)
+    if until is not None:
+        keep = (t - t[0]) < until
+        t, a_raw = t[keep], a_raw[keep]
     t = t - t[0]
     fs = 1 / np.median(np.diff(t))
 

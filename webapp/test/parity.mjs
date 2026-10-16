@@ -5,6 +5,8 @@
 //   node webapp/test/parity.mjs analysis/data/reps_pause.zip
 //
 // Pass/fail tolerance (roadmap 0.5): ROM within 1 mm, MCV within 0.005 m/s.
+// Each file is also cut off partway (45% and 70% of the way in) to test what the live
+// app shows mid-set, before the drift fix has a still to finish on.
 
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -25,6 +27,8 @@ const defaults = [
   "analysis/data/reps_pause.zip",
   "analysis/data/reps_nopause.zip",
   "analysis/data/bar-2026-10-16-1835.csv",
+  "analysis/data/bar-2026-10-16-1844.csv",
+  "analysis/data/bar-2026-10-16-1845.csv",
 ];
 const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
   .map((f) => path.resolve(ROOT, f))
@@ -36,12 +40,17 @@ const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
 
 let failures = 0;
 for (const file of files) {
-  const name = path.relative(ROOT, file);
   const buf = readFileSync(file);
   const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-  const js = analyze(rec.t, magnitude(rec.ax, rec.ay, rec.az));
-  const py = JSON.parse(execFileSync(PYTHON, [path.join(ROOT, "analysis", "reps.py"), file, "--json"],
-    { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
+  for (const frac of [null, 0.45, 0.7]) {
+  const until = frac === null ? null : frac * (rec.t[rec.t.length - 1] - rec.t[0]);
+  let n = rec.t.length;
+  if (until !== null) n = rec.t.findIndex((x) => x - rec.t[0] >= until);
+  const name = path.relative(ROOT, file) + (until === null ? "" : ` (first ${until.toFixed(1)} s)`);
+  const js = analyze(rec.t.slice(0, n), magnitude(rec.ax.slice(0, n), rec.ay.slice(0, n), rec.az.slice(0, n)));
+  const pyArgs = [path.join(ROOT, "analysis", "reps.py"), file, "--json"];
+  if (until !== null) pyArgs.push(`--until=${until}`);
+  const py = JSON.parse(execFileSync(PYTHON, pyArgs, { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
 
   const problems = [];
   if (js.error) problems.push(`JS error: ${js.error}`);
@@ -62,6 +71,7 @@ for (const file of files) {
   } else {
     const worst = js.reps.reduce((m, r, k) => Math.max(m, Math.abs(r.rom - py.reps[k].rom)), 0);
     console.log(`PASS ${name}: ${js.reps.length} reps, worst ROM difference ${(worst * 1000).toFixed(3)} mm`);
+  }
   }
 }
 process.exit(failures ? 1 : 0);

@@ -143,7 +143,10 @@ function render() {
   }
 
   const last = reps[reps.length - 1];
+  const pending = Boolean(last && last.flags.includes("no end anchor"));
   $("mcv").textContent = last ? last.mcv.toFixed(2) : "--";
+  $("mcv").parentElement.classList.toggle("pending", pending);
+  $("lastLabel").textContent = pending ? "Last rep · pause to lock it in" : "Last rep · mean velocity";
   $("repCount").textContent = reps.length;
   $("rom").textContent = last ? (last.rom * 100).toFixed(1) : "--";
   $("peak").textContent = last ? last.peak.toFixed(2) : "--";
@@ -187,9 +190,16 @@ function drawLive() {
 function drawHeight() {
   const canvas = $("heightCanvas");
   if (!result || result.error) { drawPlot(canvas, { series: [] }); return; }
-  const { t, x, reps } = result;
+  const { t, x, reps, windows } = result;
+  const cm = Array.from(x, (v) => v * 100);
+  // Everything after the last still is provisional: its drift fix gets redone once
+  // you pause (and before the 2nd lockout there's no fix at all). Gray and dashed.
+  const open = windows.find((w) => !w.anchored);
+  const cut = open ? open.i0 : t.length - 1;
+  const series = [{ x: t.slice(0, cut + 1), y: cm.slice(0, cut + 1), color: cssVar("--line") }];
+  if (open) series.push({ x: t.slice(cut), y: cm.slice(cut), color: cssVar("--muted"), dash: [4, 4] });
   drawPlot(canvas, {
-    series: [{ x: t, y: Array.from(x, (v) => v * 100), color: cssVar("--line") }],
+    series,
     spans: reps.map((r) => ({ x0: t[r.start], x1: t[r.end], color: cssVar("--rep") })),
     yLabel: "cm",
     minRange: 10,

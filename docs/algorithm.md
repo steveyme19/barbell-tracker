@@ -144,6 +144,15 @@ Fewer lockouts get fewer powers (always at least one more lockout than unknowns)
 the fit can't be forced through every point. Code: `level_tops()` in `reps.py`,
 `levelTops()` in `reps.js`.
 
+**Live, mid-set.** While you're still moving there's no end still yet, so the newest
+stretch can't use the end-velocity constraint. From the 2nd lockout on, it gets the same
+fit with d1 fitted too (one power for 2 to 3 lockouts, up to three after that), and
+only lockouts the bar has already come back down from count. It's provisional: the app
+draws it gray and dashed, and redoes it properly once you pause. Simulated live on the
+recordings (cut off every 0.5 s), the reps shown before the next pause went from a median
+of 24 to 46 cm off their final value on the web app sets to about 2 to 3 cm. The first
+rep of a set still has nothing to level against until the 2nd lockout.
+
 **Why this isn't the bottom-anchor mistake from §7:** that one pinned v = 0 where the
 drifting velocity already said it was, so it added nothing. This adds a fact the
 sensor doesn't know: lockout height repeats. Same reason stillness works.

@@ -2,7 +2,7 @@
 
 /**
  * Draw one or more lines on a canvas.
- * series: [{ x: [...], y: [...], color }]
+ * series: [{ x: [...], y: [...], color, dash? }]   dash: e.g. [4, 4] for a dashed line
  * spans:  [{ x0, x1, color }]  shaded vertical bands (e.g. reps)
  */
 export function drawPlot(canvas, { series, spans = [], yLabel = "", minRange = 1 }) {
@@ -54,9 +54,14 @@ export function drawPlot(canvas, { series, spans = [], yLabel = "", minRange = 1
   }
   ctx.fillText(yLabel, L + 4, T + 10);
 
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(L, T, w - L - R, h - T - B);
+  ctx.clip();
   for (const s of series) {
     ctx.strokeStyle = s.color;
     ctx.lineWidth = 1.6;
+    ctx.setLineDash(s.dash || []);
     ctx.beginPath();
     let started = false;
     const step = Math.max(1, Math.floor(s.x.length / (w * 2)));   // skip points we can't see
@@ -67,6 +72,7 @@ export function drawPlot(canvas, { series, spans = [], yLabel = "", minRange = 1
     }
     ctx.stroke();
   }
+  ctx.restore();
 }
 
 function niceTicks(lo, hi, n) {

@@ -55,6 +55,7 @@ h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; te
 .label { color: var(--muted); font-size: 13px; }
 .big { font-size: 64px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .big small { font-size: 18px; color: var(--muted); font-weight: 500; margin-left: 6px; }
+.big.pending span { color: var(--muted); }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
 .stats div { display: flex; flex-direction: column; }
 .stats span { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }

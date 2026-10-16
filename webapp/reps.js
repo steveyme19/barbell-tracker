@@ -18,6 +18,7 @@ export const SETTINGS = {
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
   LEVEL_MIN_TOPS: 3,     // lockouts needed inside one window before we level them
+  LEVEL_MIN_TOPS_OPEN: 2, // same, for motion with no still after it yet (live, mid-set)
   LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve
   LEVEL_FLAG: 0.02,      // m: flag a rep whose lockout misses the common height by this much
 };
@@ -217,6 +218,7 @@ function leastSquares(A, b) {
  * No-pause sets: remove curved drift by assuming every lockout is at the same height.
  * Velocity drift e(tau) = d1 tau + d2 tau^2 + d3 tau^3 (tau = time / window length),
  * e(1) = raw end velocity, d2..d3 and the lockout height H by least squares.
+ * Still moving when the data ends: d1 is fitted too, from 2+ lockouts (provisional).
  * See level_tops() in reps.py for the full explanation.
  */
 export function levelTops(a, t, v, windows, S = SETTINGS) {
@@ -224,27 +226,51 @@ export function levelTops(a, t, v, windows, S = SETTINGS) {
   const { highs } = turningPoints(x, S.MIN_ROM);
   for (const w of windows) {
     const { i0, i1 } = w;
-    const tops = highs.filter((h) => h > i0 && h < i1);
-    if (!w.anchored || tops.length < S.LEVEL_MIN_TOPS) continue;
-    const deg = Math.min(S.LEVEL_MAX_DEG, tops.length - 1);
+    let tops = highs.filter((h) => h > i0 && h < i1);
+    if (!w.anchored) {
+      // only lockouts the bar has already come down from
+      tops = tops.filter((h) => {
+        let lo = Infinity;
+        for (let i = h; i <= i1; i++) lo = Math.min(lo, x[i]);
+        return x[h] - lo >= S.MIN_ROM;
+      });
+    }
+    if (tops.length < (w.anchored ? S.LEVEL_MIN_TOPS : S.LEVEL_MIN_TOPS_OPEN)) continue;
     const tw = t.slice(i0, i1 + 1).map((x) => x - t[i0]);
     const T = tw[tw.length - 1];
     const vRaw = integrate(a.slice(i0, i1 + 1), tw);
     const xRaw = integrate(vRaw, tw);
-    const eEnd = vRaw[vRaw.length - 1];
     const rows = [];
     const rhs = [];
-    for (const h of tops) {
-      const tau = tw[h - i0] / T;
-      const row = [];
-      for (let k = 2; k <= deg; k++) row.push(T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2));
-      row.push(1);
-      rows.push(row);
-      rhs.push(xRaw[h - i0] - (T * eEnd * tau ** 2) / 2);
+    let d;
+    let sol;
+    if (w.anchored) {
+      const deg = Math.min(S.LEVEL_MAX_DEG, tops.length - 1);
+      const eEnd = vRaw[vRaw.length - 1];
+      for (const h of tops) {
+        const tau = tw[h - i0] / T;
+        const row = [];
+        for (let k = 2; k <= deg; k++) row.push(T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2));
+        row.push(1);
+        rows.push(row);
+        rhs.push(xRaw[h - i0] - (T * eEnd * tau ** 2) / 2);
+      }
+      sol = leastSquares(rows, rhs);
+      d = [eEnd];                                       // d1 = eEnd - d2 - ... - d_deg
+      for (let k = 0; k < sol.length - 1; k++) { d[0] -= sol[k]; d.push(sol[k]); }
+    } else {
+      const deg = Math.max(1, Math.min(S.LEVEL_MAX_DEG, tops.length - 2));   // unknowns d1..d_deg and H
+      for (const h of tops) {
+        const tau = tw[h - i0] / T;
+        const row = [];
+        for (let k = 1; k <= deg; k++) row.push((T * tau ** (k + 1)) / (k + 1));
+        row.push(1);
+        rows.push(row);
+        rhs.push(xRaw[h - i0]);
+      }
+      sol = leastSquares(rows, rhs);
+      d = Array.from(sol.slice(0, sol.length - 1));
     }
-    const sol = leastSquares(rows, rhs);
-    const d = [eEnd];                                   // d1 = eEnd - d2 - ... - d_deg
-    for (let k = 0; k < sol.length - 1; k++) { d[0] -= sol[k]; d.push(sol[k]); }
     for (let i = 0; i < tw.length; i++) {
       const tau = tw[i] / T;
       let e = 0;
