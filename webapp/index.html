@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111418">
+  <title>Bar Tracker</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Bar Tracker</h1>
+    <span id="status" class="pill">Ready</span>
+  </header>
+
+  <main>
+    <section class="hero" aria-live="polite">
+      <div class="label">Last rep · mean velocity</div>
+      <div class="big"><span id="mcv">--</span><small>m/s</small></div>
+      <div class="stats">
+        <div><span id="repCount">0</span><label>reps</label></div>
+        <div><span id="rom">--</span><label>ROM cm</label></div>
+        <div><span id="peak">--</span><label>peak m/s</label></div>
+        <div><span id="loss">--</span><label>vel. loss</label></div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <button id="startBtn" class="primary">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <button id="downloadBtn" disabled>Save CSV</button>
+    </section>
+    <section class="controls replay">
+      <label class="file">Replay a recording<input type="file" id="fileInput" accept=".csv,.zip"></label>
+      <label class="check"><input type="checkbox" id="realtime"> real time</label>
+    </section>
+
+    <p id="hint" class="hint">Hold the phone flat and still, tap Start, wait a second, then do reps.
+      Pause briefly at the top or bottom so it can cancel drift.</p>
+
+    <section class="card">
+      <h2>Live acceleration <span class="muted">(last 8 s)</span></h2>
+      <canvas id="liveCanvas"></canvas>
+    </section>
+
+    <section class="card">
+      <h2>Height <span class="muted">(reps shaded)</span></h2>
+      <canvas id="heightCanvas"></canvas>
+    </section>
+
+    <section class="card">
+      <h2>Reps</h2>
+      <table id="repTable">
+        <thead><tr><th>#</th><th>ROM</th><th>MCV</th><th>Peak</th><th>Time</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <footer><span id="rate">--</span> · <span id="samples">0 samples</span></footer>
+  </main>
+</body>
+</html>

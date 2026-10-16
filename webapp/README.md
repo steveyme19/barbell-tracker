@@ -1,8 +1,32 @@
 # Web app
 
-Nothing here yet. Starts at roadmap step 0.4.
+Live rep tracking on your phone. Plain HTML + JS, no framework, no build step (P3).
+Hosted on GitHub Pages.
 
-Plain HTML + JS, no framework, no build step. Hosted on GitHub Pages.
+**What it does now (v0):** reads your phone's motion sensor, finds reps live with the
+same algorithm as `analysis/reps.py`, shows the last rep's mean velocity big, plus ROM,
+peak velocity, velocity loss, a height plot and a rep table. Save CSV exports the session
+in a format the Python scripts read. Replay a recording runs a phyphox `.zip` or `.csv`
+through the same pipeline.
+
+## Use it
+
+Open `https://<your-username>.github.io/<repo-name>/webapp/` in Chrome on your phone
+(setup below). Hold the phone flat and still, tap **Start**, wait a second, do reps,
+pausing briefly at the top or bottom of each. Tap **Stop**, then **Save CSV** if you
+want the data in `analysis/data/`.
+
+## Files
+
+| file | what |
+|---|---|
+| `index.html`, `style.css` | the page |
+| `app.js` | UI wiring: source → algorithm → UI |
+| `sources.js` | `PhoneSource` (DeviceMotion), `ReplaySource` (recordings). `BleSource` comes in phase 4. |
+| `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
+| `fileio.js` | read phyphox CSV/zip, write CSV |
+| `plot.js` | tiny canvas plotter |
+| `test/parity.mjs` | checks `reps.js` against `reps.py` |
 
 ## Architecture (decision D4)
 
@@ -10,7 +34,7 @@ Plain HTML + JS, no framework, no build step. Hosted on GitHub Pages.
 source  →  algorithm  →  UI
 ```
 
-Every source emits the **same sample format**:
+Every source emits the same sample format:
 
 ```js
 { t, ax, ay, az, gx, gy, gz }
@@ -19,42 +43,50 @@ Every source emits the **same sample format**:
 // g: deg/s
 ```
 
-| source | when | what it's for |
-|---|---|---|
-| `PhoneSource` | 0.4 | Live DeviceMotion. Building the UI with no hardware. |
-| `ReplaySource` | 0.4 | Plays a recorded CSV (phyphox now, XIAO later). Real timing for UI demos, as fast as possible for tests. |
-| `BleSource` | 4.1 | Web Bluetooth from the XIAO. |
-
 The algorithm and UI never know which source they're getting. Switching from phone to
 BLE touches one file.
 
 ## Parity test (roadmap 0.5)
 
-Python is where the algorithm gets tuned. JS only has to match it.
+Python is where the algorithm gets tuned. JS only has to match it. From the repo root,
+with the Python venv active and [Node](https://nodejs.org) installed:
 
-1. Python runs on a recorded file and writes its per-rep results.
-2. The JS algorithm runs on the same file through `ReplaySource`.
-3. Compare. *Start* tolerance: ROM within 1 mm, MCV within 0.005 m/s.
+```
+node webapp/test/parity.mjs
+```
 
-Any time the Python algorithm changes, port the change and rerun this.
+Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep. First run (2026-10-16):
+all four test files passed with 0.000 mm difference. Rerun it any time either version
+changes.
 
-## History (phase 5)
+## GitHub Pages setup (once)
 
-Session → Set → Rep, stored in IndexedDB. Details and gotchas in
-`docs/analytics.md` §7. Short version: call `navigator.storage.persist()` and ship an
-export button on day one, because browser storage can get wiped.
+1. Repo on GitHub → **Settings → Pages**.
+2. Source: **Deploy from a branch**. Branch: **main**, folder: **/ (root)**. Save.
+3. Wait a minute, then open `https://<your-username>.github.io/<repo-name>/webapp/`.
+
+On a free GitHub account, Pages only works on **public** repos. The GitHub Student
+Developer Pack gives you Pro for free, which allows private repos too.
+
+The empty `.nojekyll` file in the repo root tells Pages to serve files as-is.
 
 ## Things to know
 
 - **DeviceMotion and Web Bluetooth both need a secure context**: HTTPS or `localhost`.
-  GitHub Pages is HTTPS, so that's covered.
-- For faster testing than pushing to Pages every time: run a local server on your
-  laptop, plug in your phone, and use Chrome's port forwarding (`chrome://inspect` on
-  the laptop). The phone then loads `localhost:8000`, which counts as secure.
-- **DeviceMotion sample rate in Chrome is limited**, typically around 60 Hz. Check
-  `event.interval` on your phone. That's why tuning happens on full-rate recordings,
-  never on live phone data.
-- DeviceMotion gives `acceleration`, `accelerationIncludingGravity`, and `rotationRate`
-  (deg/s). `PhoneSource` should use `accelerationIncludingGravity` + `rotationRate` so
-  it matches what the IMU will give you.
-- Use the Screen Wake Lock API so the phone screen doesn't sleep mid-set.
+  GitHub Pages is HTTPS. A laptop server opened from your phone over Wi-Fi is *not*.
+- For faster phone testing than pushing every time: run `python -m http.server` in the
+  repo root, plug the phone into the laptop over USB, and use Chrome's port forwarding
+  (`chrome://inspect` on the laptop). The phone then loads `localhost:8000/webapp/`,
+  which counts as secure.
+- **DeviceMotion is rate-limited**, typically about 60 Hz in Chrome, with timestamps that
+  jitter (a few ms to 40+ ms apart in testing). The app uses the real timestamps, so
+  jitter is handled. The footer shows the rate you're actually getting.
+- Uses the Screen Wake Lock API so the screen doesn't sleep mid-set.
+- Live results update every 0.5 s. A rep shows up once the phone stops at the top (or
+  the set ends), because that's when its drift can be corrected.
+
+## History (phase 5)
+
+Session → Set → Rep, stored in IndexedDB. Details in `docs/analytics.md` §7. Short
+version: call `navigator.storage.persist()` and ship an export button on day one,
+because browser storage can get wiped.

@@ -13,6 +13,7 @@ How it works (docs/algorithm.md sections 5 to 8):
 
 Usage:
     python reps.py data/reps_pause.zip
+    python reps.py data/reps_pause.zip --json    # results only, for the JS parity test
 """
 
 import sys
@@ -164,9 +165,11 @@ def find_reps(x, v, t, windows):
 
 
 def main():
-    if len(sys.argv) < 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
         sys.exit(__doc__)
-    path = Path(sys.argv[1])
+    path = Path(args[0])
+    as_json = "--json" in sys.argv
     t, a_raw = load_phyphox(path, AXIS)
     t = t - t[0]
     fs = 1 / np.median(np.diff(t))
@@ -181,12 +184,22 @@ def main():
     a = a_raw - g
     n_candidates = len(runs)
     runs = confirm_still_runs(a, t, runs)
-    if len(runs) < n_candidates:
+    if len(runs) < n_candidates and not as_json:
         print(f"(ignored {n_candidates - len(runs)} 'still' periods that were really steady motion)")
 
     v, windows = velocity_between_anchors(a, t, fs, runs)
     x = integrate(v, t)
     reps = find_reps(x, v, t, windows)
+
+    if as_json:
+        import json
+        print(json.dumps({
+            "fs": float(fs), "g": float(g), "runs": [[int(s), int(e)] for s, e in runs],
+            "reps": [{"start": int(r["start"]), "end": int(r["end"]), "rom": float(r["rom"]),
+                      "dur": float(r["dur"]), "mcv": float(r["mcv"]), "peak": float(r["peak"]),
+                      "flags": r["flags"]} for r in reps],
+        }))
+        return
 
     print(f"{path.name}: {t[-1]:.1f} s at {fs:.0f} Hz, g = {g:.3f} m/s^2")
     print(f"{len(runs)} still periods, {len(windows)} integration windows "

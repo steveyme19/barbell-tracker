@@ -1,0 +1,239 @@
+// UI wiring: source -> algorithm -> UI (decision D4).
+import { PhoneSource, ReplaySource } from "./sources.js";
+import { analyze, magnitude } from "./reps.js";
+import { parseRecording, toCSV } from "./fileio.js";
+import { drawPlot } from "./plot.js";
+
+const $ = (id) => document.getElementById(id);
+const ANALYZE_EVERY_MS = 500;
+const LIVE_SECONDS = 8;
+
+let samples = [];
+let source = null;
+let running = false;
+let result = null;
+let analyzeTimer = null;
+let wakeLock = null;
+let drawQueued = false;
+let sourceName = "";
+
+// ---------- incoming data ----------
+
+function onSample(s) {
+  samples.push(s);
+  if (!drawQueued) {
+    drawQueued = true;
+    requestAnimationFrame(() => { drawQueued = false; drawLive(); updateFooter(); });
+  }
+}
+
+function runAnalysis() {
+  if (samples.length < 10) return;
+  const t = samples.map((s) => s.t);
+  const a = magnitude(samples.map((s) => s.ax), samples.map((s) => s.ay), samples.map((s) => s.az));
+  result = analyze(t, a);
+  render();
+}
+
+// ---------- start / stop ----------
+
+async function startPhone() {
+  if (!window.isSecureContext) {
+    showError("Motion sensors need HTTPS. Open the GitHub Pages link on your phone.");
+    return;
+  }
+  reset();
+  sourceName = "phone";
+  source = new PhoneSource(onSample);
+  try {
+    await source.start();
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  begin();
+  setTimeout(() => {
+    if (running && samples.length === 0) {
+      showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
+    }
+  }, 2000);
+}
+
+async function startReplay(file) {
+  let rec;
+  try {
+    rec = await parseRecording(file.name, await file.arrayBuffer());
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  reset();
+  sourceName = file.name;
+  const realtime = $("realtime").checked;
+  source = new ReplaySource(onSample, rec, { realtime, onDone: stop });
+  begin();
+  await source.start();
+}
+
+function begin() {
+  running = true;
+  $("startBtn").disabled = true;
+  $("stopBtn").disabled = false;
+  $("downloadBtn").disabled = true;
+  setStatus("Hold still…", "wait");
+  analyzeTimer = setInterval(runAnalysis, ANALYZE_EVERY_MS);
+  keepAwake();
+}
+
+function stop() {
+  if (!running) return;
+  running = false;
+  source?.stop();
+  clearInterval(analyzeTimer);
+  runAnalysis();
+  drawLive();
+  updateFooter();
+  $("startBtn").disabled = false;
+  $("stopBtn").disabled = true;
+  $("downloadBtn").disabled = samples.length === 0;
+  const n = result?.reps?.length ?? 0;
+  setStatus(`Done · ${n} rep${n === 1 ? "" : "s"}`, "");
+  wakeLock?.release().catch(() => {});
+  wakeLock = null;
+}
+
+function reset() {
+  samples = [];
+  result = null;
+  $("hint").classList.remove("err");
+  render();
+  drawLive();
+}
+
+// ---------- screen stays on during a set ----------
+
+async function keepAwake() {
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch { /* not supported */ }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && running) keepAwake();
+});
+
+// ---------- download ----------
+
+function download() {
+  const blob = new Blob([toCSV(samples)], { type: "text/csv" });
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const name = `bar-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// ---------- drawing ----------
+
+function render() {
+  const reps = result?.reps ?? [];
+  if (running) {
+    if (result?.error) setStatus("Hold still…", "wait");
+    else if (result) setStatus(`Live · ${reps.length} rep${reps.length === 1 ? "" : "s"}`, "live");
+  }
+
+  const last = reps[reps.length - 1];
+  $("mcv").textContent = last ? last.mcv.toFixed(2) : "--";
+  $("repCount").textContent = reps.length;
+  $("rom").textContent = last ? (last.rom * 100).toFixed(1) : "--";
+  $("peak").textContent = last ? last.peak.toFixed(2) : "--";
+  if (reps.length >= 2) {
+    const best = Math.max(...reps.map((r) => r.mcv));
+    $("loss").textContent = `${Math.round((1 - last.mcv / best) * 100)}%`;
+  } else {
+    $("loss").textContent = "--";
+  }
+
+  const tbody = $("repTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  reps.forEach((r, k) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${k + 1}</td><td>${(r.rom * 100).toFixed(1)} cm</td>` +
+      `<td>${r.mcv.toFixed(2)}</td><td>${r.peak.toFixed(2)}</td><td>${r.dur.toFixed(2)} s</td>` +
+      `<td class="flag">${r.flags.length ? "⚠" : ""}</td>`;
+    if (r.flags.length) tr.title = r.flags.join(", ");
+    tbody.appendChild(tr);
+  });
+
+  drawHeight();
+}
+
+function drawLive() {
+  const canvas = $("liveCanvas");
+  if (!samples.length) { drawPlot(canvas, { series: [] }); return; }
+  const g = result?.g ?? 9.81;
+  const tEnd = samples[samples.length - 1].t;
+  const xs = [];
+  const ys = [];
+  for (let i = samples.length - 1; i >= 0; i--) {
+    const s = samples[i];
+    if (tEnd - s.t > LIVE_SECONDS) break;
+    xs.push(s.t - tEnd);
+    ys.push(Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az) - g);
+  }
+  drawPlot(canvas, { series: [{ x: xs.reverse(), y: ys.reverse(), color: cssVar("--line") }], yLabel: "m/s²", minRange: 2 });
+}
+
+function drawHeight() {
+  const canvas = $("heightCanvas");
+  if (!result || result.error) { drawPlot(canvas, { series: [] }); return; }
+  const { t, x, reps } = result;
+  drawPlot(canvas, {
+    series: [{ x: t, y: Array.from(x, (v) => v * 100), color: cssVar("--line") }],
+    spans: reps.map((r) => ({ x0: t[r.start], x1: t[r.end], color: cssVar("--rep") })),
+    yLabel: "cm",
+    minRange: 10,
+  });
+}
+
+function updateFooter() {
+  let rate = "--";
+  if (source instanceof PhoneSource && source.interval) {
+    rate = `${Math.round(1000 / source.interval)} Hz (interval ${source.interval.toFixed(1)} ms)`;
+  } else if (samples.length > 10) {
+    const n = samples.length;
+    rate = `${Math.round((n - 1) / (samples[n - 1].t - samples[0].t))} Hz`;
+  }
+  $("rate").textContent = sourceName ? `${sourceName} · ${rate}` : rate;
+  $("samples").textContent = `${samples.length} samples`;
+}
+
+function setStatus(text, kind) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = `pill ${kind || ""}`;
+}
+
+function showError(msg) {
+  setStatus("Error", "err");
+  $("hint").textContent = msg;
+  $("hint").classList.add("err");
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ---------- wire up ----------
+
+$("startBtn").addEventListener("click", startPhone);
+$("stopBtn").addEventListener("click", stop);
+$("downloadBtn").addEventListener("click", download);
+$("fileInput").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) startReplay(f);
+  e.target.value = "";
+});
+window.addEventListener("resize", () => { drawLive(); drawHeight(); });
+render();
+drawLive();

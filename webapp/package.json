@@ -1,0 +1,8 @@
+{
+  "name": "bar-tracker-webapp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "parity": "node test/parity.mjs"
+  }
+}

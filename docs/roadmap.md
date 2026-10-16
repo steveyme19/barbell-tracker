@@ -13,7 +13,7 @@ explain why it works. Per-rep processing is specified in
       See [01-phone-lift.md](01-phone-lift.md). *Done 2026-10-16: 5 lifts to 27.9 cm,
       4 of 5 within 2 cm using the tilt-proof magnitude signal (D9).*
 - [x] **0.2 Fake reps.** *Done 2026-10-16 with `analysis/reps.py`: paused set ROM
-      25.2 ± 0.5 cm, no-pause set 27.3 ± 0.8 cm. ← next up is 0.3*
+      25.2 ± 0.5 cm, no-pause set 27.3 ± 0.8 cm.*
       Original plan: Move the phone up and down like reps. Record one set with a
       pause at the top of each rep, one set without, and a few slow "grinder" reps where
       you stall halfway up (algorithm.md §8). Implement stillness detection
@@ -28,13 +28,15 @@ explain why it works. Per-rep processing is specified in
       - **slide it flat along a table** a measured distance: the horizontal version of 0.1.
       - lift it diagonally onto the table and plot the 2D path (§11). Measure the true
         horizontal and vertical distance and compare.
-- [ ] **0.4 Web app v0.** Static page on GitHub Pages, built as
+- [x] **0.4 Web app v0.** *Done 2026-10-16: `webapp/`, phone sensor + replay + live
+      reps + CSV export. Tested headless with fake sensor events.* Static page on GitHub Pages, built as
       `source → algorithm → UI` from day one (see `webapp/README.md`). Two sources:
       - `PhoneSource`: live DeviceMotion
       - `ReplaySource`: plays a recorded CSV back at its real timing
       Live plot, record button, download CSV. Measure the sample rate your phone
       actually gives you (`event.interval`).
-- [ ] **0.5 Algorithm in JS + parity test.** Port 0.2 to the browser. Run the JS version
+- [x] **0.5 Algorithm in JS + parity test.** *Done 2026-10-16: `webapp/reps.js` matches
+      `reps.py` to 0.000 mm on all four test files (`webapp/test/parity.mjs`).* Port 0.2 to the browser. Run the JS version
       on recorded files through `ReplaySource` and compare against Python's output on
       the same files. They have to agree (*start*: ROM within 1 mm, MCV within
       0.005 m/s). Algorithm tuning happens in Python only. JS just has to match it.
