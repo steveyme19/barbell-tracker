@@ -43,7 +43,7 @@ def run(t, signal, truth):
     g = np.median(a_raw[t0 < 0.3]); runs = R.find_still_runs(a_raw, g, fs)
     g = np.mean(np.concatenate([a_raw[s:e+1] for s, e in runs])); runs = R.find_still_runs(a_raw, g, fs)
     a = a_raw - g; runs = R.confirm_still_runs(a, t0, fs, runs)
-    v, w = R.velocity_between_anchors(a, t0, fs, runs); v = R.level_tops(a, t0, v, w)
+    v, w = R.velocity_between_anchors(a, t0, fs, runs); v = R.level_heights(a, t0, v, w, "bench")
     x = R.integrate(v, t0); reps = R.find_reps(x, v, t0, w)
     if len(reps) != len(truth): return f"{len(reps)} reps found (expected {len(truth)})"
     rom_err = max(abs(r['rom'] - tr[0]) for r, tr in zip(reps, truth)) * 1000

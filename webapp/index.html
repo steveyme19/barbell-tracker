@@ -26,6 +26,13 @@
       </div>
     </section>
 
+    <section class="lifts" role="radiogroup" aria-label="Lift">
+      <label><input type="radio" name="lift" value="phone" checked><span>Phone test</span></label>
+      <label><input type="radio" name="lift" value="squat"><span>Squat</span></label>
+      <label><input type="radio" name="lift" value="bench"><span>Bench</span></label>
+      <label><input type="radio" name="lift" value="deadlift"><span>Deadlift</span></label>
+    </section>
+
     <section class="controls">
       <button id="startBtn" class="primary">Start</button>
       <button id="stopBtn" disabled>Stop</button>
@@ -36,7 +43,7 @@
       <label class="check"><input type="checkbox" id="realtime"> real time</label>
     </section>
 
-    <p id="hint" class="hint">Hold the phone flat and still, tap Start, wait a second, then do reps.
+    <p id="hint" class="hint">Pick the lift (it tells the drift fix which heights repeat). Hold still, tap Start, wait a second, then do reps.
       End the set still for a second. No pauses needed with 3+ reps, as long as every lockout is at the same height.</p>
 
     <section class="card">

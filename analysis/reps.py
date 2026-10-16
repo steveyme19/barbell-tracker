@@ -43,10 +43,20 @@ STILL_MAX_HUMP = 0.045  # m/s: velocity can't rise and fall more than this insid
 MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
-LEVEL_MIN_TOPS = 3      # lockouts needed inside one window before we level them
-LEVEL_MIN_TOPS_OPEN = 2 # same, for motion with no still after it yet (live, mid-set)
-LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve
+LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve (lockouts only)
+LEVEL_MAX_DEG_BOTH = 5  # same, when bottoms are leveled too (twice the points, so more bend is safe)
 LEVEL_FLAG = 0.02       # m: flag a rep whose lockout misses the common height by this much
+
+# Which heights repeat every rep. Lockouts always do (that's what "locked out" means).
+#   bottoms: the bottom is a hard stop too (chest, floor), not a depth you choose
+#   ends:    the still before the set and after it is at lockout or floor height
+LIFTS = {
+    "phone":    dict(bottoms=False, ends=False),  # hand-held: you don't hold still at the turnaround height
+    "squat":    dict(bottoms=False, ends=True),   # depth varies; starts and ends standing
+    "bench":    dict(bottoms=True, ends=True),    # touches the chest; starts and ends at lockout
+    "deadlift": dict(bottoms=True, ends=True),    # touches the floor; starts and ends on the floor
+}
+LIFT = "phone"          # default; --lift=bench, or put the lift in the file name
 
 
 def rolling(y, n):
@@ -160,61 +170,90 @@ def velocity_between_anchors(a, t, fs, runs):
     return v, windows
 
 
-def level_tops(a, t, v, windows):
-    """No-pause sets: remove curved drift by assuming every lockout is at the same height.
+def level_heights(a, t, v, windows, lift=None):
+    """No-pause sets: remove curved drift using heights that repeat every rep.
 
-    The straight-line fix only knows velocity is 0 at both ends of a window. With
-    3+ lockouts inside a window we know more: the bar got back to the same height
-    H each time (H unknown). So model the velocity drift as a smooth curve
+    The straight-line fix only knows velocity is 0 at both ends of a window. Inside a
+    no-pause set we know more: every lockout is at the same height H (H unknown), and
+    for bench and deadlift every bottom is too (chest, floor). For squat, bench and
+    deadlift, the still before and after the set is also at lockout (or floor) height.
+    So model the velocity drift as a smooth curve
 
-        e(tau) = d1*tau + d2*tau^2 + d3*tau^3     (tau = time / window length)
+        e(tau) = d1*tau + d2*tau^2 + ...     (tau = time / window length)
 
-    with e = raw end velocity at tau = 1 (velocity is 0 at the end still), and pick
-    d2, d3 and H by least squares so every lockout lands at H. With d2 = d3 = 0 this
-    is exactly the straight-line fix. Fewer lockouts = fewer powers (always one
-    more lockout than unknowns, so the fit can't be forced through every point).
+    with e = raw end velocity at tau = 1 (velocity is 0 at the end still), and pick the
+    d's and the repeated heights by least squares. With only d1 this is exactly the
+    straight-line fix. Fewer points = fewer powers (always at least one more point
+    than unknowns, so the fit can't be forced through every point).
 
     Still moving when the data ends (live, mid-set): there's no end still, so d1 is
     fitted too, from 2+ lockouts. That's provisional until the next still.
     """
+    prof = LIFTS[lift or LIFT]
     x = integrate(v, t)
-    _, highs = turning_points(x, MIN_ROM)
+    lows, highs = turning_points(x, MIN_ROM)
     for w in windows:
         i0, i1 = w["i0"], w["i1"]
         tops = [h for h in highs if i0 < h < i1]
+        bottoms = [b for b in lows if i0 < b < i1]
         if not w["anchored"]:
-            # only lockouts the bar has already come down from
+            # only turnarounds the bar has already moved away from
             tops = [h for h in tops if x[h] - x[h:i1 + 1].min() >= MIN_ROM]
-        if len(tops) < (LEVEL_MIN_TOPS if w["anchored"] else LEVEL_MIN_TOPS_OPEN):
+            bottoms = [b for b in bottoms if x[b:i1 + 1].max() - x[b] >= MIN_ROM]
+        turns = sorted(tops + bottoms)
+        if prof["ends"] and turns:
+            # The bar left the start still going down: it started at lockout. Going up:
+            # it started at the bottom (deadlift from the floor). Same for the end still.
+            if turns[0] in bottoms and x[i0] - x[turns[0]] >= MIN_ROM:
+                tops = [i0] + tops
+            elif turns[0] in tops and x[turns[0]] - x[i0] >= MIN_ROM:
+                bottoms = [i0] + bottoms
+            if w["anchored"]:
+                if turns[-1] in bottoms and x[i1] - x[turns[-1]] >= MIN_ROM:
+                    tops = tops + [i1]
+                elif turns[-1] in tops and x[turns[-1]] - x[i1] >= MIN_ROM:
+                    bottoms = bottoms + [i1]
+        groups = [tops] if len(tops) >= 2 else []
+        if prof["bottoms"] and len(bottoms) >= 2:
+            groups.append(bottoms)
+        n_rows = sum(len(g) for g in groups)
+        n_h = len(groups)
+        if n_rows < n_h + (2 if w["anchored"] else 1):
             continue
+        max_deg = LEVEL_MAX_DEG_BOTH if n_h == 2 else LEVEL_MAX_DEG
         tw = t[i0:i1 + 1] - t[i0]
         T = tw[-1]
         v_raw = integrate(a[i0:i1 + 1], tw)
         x_raw = integrate(v_raw, tw)
         rows, rhs = [], []
         if w["anchored"]:
-            deg = min(LEVEL_MAX_DEG, len(tops) - 1)
+            deg = min(max_deg, n_rows - n_h)
             e_end = v_raw[-1]
             # Position drift is the integral of e: T * sum d_k tau^(k+1)/(k+1).
-            # Substituting d1 = e_end - d2 - d3 leaves unknowns d2..d_deg and H.
-            for h in tops:
-                tau = tw[h - i0] / T
-                rows.append([T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2) for k in range(2, deg + 1)] + [1.0])
-                rhs.append(x_raw[h - i0] - T * e_end * tau ** 2 / 2)
+            # Substituting d1 = e_end - d2 - ... leaves unknowns d2..d_deg and the heights.
+            for gi, g in enumerate(groups):
+                for h in g:
+                    tau = tw[h - i0] / T
+                    rows.append([T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2) for k in range(2, deg + 1)]
+                                + [1.0 if j == gi else 0.0 for j in range(n_h)])
+                    rhs.append(x_raw[h - i0] - T * e_end * tau ** 2 / 2)
             sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
-            d = [e_end - sol[:-1].sum()] + list(sol[:-1])           # d1, d2, ..., d_deg
+            d = [e_end - sol[:deg - 1].sum()] + list(sol[:deg - 1])     # d1, d2, ..., d_deg
         else:
-            deg = max(1, min(LEVEL_MAX_DEG, len(tops) - 2))         # unknowns d1..d_deg and H
-            for h in tops:
-                tau = tw[h - i0] / T
-                rows.append([T * tau ** (k + 1) / (k + 1) for k in range(1, deg + 1)] + [1.0])
-                rhs.append(x_raw[h - i0])
+            deg = max(1, min(max_deg, n_rows - n_h - 1))               # unknowns d1..d_deg and the heights
+            for gi, g in enumerate(groups):
+                for h in g:
+                    tau = tw[h - i0] / T
+                    rows.append([T * tau ** (k + 1) / (k + 1) for k in range(1, deg + 1)]
+                                + [1.0 if j == gi else 0.0 for j in range(n_h)])
+                    rhs.append(x_raw[h - i0])
             sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
-            d = list(sol[:-1])
+            d = list(sol[:deg])
         tau = tw / T
         v[i0:i1 + 1] = v_raw - sum(dk * tau ** k for k, dk in enumerate(d, start=1))
         w["leveled"] = True
-        w["top_height"] = sol[-1]           # H, relative to the height at i0
+        if groups[0] is tops:
+            w["top_height"] = sol[len(sol) - n_h]       # lockout height, relative to the height at i0
     return v
 
 
@@ -265,7 +304,7 @@ def find_reps(x, v, t, windows):
                 if not w["anchored"]:
                     flags.append("no end anchor")
                 if w.get("leveled"):
-                    if abs(x[hi] - (x[w["i0"]] + w["top_height"])) > LEVEL_FLAG:
+                    if "top_height" in w and abs(x[hi] - (x[w["i0"]] + w["top_height"])) > LEVEL_FLAG:
                         flags.append("uneven lockout")
                 elif w["dur"] > LONG_WINDOW:
                     flags.append(f"long window {w['dur']:.1f}s")
@@ -277,6 +316,14 @@ def find_reps(x, v, t, windows):
     return reps
 
 
+def lift_from_name(name):
+    """'bar-bench-2026-11-03-1830.csv' -> 'bench'. Anything else -> the default LIFT."""
+    for lift in LIFTS:
+        if lift in name.lower():
+            return lift
+    return LIFT
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
@@ -284,6 +331,7 @@ def main():
     path = Path(args[0])
     as_json = "--json" in sys.argv
     until = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--until=")), None)
+    lift = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--lift=")), None) or lift_from_name(path.name)
     t, a_raw = load_phyphox(path, AXIS)
     if until is not None:
         keep = (t - t[0]) < until
@@ -305,7 +353,7 @@ def main():
         print(f"(ignored {n_candidates - len(runs)} 'still' periods that were really steady motion)")
 
     v, windows = velocity_between_anchors(a, t, fs, runs)
-    v = level_tops(a, t, v, windows)
+    v = level_heights(a, t, v, windows, lift)
     x = integrate(v, t)
     reps = find_reps(x, v, t, windows)
 

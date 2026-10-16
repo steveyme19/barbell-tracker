@@ -93,9 +93,10 @@ explain why it works. Per-rep processing is specified in
       compensation and check it with a set where you roll the bar on purpose.
 - [ ] **2.6 No-pause sets on the bar.** §6b already handles them on phone data. On bar
       data: check how much your lockout height really varies set to set, see if the
-      "uneven lockout" flag fires on good reps, try adding bottoms (bench, deadlift) and
-      the rack-height constraint, and try shorter micro-pause detection with the gyro
-      (algorithm.md, "Other drift ideas").
+      "uneven lockout" flag fires on good reps, check the per-lift profiles (bottoms for
+      bench and deadlift, stills at lockout or floor height) against real bar sets, and
+      try shorter micro-pause detection with the gyro (algorithm.md §6b and "Other drift
+      ideas").
 - [ ] **2.7 Decide where the algorithm runs** (O1).
 - [ ] **2.8 (optional, if 1.6 looked good) IMU + laser fusion.** Temporary laser mount
       next to the IMU, pointing at the floor past the plates. Run the complementary filter

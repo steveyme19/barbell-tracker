@@ -18,11 +18,24 @@ export const SETTINGS = {
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
-  LEVEL_MIN_TOPS: 3,     // lockouts needed inside one window before we level them
-  LEVEL_MIN_TOPS_OPEN: 2, // same, for motion with no still after it yet (live, mid-set)
-  LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve
+  LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve (lockouts only)
+  LEVEL_MAX_DEG_BOTH: 5, // same, when bottoms are leveled too
   LEVEL_FLAG: 0.02,      // m: flag a rep whose lockout misses the common height by this much
+  // Which heights repeat every rep (see LIFTS in reps.py).
+  LIFTS: {
+    phone: { bottoms: false, ends: false },    // hand-held: you don't hold still at the turnaround height
+    squat: { bottoms: false, ends: true },     // depth varies; starts and ends standing
+    bench: { bottoms: true, ends: true },      // touches the chest; starts and ends at lockout
+    deadlift: { bottoms: true, ends: true },   // touches the floor; starts and ends on the floor
+  },
+  LIFT: "phone",
 };
+
+/** 'bar-bench-2026-11-03-1830.csv' -> 'bench'. Anything else -> the default lift. */
+export function liftFromName(name, S = SETTINGS) {
+  const lower = name.toLowerCase();
+  return Object.keys(S.LIFTS).find((l) => lower.includes(l)) ?? S.LIFT;
+}
 
 /** Total acceleration, sqrt(x^2 + y^2 + z^2). Tilt-proof vertical signal (D9). */
 export function magnitude(ax, ay, az) {
@@ -243,27 +256,45 @@ function leastSquares(A, b) {
 }
 
 /**
- * No-pause sets: remove curved drift by assuming every lockout is at the same height.
- * Velocity drift e(tau) = d1 tau + d2 tau^2 + d3 tau^3 (tau = time / window length),
- * e(1) = raw end velocity, d2..d3 and the lockout height H by least squares.
- * Still moving when the data ends: d1 is fitted too, from 2+ lockouts (provisional).
- * See level_tops() in reps.py for the full explanation.
+ * No-pause sets: remove curved drift using heights that repeat every rep (lockouts;
+ * bottoms for bench and deadlift; the stills before and after the set for barbell lifts).
+ * Velocity drift e(tau) = d1 tau + d2 tau^2 + ... (tau = time / window length),
+ * e(1) = raw end velocity, the other d's and the repeated heights by least squares.
+ * Still moving when the data ends: d1 is fitted too (provisional).
+ * See level_heights() in reps.py for the full explanation.
  */
-export function levelTops(a, t, v, windows, S = SETTINGS) {
+export function levelHeights(a, t, v, windows, S = SETTINGS) {
+  const prof = S.LIFTS[S.LIFT];
   const x = integrate(v, t);
-  const { highs } = turningPoints(x, S.MIN_ROM);
+  const { lows, highs } = turningPoints(x, S.MIN_ROM);
+  const minFrom = (i, j) => { let m = Infinity; for (let k = i; k <= j; k++) m = Math.min(m, x[k]); return m; };
+  const maxFrom = (i, j) => { let m = -Infinity; for (let k = i; k <= j; k++) m = Math.max(m, x[k]); return m; };
   for (const w of windows) {
     const { i0, i1 } = w;
     let tops = highs.filter((h) => h > i0 && h < i1);
+    let bottoms = lows.filter((b) => b > i0 && b < i1);
     if (!w.anchored) {
-      // only lockouts the bar has already come down from
-      tops = tops.filter((h) => {
-        let lo = Infinity;
-        for (let i = h; i <= i1; i++) lo = Math.min(lo, x[i]);
-        return x[h] - lo >= S.MIN_ROM;
-      });
+      // only turnarounds the bar has already moved away from
+      tops = tops.filter((h) => x[h] - minFrom(h, i1) >= S.MIN_ROM);
+      bottoms = bottoms.filter((b) => maxFrom(b, i1) - x[b] >= S.MIN_ROM);
     }
-    if (tops.length < (w.anchored ? S.LEVEL_MIN_TOPS : S.LEVEL_MIN_TOPS_OPEN)) continue;
+    const turns = [...tops, ...bottoms].sort((p, q) => p - q);
+    if (prof.ends && turns.length) {
+      const first = turns[0];
+      const last = turns[turns.length - 1];
+      if (bottoms.includes(first) && x[i0] - x[first] >= S.MIN_ROM) tops = [i0, ...tops];
+      else if (tops.includes(first) && x[first] - x[i0] >= S.MIN_ROM) bottoms = [i0, ...bottoms];
+      if (w.anchored) {
+        if (bottoms.includes(last) && x[i1] - x[last] >= S.MIN_ROM) tops = [...tops, i1];
+        else if (tops.includes(last) && x[last] - x[i1] >= S.MIN_ROM) bottoms = [...bottoms, i1];
+      }
+    }
+    const groups = tops.length >= 2 ? [tops] : [];
+    if (prof.bottoms && bottoms.length >= 2) groups.push(bottoms);
+    const nRows = groups.reduce((n, g) => n + g.length, 0);
+    const nH = groups.length;
+    if (nRows < nH + (w.anchored ? 2 : 1)) continue;
+    const maxDeg = nH === 2 ? S.LEVEL_MAX_DEG_BOTH : S.LEVEL_MAX_DEG;
     const tw = t.slice(i0, i1 + 1).map((x) => x - t[i0]);
     const T = tw[tw.length - 1];
     const vRaw = integrate(a.slice(i0, i1 + 1), tw);
@@ -273,31 +304,35 @@ export function levelTops(a, t, v, windows, S = SETTINGS) {
     let d;
     let sol;
     if (w.anchored) {
-      const deg = Math.min(S.LEVEL_MAX_DEG, tops.length - 1);
+      const deg = Math.min(maxDeg, nRows - nH);
       const eEnd = vRaw[vRaw.length - 1];
-      for (const h of tops) {
-        const tau = tw[h - i0] / T;
-        const row = [];
-        for (let k = 2; k <= deg; k++) row.push(T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2));
-        row.push(1);
-        rows.push(row);
-        rhs.push(xRaw[h - i0] - (T * eEnd * tau ** 2) / 2);
-      }
+      groups.forEach((g, gi) => {
+        for (const h of g) {
+          const tau = tw[h - i0] / T;
+          const row = [];
+          for (let k = 2; k <= deg; k++) row.push(T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2));
+          for (let j = 0; j < nH; j++) row.push(j === gi ? 1 : 0);
+          rows.push(row);
+          rhs.push(xRaw[h - i0] - (T * eEnd * tau ** 2) / 2);
+        }
+      });
       sol = leastSquares(rows, rhs);
       d = [eEnd];                                       // d1 = eEnd - d2 - ... - d_deg
-      for (let k = 0; k < sol.length - 1; k++) { d[0] -= sol[k]; d.push(sol[k]); }
+      for (let k = 0; k < deg - 1; k++) { d[0] -= sol[k]; d.push(sol[k]); }
     } else {
-      const deg = Math.max(1, Math.min(S.LEVEL_MAX_DEG, tops.length - 2));   // unknowns d1..d_deg and H
-      for (const h of tops) {
-        const tau = tw[h - i0] / T;
-        const row = [];
-        for (let k = 1; k <= deg; k++) row.push((T * tau ** (k + 1)) / (k + 1));
-        row.push(1);
-        rows.push(row);
-        rhs.push(xRaw[h - i0]);
-      }
+      const deg = Math.max(1, Math.min(maxDeg, nRows - nH - 1));   // unknowns d1..d_deg and the heights
+      groups.forEach((g, gi) => {
+        for (const h of g) {
+          const tau = tw[h - i0] / T;
+          const row = [];
+          for (let k = 1; k <= deg; k++) row.push((T * tau ** (k + 1)) / (k + 1));
+          for (let j = 0; j < nH; j++) row.push(j === gi ? 1 : 0);
+          rows.push(row);
+          rhs.push(xRaw[h - i0]);
+        }
+      });
       sol = leastSquares(rows, rhs);
-      d = Array.from(sol.slice(0, sol.length - 1));
+      d = Array.from(sol.slice(0, deg));
     }
     for (let i = 0; i < tw.length; i++) {
       const tau = tw[i] / T;
@@ -306,7 +341,7 @@ export function levelTops(a, t, v, windows, S = SETTINGS) {
       v[i0 + i] = vRaw[i] - e;
     }
     w.leveled = true;
-    w.topHeight = sol[sol.length - 1];                // H, relative to the height at i0
+    if (groups[0] === tops) w.topHeight = sol[sol.length - nH];   // lockout height, relative to i0
   }
   return v;
 }
@@ -332,7 +367,7 @@ export function findReps(x, v, t, windows, S = SETTINGS) {
       if (w.i0 <= end && w.i1 >= start) {
         if (!w.anchored) flags.add("no end anchor");
         if (w.leveled) {
-          if (Math.abs(x[hi] - (x[w.i0] + w.topHeight)) > S.LEVEL_FLAG) flags.add("uneven lockout");
+          if (w.topHeight !== undefined && Math.abs(x[hi] - (x[w.i0] + w.topHeight)) > S.LEVEL_FLAG) flags.add("uneven lockout");
         } else if (w.dur > S.LONG_WINDOW) {
           flags.add(`long window ${w.dur.toFixed(1)}s`);
         }
@@ -372,7 +407,7 @@ export function analyze(tIn, aRaw, S = SETTINGS) {
   runs = confirmStillRuns(a, t, fs, runs, S);
 
   const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
-  levelTops(a, t, v, windows, S);
+  levelHeights(a, t, v, windows, S);
   const x = integrate(v, t);
   const reps = findReps(x, v, t, windows, S);
   return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length };

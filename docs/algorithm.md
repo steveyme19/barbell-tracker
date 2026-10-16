@@ -86,12 +86,13 @@ real pipeline):
 
 | case | magnitude | orientation, 1° off | orientation, 3° off |
 |---|---|---|---|
-| touch-and-go, 10 cm J-curve | 1.9 mm, 0.5% | 2.7 mm, 0.7% | 6.7 mm, 1.7% |
+| touch-and-go, 10 cm J-curve | 1.5 mm, 0.4% | 2.8 mm, 0.7% | 6.8 mm, 1.9% |
 | paused on chest, 10 cm J-curve | 4.4 mm, 0.9% | 5.9 mm, 1.2% | 9.9 mm, 2.2% |
-| 10 cm J + 1 m/s² sideways shake | 5.4 mm, 1.1% | 3.0 mm, 0.7% | 7.6 mm, 1.9% |
-| 10 cm J + 2 m/s² sideways shake | 12.6 mm, 2.7% | 3.2 mm, 0.8% | 8.5 mm, 2.1% |
+| 15 cm J-curve, last rep a 2.5 s grinder | 6.7 mm, 0.8% | 6.5 mm, 1.1% | 12.3 mm, 2.5% |
+| 10 cm J + 1 m/s² sideways shake | 2.7 mm, 0.7% | 2.2 mm, 0.6% | 6.0 mm, 1.7% |
+| 10 cm J + 2 m/s² sideways shake | 9.0 mm, 2.3% | 2.2 mm, 0.6% | 6.5 mm, 1.9% |
 
-(worst ROM error, worst MCV error over the set)
+(worst ROM error, worst MCV error over the set; bench profile from §6b)
 
 So the J-curve itself isn't the problem: a smooth 10 cm sweep only has ~0.5 m/s² of
 sideways acceleration. Shake is. Orientation tracking only wins if it's accurate to
@@ -144,9 +145,10 @@ integrated velocity, so there's no chicken-and-egg problem.
   4.5 cm/s. No real recording changed.
 - **Still open:** the same fake grinder eases into lockout so gently that the end still
   starts ~0.07 s early, while the bar is still moving at 2 cm/s. Forcing v = 0 there costs
-  that rep 3 cm of ROM. Real lockouts usually stop sharper, and the bar should sit much
-  stiller than a hand-held phone, so tighter thresholds on bar data (roadmap 2.2) are
-  the likely fix. Check it with real slow reps in 3.4.
+  that rep 3 cm of ROM with lockouts-only leveling, 0.7 cm with the bench profile
+  (§6b). Real lockouts usually stop sharper, and the bar should sit much stiller than a
+  hand-held phone, so tighter thresholds on bar data (roadmap 2.2) are the likely fix.
+  Check it with real slow reps in 3.4.
 
 Where you'll find stillness: before the first rep, at lockout between reps,
 deadlifts resting on the floor, after racking.
@@ -173,8 +175,38 @@ same height every lockout.** We don't know that height, but we know it's the sam
 4. Subtract the curve. With d2 = d3 = 0 this is exactly §6.
 
 Fewer lockouts get fewer powers (always at least one more lockout than unknowns), so
-the fit can't be forced through every point. Code: `level_tops()` in `reps.py`,
-`levelTops()` in `reps.js`.
+the fit can't be forced through every point. Code: `level_heights()` in `reps.py`,
+`levelHeights()` in `reps.js`.
+
+**Per lift (2026-10-16).** Lockouts repeat in every lift. Some lifts give more:
+
+| lift | bottoms repeat? | still before/after the set |
+|---|---|---|
+| bench | yes, the chest | at lockout |
+| deadlift | yes, the floor | on the floor (a bottom) |
+| squat | no, depth varies (and that's worth measuring) | standing, at lockout |
+| phone test | no | no: hand-held, you don't hold still at the turnaround height |
+
+The app has a lift picker, and Python reads the lift from the file name
+(`bar-bench-...csv`) or `--lift=`. Bottoms are a second group with their own height,
+so the fit gets twice the points and can safely bend more (up to τ⁵). The stills count
+as a lockout or a bottom depending on whether the bar left them going down or up. On
+fake no-pause sets with wobbly drift (`make_fake_reps.py lifts` style, 10 sets each,
+worst-rep ROM error):
+
+| lift | drift wobble | lockouts only | lift profile | better in |
+|---|---|---|---|---|
+| bench | 0.02 m/s² | 2.8 cm | **1.2 cm** | 10/10 |
+| bench | 0.05 m/s² | 7.0 cm | **2.8 cm** | 10/10 |
+| deadlift | 0.02 m/s² | 3.6 cm | **2.0 cm** | 10/10 |
+| deadlift | 0.05 m/s² | 8.9 cm | **4.9 cm** | 10/10 |
+| squat | 0.02 m/s² | 2.9 cm | 2.5 cm | 7/10 |
+| squat | 0.05 m/s² | 7.2 cm | 6.3 cm | 7/10 |
+
+Squat only gets the stills, a small gain. Leveling squat bottoms would shrink real depth
+differences, which the depth check (analytics.md §3) needs. The phone profile stays at
+lockouts only: on your first web app set, counting the stills made it worse (ROM spread
+1.6 → 1.9 cm). Recheck all of this on bar data (roadmap 2.6).
 
 **Live, mid-set.** While you're still moving there's no end still yet, so the newest
 stretch can't use the end-velocity constraint. From the 2nd lockout on, it gets the same
@@ -214,9 +246,7 @@ they went from 12.2 cm to 2.8 cm without being touched.
   only lockouts to fit it overfits: a clean set with one short lockout went from 0.8%
   to 2% worst error. More constraints first (see "Other drift ideas" below), then more
   flexibility.
-- Only the tops are used. Squat depth varies, so bottoms can't be trusted there. For
-  bench (chest) and touch-and-go deadlifts (floor) the bottoms are fixed too and could
-  go in the fit.
+- Bottoms are only used for bench and deadlift (see "Per lift" above).
 
 ## 7. Turnarounds are outputs, never anchors
 
@@ -381,14 +411,9 @@ have this one.
 
 Software, free:
 
-1. **More constraints in the §6b fit.** Bottoms for bench and touch-and-go deadlifts.
-   Rack height: the bar starts and ends on the same J-hooks, a deadlift starts and ends
-   on the floor, so start height = end height. Each is one more row in the same least
-   squares. More rows make a more flexible drift curve safe to use. *Tried on the first
-   web app set:* counting the still at each end of the window as a lockout made it
-   worse (ROM spread 1.6 → 1.9 cm), because holding the phone still you don't hold it
-   at the exact height you turn around at. A racked bar might be different, so retest
-   on bar data.
+1. ~~More constraints in the §6b fit~~ **Done** (2026-10-16): bottoms for bench and
+   deadlift, and the stills before and after the set, picked per lift. See "Per lift"
+   in §6b.
 2. **Catch micro-pauses.** Most "no-pause" lockouts still stop for ~0.1 s. With the gyro
    confirming the bar isn't rotating, MIN_STILL can probably drop from 0.25 s to about
    0.1 s, which turns each lockout into a full anchor. Needs bar data (roadmap 2.2).

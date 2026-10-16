@@ -1,6 +1,6 @@
 // UI wiring: source -> algorithm -> UI (decision D4).
 import { PhoneSource, ReplaySource } from "./sources.js";
-import { analyze, magnitude } from "./reps.js";
+import { analyze, magnitude, SETTINGS } from "./reps.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { drawPlot } from "./plot.js";
 
@@ -16,6 +16,7 @@ let analyzeTimer = null;
 let wakeLock = null;
 let drawQueued = false;
 let sourceName = "";
+let lift = "phone";   // which heights repeat every rep (reps.js LIFTS)
 
 // ---------- incoming data ----------
 
@@ -31,7 +32,7 @@ function runAnalysis() {
   if (samples.length < 10) return;
   const t = samples.map((s) => s.t);
   const a = magnitude(samples.map((s) => s.ax), samples.map((s) => s.ay), samples.map((s) => s.az));
-  result = analyze(t, a);
+  result = analyze(t, a, { ...SETTINGS, LIFT: lift });
   render();
 }
 
@@ -69,6 +70,8 @@ async function startReplay(file) {
   }
   reset();
   sourceName = file.name;
+  const named = Object.keys(SETTINGS.LIFTS).find((l) => file.name.toLowerCase().includes(l));
+  if (named) setLift(named);
   const realtime = $("realtime").checked;
   source = new ReplaySource(onSample, rec, { realtime, onDone: stop });
   begin();
@@ -125,7 +128,7 @@ function download() {
   const blob = new Blob([toCSV(samples)], { type: "text/csv" });
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  const name = `bar-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+  const name = `bar-${lift}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -239,6 +242,18 @@ function cssVar(name) {
 $("startBtn").addEventListener("click", startPhone);
 $("stopBtn").addEventListener("click", stop);
 $("downloadBtn").addEventListener("click", download);
+// ---------- lift picker ----------
+
+function setLift(value) {
+  lift = value in SETTINGS.LIFTS ? value : "phone";
+  const radio = document.querySelector(`input[name="lift"][value="${lift}"]`);
+  if (radio) radio.checked = true;
+  try { localStorage.setItem("lift", lift); } catch { /* storage blocked: just don't remember */ }
+  if (samples.length >= 10) runAnalysis();
+}
+document.querySelectorAll('input[name="lift"]').forEach((r) => r.addEventListener("change", () => setLift(r.value)));
+try { setLift(localStorage.getItem("lift") || "phone"); } catch { setLift("phone"); }
+
 $("fileInput").addEventListener("change", (e) => {
   const f = e.target.files[0];
   if (f) startReplay(f);

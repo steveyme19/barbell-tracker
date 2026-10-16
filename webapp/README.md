@@ -58,8 +58,9 @@ node webapp/test/parity.mjs
 Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep, plus the same flags. Each
 file is also checked cut off partway through, which is what the live app sees mid-set.
 Missing fake files get skipped; make them with the three commands in
-`analysis/data/README.md`. Last run (2026-10-16, with provisional mid-set leveling): all
-eight test files, full and cut off, passed with 0.000 mm difference. Rerun it any time
+`analysis/data/README.md`. The lift comes from the file name, same as the app. Last run
+(2026-10-16, with per-lift leveling): all twelve test files, full and cut off, passed
+with 0.000 mm difference. Rerun it any time
 either version changes.
 
 ## GitHub Pages setup (once)
@@ -85,6 +86,10 @@ The empty `.nojekyll` file in the repo root tells Pages to serve files as-is.
   jitter (a few ms to 40+ ms apart in testing). The app uses the real timestamps, so
   jitter is handled. The footer shows the rate you're actually getting.
 - Uses the Screen Wake Lock API so the screen doesn't sleep mid-set.
+- **Pick the lift** above the Start button. It tells the drift fix which heights repeat
+  every rep (algorithm.md §6b, "Per lift"). Phone test assumes only the lockouts repeat.
+  The choice is remembered, goes in the saved file name (`bar-bench-...csv`), and a
+  replayed file with a lift in its name switches the picker.
 - **Hold still for a full second before tapping Stop.** Stills that long always count as
   anchors. A shorter one at the end of a long no-pause set has to pass the coasting
   check, and if it doesn't, the whole set goes uncorrected.

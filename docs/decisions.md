@@ -90,6 +90,15 @@ to 0.4%. Reps that miss the common height by 2+ cm get flagged "uneven lockout"
 instead of being trusted. Tops only for now, because squat depth varies. Bench and
 deadlift could add their bottoms later.
 
+**D11 (2026-10-16): The app asks which lift, and the drift fix uses it.**
+Phone test / squat / bench / deadlift. Every lift repeats its lockout height. Bench
+(chest) and deadlift (floor) also repeat their bottom, and barbell sets start and end
+at lockout or floor height. *Why:* on fake no-pause sets with wobbly drift, the bench
+profile cut the worst-rep error from 7.0 to 2.8 cm and deadlift from 8.9 to 4.9 cm,
+better in 10/10 sets each. Squat bottoms stay free because depth is something to
+measure, not assume. The lift goes in the CSV file name so Python knows it too, and
+the per-lift load-velocity and RPE models need it later anyway.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

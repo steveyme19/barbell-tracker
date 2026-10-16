@@ -8,8 +8,10 @@ Usage:
     python make_fake_reps.py            # 5 reps, 1 s pause at the top
     python make_fake_reps.py nopause    # 5 reps, no pause
     python make_fake_reps.py drift      # 5 reps, no pause, bias that creeps up during the set
+    python make_fake_reps.py lifts      # no-pause bench, squat and deadlift sets, wobbly drift
 
-Writes data/fake_reps_pause.csv, fake_reps_nopause.csv or fake_reps_drift.csv
+Writes data/fake_reps_pause.csv, fake_reps_nopause.csv, fake_reps_drift.csv, or
+fake_bench.csv + fake_squat.csv + fake_deadlift.csv
 """
 
 import sys
@@ -32,6 +34,40 @@ NOISE = 0.03                                # m/s^2
 TILT_DEG = 6                                # hand wobble, comes and goes
 
 rng = np.random.default_rng(2)
+
+
+def fake_lift(kind, wander=0.05, seed=3, reps=6, rom=0.45):
+    """A no-pause barbell set as a bar-mounted sensor would see it (vertical only).
+    Bench and squat start and end at lockout and go down first; deadlift starts and
+    ends on the floor. Squat depth varies a little rep to rep. The sensor bias wobbles
+    (period 7 s), which is the case a smooth drift curve struggles with."""
+    r = np.random.default_rng(seed)
+    ups = np.linspace(0.7, 1.4, reps) * (1.4 if kind == "deadlift" else 1.0)
+    ease = lambda n: 0.5 - 0.5 * np.cos(np.pi * np.arange(n) / n)
+    top_first = kind != "deadlift"
+    depth = r.normal(0, 0.015, reps) if kind == "squat" else np.zeros(reps)
+    z = [np.full(int(1.5 * FS), rom if top_first else 0.0)]
+    for k, u in enumerate(ups):
+        lo, d = depth[k], rom - depth[k]
+        if top_first:
+            z += [rom - d * ease(int(1.1 * FS)), lo + d * ease(int(u * FS))]
+        else:
+            z += [lo + d * ease(int(u * FS)), rom - d * ease(int(1.1 * FS))]
+    z.append(np.full(int(2 * FS), rom if top_first else 0.0))
+    z = np.concatenate(z)
+    tt = np.arange(len(z)) / FS
+    az = np.gradient(np.gradient(z, tt), tt)
+    sig = G + az + 0.03 + wander * np.sin(2 * np.pi * tt / 7 + r.uniform(0, 6)) + NOISE * r.standard_normal(len(tt))
+    zeros = np.zeros_like(tt)
+    return pd.DataFrame({"Time (s)": tt, "Acceleration x (m/s^2)": zeros, "Acceleration y (m/s^2)": zeros,
+                         "Acceleration z (m/s^2)": sig, "Absolute acceleration (m/s^2)": sig})
+
+
+if "lifts" in sys.argv:
+    for kind in ("bench", "squat", "deadlift"):
+        fake_lift(kind).to_csv(Path(__file__).parent / "data" / f"fake_{kind}.csv", index=False)
+        print(f"Wrote data/fake_{kind}.csv")
+    sys.exit()
 
 
 def half_sine(dur, dist, sign):

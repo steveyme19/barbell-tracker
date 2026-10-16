@@ -8,19 +8,21 @@ change many times. Raw data lets you re-run old sessions with the new version.
 - Step 0.1 phone lifts: `lift_01`, `lift_02`, ... (raw phyphox export: .zip, .xlsx or .csv
   all work)
 - Step 0.2 phone rep sets: `reps_pause.zip`, `reps_nopause.zip`
-- Web app recordings (Save CSV): `bar-YYYY-MM-DD-HHMM.csv`, 60 Hz, values rounded to
-  0.1 by the browser. `bar-2026-10-16-1835.csv` is the first one (6 no-pause reps),
+- Web app recordings (Save CSV): `bar-<lift>-YYYY-MM-DD-HHMM.csv`, 60 Hz, values rounded
+  to 0.1 by the browser. The lift in the name tells `reps.py` which heights repeat
+  (older files without one count as phone tests). `bar-2026-10-16-1835.csv` is the first one (6 no-pause reps),
   `-1844` has pauses, `-1845` is 6 no-pause reps.
 - Later bar sessions: `YYYY-MM-DD_<lift>_<load>_<notes>.csv`,
   e.g. `2026-11-03_squat_225_set2.csv`
 
 Fake data from `make_fake_lift.py` and `make_fake_reps.py` (`fake_*.csv`) is ignored by
-git since you can regenerate it any time. The parity test wants these four:
+git since you can regenerate it any time. The parity test wants these five:
 
 ```
 python make_fake_reps.py
 python make_fake_reps.py nopause
 python make_fake_reps.py drift
+python make_fake_reps.py lifts
 python demos/bench_jcurve.py --save
 ```
 
