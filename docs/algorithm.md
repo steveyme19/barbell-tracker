@@ -103,6 +103,12 @@ integrated velocity, so there's no chicken-and-egg problem.
   came out ~0.1 s late.
 - **Hand-held pauses wiggle more than a phone on a table.** The phone version uses a
   0.15 m/s² wiggle limit. The bar will probably allow tighter.
+- **Long sets break the coasting check.** After 10+ s without a pause, drift alone can
+  push the integrated speed past 0.1 m/s, so the real still at the end of the set got
+  thrown out as "coasting" and the whole set went uncorrected. Fix: stills of 1 s or
+  more skip the check (nothing coasts at dead-steady speed for a full second). The
+  opposite can happen too: drift can cancel a real coast and let a fake still in. If
+  that shows up on bar data, the coasting test needs a rethink.
 
 Where you'll find stillness: before the first rep, at lockout between reps,
 deadlifts resting on the floor, after racking.
@@ -112,6 +118,58 @@ deadlifts resting on the floor, after racking.
 For each gap between two still periods: integrate vertical acceleration to velocity,
 then remove the straight-line drift so velocity is zero at both ends. This is exactly
 step 0.1. Then integrate to position.
+
+## 6b. No-pause sets: level the lockouts
+
+The straight-line fix in §6 only knows one thing: velocity is 0 at both ends of the
+window. That cancels a constant bias exactly, but drift that changes during the set
+(it does, see the end of this file) is left over and grows over a long window.
+
+With 3+ lockouts inside one window there's more to use: **the bar gets back to the
+same height every lockout.** We don't know that height, but we know it's the same. So:
+
+1. Model the velocity drift as a smooth curve, `e(τ) = d1·τ + d2·τ² + d3·τ³`, with
+   τ = time / window length. Position drift is its integral.
+2. Velocity is 0 at the end still, so `e(1)` = the raw end velocity (fixes d1).
+3. Pick d2, d3 and the lockout height H by least squares so every lockout lands on H.
+4. Subtract the curve. With d2 = d3 = 0 this is exactly §6.
+
+Fewer lockouts get fewer powers (always at least one more lockout than unknowns), so
+the fit can't be forced through every point. Code: `level_tops()` in `reps.py`,
+`levelTops()` in `reps.js`.
+
+**Why this isn't the bottom-anchor mistake from §7:** that one pinned v = 0 where the
+drifting velocity already said it was, so it added nothing. This adds a fact the
+sensor doesn't know: lockout height repeats. Same reason stillness works.
+
+**Results (2026-10-16):**
+
+| set | ROM spread (std) | bottoms spread | worst MCV error |
+|---|---|---|---|
+| your phone, no pause, §6 only | 0.9 cm | 12.2 cm | (no truth) |
+| your phone, no pause, leveled | 0.4 cm | 2.8 cm | (no truth) |
+| fake, curved drift, §6 only | 3.7 cm | 65 cm | 18% |
+| fake, curved drift, leveled | 0.1 cm | 0.2 cm | 0.4% |
+| fake, drift wobbling every 9 s, leveled | 3.6 cm | 11.6 cm | 10% (was 15%) |
+
+The bottoms aren't in the fit, so their spread is an independent check. On the real set
+they went from 12.2 cm to 2.8 cm without being touched.
+
+**Limits:**
+
+- It assumes lockout height repeats. The fit absorbs part of a real miss, so the
+  "uneven lockout" flag (miss > 2 cm) fires at about 4 cm off. It's more forgiving than
+  that sounds: in a fake set with one lockout 3 to 6 cm short, that rep's ROM still came
+  out within 1 mm and the others within 1 cm, because a cubic can't bend fast enough to
+  chase one rep.
+- Drift that changes faster than every couple of reps can't be followed. A more
+  flexible curve (up to τ⁵) cut the 9 s wobble case from 33% to 6% error, but with
+  only lockouts to fit it overfits: a clean set with one short lockout went from 0.8%
+  to 2% worst error. More constraints first (see "Other drift ideas" below), then more
+  flexibility.
+- Only the tops are used. Squat depth varies, so bottoms can't be trusted there. For
+  bench (chest) and touch-and-go deadlifts (floor) the bottoms are fixed too and could
+  go in the fit.
 
 ## 7. Turnarounds are outputs, never anchors
 
@@ -180,7 +238,11 @@ turnaround, so the rep stays whole. Log where the stall happened as the sticking
 
 Flag a rep (show it in the app, don't hide it) when:
 
-- its window is long (*start*: > 4 s), meaning no pause and more drift
+- its window is long (*start*: > 4 s), meaning no pause and more drift. Leveled windows
+  (§6b) skip this one and get the next one instead
+- its lockout misses the common lockout height by more than 2 cm (§6b, "uneven
+  lockout"). Either the lockout really was different or the drift was too wobbly for
+  the fit. Both mean the number is less trustworthy
 - the drift correction was big (*start*: raw end velocity > 0.15 m/s)
 - the sensor clipped (hit its range limit) inside the window
 - there's an impact spike inside the window (bench touch, plates hitting floor). The
@@ -251,15 +313,49 @@ accurate. Shows uneven lockouts and shifting to one side.
 
 ## Known gap: sets with no pause at lockout
 
-If you never stop at the top, there's no stillness between reps. One window covers the
-whole set and drift has much longer to grow.
+Mostly closed by §6b for sets of 3+ reps. Still open: 1 to 2 rep sets with no pause
+(rare, and short windows drift less), lockouts that really do vary, and drift that
+wobbles faster than the reps.
 
-**Plan:** first measure how often this happens in your own training (step 2.1). Only
-fix it if your data says you need to. Options then:
+(Forward-backward integration was on the old list. Dropped: integrate forward from the
+first still, backward from the last, blend linearly, and the math collapses to exactly
+the §6 straight-line fix.)
 
-- relax the stillness thresholds just for lockout
-- integrate forward from the starting stillness and backward from the ending one, then
-  blend (each half only sees errors from its own side)
-- use the fact that each rep's lockout height should be about the same
-- add a laser distance sensor and fuse it with the IMU, which removes the need for
-  stillness anchors entirely (sensor-options.md §2, roadmap 1.6 and 2.8)
+## Other drift ideas, ranked
+
+**Where the drift comes from matters.** On your phone sets, the still periods differ by
+at most 0.03 m/s² from each other, and a model where bias ramps between the still
+values predicted the wrong end velocity (+0.13 m/s predicted, -0.02 m/s measured). So
+the error mostly appears *during motion*, not from the sensor slowly drifting. On the
+phone, one likely cause is the magnitude trick (D9): `|a|` adds sideways acceleration
+squared, `a_h² / 2g`, which is always positive. 1 m/s² of side-to-side shake adds
+about 0.05 m/s². The bar device tracks orientation with the gyro (§2), so it shouldn't
+have this one.
+
+Software, free:
+
+1. **More constraints in the §6b fit.** Bottoms for bench and touch-and-go deadlifts.
+   Rack height: the bar starts and ends on the same J-hooks, a deadlift starts and ends
+   on the floor, so start height = end height. Each is one more row in the same least
+   squares. More rows make a more flexible drift curve safe to use.
+2. **Catch micro-pauses.** Most "no-pause" lockouts still stop for ~0.1 s. With the gyro
+   confirming the bar isn't rotating, MIN_STILL can probably drop from 0.25 s to about
+   0.1 s, which turns each lockout into a full anchor. Needs bar data (roadmap 2.2).
+3. **Kalman smoother** (states: height, velocity, accel bias). Stills, lockouts and
+   laser readings all become measurements, and the bias is allowed to wander instead of
+   being a fixed cubic. More work, but it's the natural home for the laser (2.8).
+
+Fix it at the source:
+
+4. **Orientation tracking + calibration on the real device** (roadmap 1.3, 2.2). The
+   LSM6DS3TR-C's factory accel offset is ±40 mg (±0.39 m/s²) and it drifts ±0.5 mg/°C,
+   so the 6-position calibration and a fresh g estimate at every still both matter.
+
+Extra sensors:
+
+5. **Laser** (sensor-options.md §2, roadmap 1.6, 2.8). Measures height directly, so it
+   covers exactly the cases §6b can't: uneven lockouts, wobbly drift, 1-rep sets.
+6. **Barometer** (e.g. BMP581: 0.08 Pa RMS in high-res mode, about 0.7 cm of height).
+   Cheap, but moving the sensor through air at 1 m/s adds ½ρv² ≈ 0.6 Pa, about 5 cm,
+   and doors and HVAC move the room pressure too. Only useful for slow drift, if at
+   all. Low priority.

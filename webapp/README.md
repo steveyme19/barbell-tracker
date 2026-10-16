@@ -55,9 +55,10 @@ with the Python venv active and [Node](https://nodejs.org) installed:
 node webapp/test/parity.mjs
 ```
 
-Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep. First run (2026-10-16):
-all four test files passed with 0.000 mm difference. Rerun it any time either version
-changes.
+Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep, plus the same flags.
+Missing fake files get skipped; make them with the three commands in
+`analysis/data/README.md`. Last run (2026-10-16, with lockout leveling): all five test
+files passed with 0.000 mm difference. Rerun it any time either version changes.
 
 ## GitHub Pages setup (once)
 
@@ -82,8 +83,11 @@ The empty `.nojekyll` file in the repo root tells Pages to serve files as-is.
   jitter (a few ms to 40+ ms apart in testing). The app uses the real timestamps, so
   jitter is handled. The footer shows the rate you're actually getting.
 - Uses the Screen Wake Lock API so the screen doesn't sleep mid-set.
-- Live results update every 0.5 s. A rep shows up once the phone stops at the top (or
-  the set ends), because that's when its drift can be corrected.
+- Live results update every 0.5 s. A rep shows up once the phone stops for a moment (a
+  pause, or the end of the set), because that's when its drift can be corrected.
+- No-pause sets: with 3+ lockouts between two still moments, the algorithm also assumes
+  every lockout is at the same height and removes curved drift with that (algorithm.md
+  §6b). Reps that miss the common height by 2+ cm get an "uneven lockout" flag.
 
 ## History (phase 5)
 

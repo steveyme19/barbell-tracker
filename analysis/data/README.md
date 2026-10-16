@@ -11,8 +11,14 @@ change many times. Raw data lets you re-run old sessions with the new version.
 - Later bar sessions: `YYYY-MM-DD_<lift>_<load>_<notes>.csv`,
   e.g. `2026-11-03_squat_225_set2.csv`
 
-Fake data from `make_fake_lift.py` (`fake_*.csv`) is ignored by git since you can
-regenerate it any time.
+Fake data from `make_fake_lift.py` and `make_fake_reps.py` (`fake_*.csv`) is ignored by
+git since you can regenerate it any time. The parity test wants these three:
+
+```
+python make_fake_reps.py
+python make_fake_reps.py nopause
+python make_fake_reps.py drift
+```
 
 ## sets_log.csv
 

@@ -81,6 +81,15 @@ long as the motion is mostly vertical. On the real lifts it fixed the worst one
 (+10.5 cm → -1.0 cm) and fixed the fake 30° tilt case completely. The bar device
 will have a gyro and do proper orientation tracking instead (D3).
 
+**D10 (2026-10-16): No-pause sets level the lockouts.**
+With 3+ lockouts between two still periods, the drift correction assumes every lockout
+is at the same height and fits a cubic velocity drift to make that true (algorithm.md
+§6b). *Why:* on your no-pause phone set the bottoms (not in the fit) went from 12.2 cm
+spread to 2.8 cm, and on fake sets with curved drift the worst MCV error went from 18%
+to 0.4%. Reps that miss the common height by 2+ cm get flagged "uneven lockout"
+instead of being trusted. Tops only for now, because squat depth varies. Bench and
+deadlift could add their bottoms later.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

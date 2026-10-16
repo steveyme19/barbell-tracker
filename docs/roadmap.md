@@ -40,6 +40,9 @@ explain why it works. Per-rep processing is specified in
       on recorded files through `ReplaySource` and compare against Python's output on
       the same files. They have to agree (*start*: ROM within 1 mm, MCV within
       0.005 m/s). Algorithm tuning happens in Python only. JS just has to match it.
+- [x] **0.7 No-pause drift fix.** *Done 2026-10-16: lockouts leveled (algorithm.md §6b,
+      D10), in both `reps.py` and `reps.js`, parity 0.000 mm on five files. Also fixed
+      the coasting check throwing out the real end-of-set still after long sets.*
 - [ ] **0.6 (optional) Fake squats.** Tape the phone to a PVC pipe or an empty bar
       and squat. First taste of real bar motion before hardware shows up.
 
@@ -88,8 +91,11 @@ explain why it works. Per-rep processing is specified in
       plot the 2D path for every rep.
 - [ ] **2.5 Lever arm.** If an off-axis mount is still in the running, add §3
       compensation and check it with a set where you roll the bar on purpose.
-- [ ] **2.6 (only if 2.2 says you need it) No-pause sets.** See the known gap at the
-      end of algorithm.md.
+- [ ] **2.6 No-pause sets on the bar.** §6b already handles them on phone data. On bar
+      data: check how much your lockout height really varies set to set, see if the
+      "uneven lockout" flag fires on good reps, try adding bottoms (bench, deadlift) and
+      the rack-height constraint, and try shorter micro-pause detection with the gyro
+      (algorithm.md, "Other drift ideas").
 - [ ] **2.7 Decide where the algorithm runs** (O1).
 - [ ] **2.8 (optional, if 1.6 looked good) IMU + laser fusion.** Temporary laser mount
       next to the IMU, pointing at the floor past the plates. Run the complementary filter

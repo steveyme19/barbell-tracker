@@ -7,8 +7,9 @@ Each rep: up (the concentric), optional pause at the top, back down.
 Usage:
     python make_fake_reps.py            # 5 reps, 1 s pause at the top
     python make_fake_reps.py nopause    # 5 reps, no pause
+    python make_fake_reps.py drift      # 5 reps, no pause, bias that creeps up during the set
 
-Writes data/fake_reps_pause.csv or data/fake_reps_nopause.csv
+Writes data/fake_reps_pause.csv, fake_reps_nopause.csv or fake_reps_drift.csv
 """
 
 import sys
@@ -21,10 +22,12 @@ REPS = 5
 ROM = 0.40                                  # m
 UP_TIMES = [0.9, 1.0, 1.1, 1.3, 1.6]        # s, each rep slower (fatigue)
 DOWN_TIME = 1.0                             # s
-PAUSE = 0.0 if "nopause" in sys.argv else 1.0
+DRIFT = "drift" in sys.argv
+PAUSE = 0.0 if ("nopause" in sys.argv or DRIFT) else 1.0
 FS = 400                                    # Hz, like your phone
 G = 9.81
 BIAS = 0.05                                 # m/s^2 on z
+BIAS_CREEP = 0.06 if DRIFT else 0.0         # m/s^2 extra bias by the end of the set
 NOISE = 0.03                                # m/s^2
 TILT_DEG = 6                                # hand wobble, comes and goes
 
@@ -56,7 +59,8 @@ a = np.gradient(v, t)
 moving = np.convolve((np.abs(v) > 0).astype(float), np.ones(FS // 2) / (FS // 2), mode="same")
 theta = np.radians(TILT_DEG) * np.sin(2 * np.pi * t / 2.3) * np.clip(moving, 0, 1)
 f_vert = G + a
-az = f_vert * np.cos(theta) + BIAS + NOISE * rng.standard_normal(len(t))
+creep = BIAS_CREEP * np.clip((t - 1.5) / (t[-1] - 3.5), 0, 1) ** 2   # curved, not a straight line
+az = f_vert * np.cos(theta) + BIAS + creep + NOISE * rng.standard_normal(len(t))
 ay = f_vert * np.sin(theta) + NOISE * rng.standard_normal(len(t))
 ax = NOISE * rng.standard_normal(len(t))
 
@@ -67,7 +71,7 @@ df = pd.DataFrame({
     "Acceleration z (m/s^2)": az,
     "Absolute acceleration (m/s^2)": np.sqrt(ax**2 + ay**2 + az**2),
 })
-name = "fake_reps_pause.csv" if PAUSE else "fake_reps_nopause.csv"
+name = "fake_reps_drift.csv" if DRIFT else ("fake_reps_pause.csv" if PAUSE else "fake_reps_nopause.csv")
 out = Path(__file__).parent / "data" / name
 df.to_csv(out, index=False)
 print(f"Wrote data/{name}: {REPS} reps, ROM {ROM * 100:.0f} cm, pause {PAUSE} s")

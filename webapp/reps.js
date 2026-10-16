@@ -10,9 +10,13 @@ export const SETTINGS = {
   STILL_DEV: 0.3,        // m/s^2: max |average - g| inside the window
   MIN_STILL: 0.25,       // s: a still period has to last at least this long
   STILL_MAX_SPEED: 0.1,  // m/s: faster than this during a "still" period = coasting
+  LONG_STILL: 1.0,       // s: stills at least this long are real (nothing coasts that long)
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
+  LEVEL_MIN_TOPS: 3,     // lockouts needed inside one window before we level them
+  LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve
+  LEVEL_FLAG: 0.02,      // m: flag a rep whose lockout misses the common height by this much
 };
 
 /** Total acceleration, sqrt(x^2 + y^2 + z^2). Tilt-proof vertical signal (D9). */
@@ -92,6 +96,10 @@ export function findStillRuns(aRaw, g, fs, S = SETTINGS) {
 export function confirmStillRuns(a, t, runs, S = SETTINGS) {
   const confirmed = [runs[0]];
   for (const [s, e] of runs.slice(1)) {
+    if (t[e] - t[s] >= S.LONG_STILL) {   // long stills skip the coasting test
+      confirmed.push([s, e]);
+      continue;
+    }
     const i0 = confirmed[confirmed.length - 1][1];
     const seg = a.slice(i0, e + 1);
     const tw = t.slice(i0, e + 1).map((x) => x - t[i0]);
@@ -155,6 +163,78 @@ export function turningPoints(x, minMove) {
 }
 
 /** One rep per bottom-to-top move. Boundaries come from v = 0, never a threshold. */
+/** Least squares for a few unknowns: solve (A^T A) p = A^T b by Gaussian elimination. */
+function leastSquares(A, b) {
+  const n = A[0].length;
+  const M = Array.from({ length: n }, () => new Float64Array(n + 1));
+  for (let r = 0; r < A.length; r++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) M[i][j] += A[r][i] * A[r][j];
+      M[i][n] += A[r][i] * b[r];
+    }
+  }
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / M[c][c];
+      for (let j = c; j <= n; j++) M[r][j] -= f * M[c][j];
+    }
+  }
+  const sol = new Float64Array(n);
+  for (let i = n - 1; i >= 0; i--) {
+    let acc = M[i][n];
+    for (let j = i + 1; j < n; j++) acc -= M[i][j] * sol[j];
+    sol[i] = acc / M[i][i];
+  }
+  return sol;
+}
+
+/**
+ * No-pause sets: remove curved drift by assuming every lockout is at the same height.
+ * Velocity drift e(tau) = d1 tau + d2 tau^2 + d3 tau^3 (tau = time / window length),
+ * e(1) = raw end velocity, d2..d3 and the lockout height H by least squares.
+ * See level_tops() in reps.py for the full explanation.
+ */
+export function levelTops(a, t, v, windows, S = SETTINGS) {
+  const x = integrate(v, t);
+  const { highs } = turningPoints(x, S.MIN_ROM);
+  for (const w of windows) {
+    const { i0, i1 } = w;
+    const tops = highs.filter((h) => h > i0 && h < i1);
+    if (!w.anchored || tops.length < S.LEVEL_MIN_TOPS) continue;
+    const deg = Math.min(S.LEVEL_MAX_DEG, tops.length - 1);
+    const tw = t.slice(i0, i1 + 1).map((x) => x - t[i0]);
+    const T = tw[tw.length - 1];
+    const vRaw = integrate(a.slice(i0, i1 + 1), tw);
+    const xRaw = integrate(vRaw, tw);
+    const eEnd = vRaw[vRaw.length - 1];
+    const rows = [];
+    const rhs = [];
+    for (const h of tops) {
+      const tau = tw[h - i0] / T;
+      const row = [];
+      for (let k = 2; k <= deg; k++) row.push(T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2));
+      row.push(1);
+      rows.push(row);
+      rhs.push(xRaw[h - i0] - (T * eEnd * tau ** 2) / 2);
+    }
+    const sol = leastSquares(rows, rhs);
+    const d = [eEnd];                                   // d1 = eEnd - d2 - ... - d_deg
+    for (let k = 0; k < sol.length - 1; k++) { d[0] -= sol[k]; d.push(sol[k]); }
+    for (let i = 0; i < tw.length; i++) {
+      const tau = tw[i] / T;
+      let e = 0;
+      for (let k = 0; k < d.length; k++) e += d[k] * tau ** (k + 1);
+      v[i0 + i] = vRaw[i] - e;
+    }
+    w.leveled = true;
+    w.topHeight = sol[sol.length - 1];                // H, relative to the height at i0
+  }
+  return v;
+}
+
 export function findReps(x, v, t, windows, S = SETTINGS) {
   const { lows, highs } = turningPoints(x, S.MIN_ROM);
   const reps = [];
@@ -175,11 +255,16 @@ export function findReps(x, v, t, windows, S = SETTINGS) {
     for (const w of windows) {
       if (w.i0 <= end && w.i1 >= start) {
         if (!w.anchored) flags.add("no end anchor");
-        if (w.dur > S.LONG_WINDOW) flags.add(`long window ${w.dur.toFixed(1)}s`);
+        if (w.leveled) {
+          if (Math.abs(x[hi] - (x[w.i0] + w.topHeight)) > S.LEVEL_FLAG) flags.add("uneven lockout");
+        } else if (w.dur > S.LONG_WINDOW) {
+          flags.add(`long window ${w.dur.toFixed(1)}s`);
+        }
         if (w.anchored && Math.abs(w.rawEnd) > S.BIG_CORRECTION) flags.add("big drift correction");
       }
     }
-    reps.push({ start, end, rom, dur, mcv: rom / dur, peak, flags: [...flags].sort() });
+    const leveled = windows.some((w) => w.leveled && w.i0 <= end && w.i1 >= start);
+    reps.push({ start, end, rom, dur, mcv: rom / dur, peak, leveled, flags: [...flags].sort() });
   }
   return reps;
 }
@@ -211,6 +296,7 @@ export function analyze(tIn, aRaw, S = SETTINGS) {
   runs = confirmStillRuns(a, t, runs, S);
 
   const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
+  levelTops(a, t, v, windows, S);
   const x = integrate(v, t);
   const reps = findReps(x, v, t, windows, S);
   return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length };

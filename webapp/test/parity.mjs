@@ -21,6 +21,7 @@ const MCV_TOL = 0.005;
 const defaults = [
   "analysis/data/fake_reps_pause.csv",
   "analysis/data/fake_reps_nopause.csv",
+  "analysis/data/fake_reps_drift.csv",
   "analysis/data/reps_pause.zip",
   "analysis/data/reps_nopause.zip",
 ];
@@ -50,6 +51,8 @@ for (const file of files) {
       const p = py.reps[k];
       if (Math.abs(r.rom - p.rom) > ROM_TOL) problems.push(`rep ${k + 1} ROM ${r.rom.toFixed(4)} vs ${p.rom.toFixed(4)}`);
       if (Math.abs(r.mcv - p.mcv) > MCV_TOL) problems.push(`rep ${k + 1} MCV ${r.mcv.toFixed(4)} vs ${p.mcv.toFixed(4)}`);
+      if (r.leveled !== p.leveled) problems.push(`rep ${k + 1} leveled JS ${r.leveled} vs Python ${p.leveled}`);
+      if (r.flags.join() !== p.flags.join()) problems.push(`rep ${k + 1} flags JS [${r.flags}] vs Python [${p.flags}]`);
     });
   }
   if (problems.length) {

@@ -8,8 +8,10 @@ How it works (docs/algorithm.md sections 5 to 8):
   1. Find the still periods. These are the drift anchors.
   2. Integrate acceleration between each pair of still periods, then remove the
      straight-line drift so velocity is zero at both anchors.
-  3. Integrate velocity to height and find the turnarounds (bottoms and tops).
-  4. Each bottom-to-top stretch is one rep.
+  3. No-pause sets (3+ lockouts between two still periods): also remove curved
+     drift by assuming every lockout is at the same height (section 6b).
+  4. Integrate velocity to height and find the turnarounds (bottoms and tops).
+  5. Each bottom-to-top stretch is one rep.
 
 Usage:
     python reps.py data/reps_pause.zip
@@ -32,9 +34,13 @@ STILL_STD = 0.15        # m/s^2: max wiggle inside the window (hand-held pauses 
 STILL_DEV = 0.3         # m/s^2: max |average - g| inside the window
 MIN_STILL = 0.25        # s: a still period has to last at least this long
 STILL_MAX_SPEED = 0.1   # m/s: faster than this during a "still" period = coasting, not still
+LONG_STILL = 1.0        # s: stills at least this long are real (nothing coasts dead steady that long)
 MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
+LEVEL_MIN_TOPS = 3      # lockouts needed inside one window before we level them
+LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve
+LEVEL_FLAG = 0.02       # m: flag a rep whose lockout misses the common height by this much
 
 
 def rolling(y, n):
@@ -73,9 +79,15 @@ def confirm_still_runs(a, t, runs):
     period, is the phone actually going (almost) nowhere during this one? Over a
     few seconds drift is small, so real stillness shows up as ~0 velocity and
     coasting shows up as a clear speed.
+
+    Long stills skip the test. After a long no-pause set, drift alone can be
+    over 0.1 m/s, which used to throw out the real still at the end of the set.
     """
     confirmed = [runs[0]]               # the recording starts at rest
     for s, e in runs[1:]:
+        if t[e] - t[s] >= LONG_STILL:
+            confirmed.append((s, e))
+            continue
         i0 = confirmed[-1][1]
         tw = t[i0:e + 1] - t[i0]
         v_raw = integrate(a[i0:e + 1], tw)
@@ -107,6 +119,49 @@ def velocity_between_anchors(a, t, fs, runs):
         v[last:] = integrate(tail, tw)
         windows.append(dict(i0=last, i1=len(t) - 1, dur=tw[-1], raw_end=np.nan, anchored=False))
     return v, windows
+
+
+def level_tops(a, t, v, windows):
+    """No-pause sets: remove curved drift by assuming every lockout is at the same height.
+
+    The straight-line fix only knows velocity is 0 at both ends of a window. With
+    3+ lockouts inside a window we know more: the bar got back to the same height
+    H each time (H unknown). So model the velocity drift as a smooth curve
+
+        e(tau) = d1*tau + d2*tau^2 + d3*tau^3     (tau = time / window length)
+
+    with e = raw end velocity at tau = 1 (velocity is 0 at the end still), and pick
+    d2, d3 and H by least squares so every lockout lands at H. With d2 = d3 = 0 this
+    is exactly the straight-line fix. Fewer lockouts = fewer powers (always one
+    more lockout than unknowns, so the fit can't be forced through every point).
+    """
+    x = integrate(v, t)
+    _, highs = turning_points(x, MIN_ROM)
+    for w in windows:
+        i0, i1 = w["i0"], w["i1"]
+        tops = [h for h in highs if i0 < h < i1]
+        if not w["anchored"] or len(tops) < LEVEL_MIN_TOPS:
+            continue
+        deg = min(LEVEL_MAX_DEG, len(tops) - 1)
+        tw = t[i0:i1 + 1] - t[i0]
+        T = tw[-1]
+        v_raw = integrate(a[i0:i1 + 1], tw)
+        x_raw = integrate(v_raw, tw)
+        e_end = v_raw[-1]
+        # Position drift is the integral of e: T * sum d_k tau^(k+1)/(k+1).
+        # Substituting d1 = e_end - d2 - d3 leaves unknowns d2..d_deg and H.
+        rows, rhs = [], []
+        for h in tops:
+            tau = tw[h - i0] / T
+            rows.append([T * (tau ** (k + 1) / (k + 1) - tau ** 2 / 2) for k in range(2, deg + 1)] + [1.0])
+            rhs.append(x_raw[h - i0] - T * e_end * tau ** 2 / 2)
+        sol = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
+        d = [e_end - sol[:-1].sum()] + list(sol[:-1])           # d1, d2, ..., d_deg
+        tau = tw / T
+        v[i0:i1 + 1] = v_raw - sum(dk * tau ** k for k, dk in enumerate(d, start=1))
+        w["leveled"] = True
+        w["top_height"] = sol[-1]           # H, relative to the height at i0
+    return v
 
 
 def turning_points(x, min_move):
@@ -155,12 +210,16 @@ def find_reps(x, v, t, windows):
             if w["i0"] <= end and w["i1"] >= start:
                 if not w["anchored"]:
                     flags.append("no end anchor")
-                if w["dur"] > LONG_WINDOW:
+                if w.get("leveled"):
+                    if abs(x[hi] - (x[w["i0"]] + w["top_height"])) > LEVEL_FLAG:
+                        flags.append("uneven lockout")
+                elif w["dur"] > LONG_WINDOW:
                     flags.append(f"long window {w['dur']:.1f}s")
                 if w["anchored"] and abs(w["raw_end"]) > BIG_CORRECTION:
                     flags.append("big drift correction")
+        leveled = any(w.get("leveled") and w["i0"] <= end and w["i1"] >= start for w in windows)
         reps.append(dict(start=start, end=end, rom=rom, dur=dur, mcv=rom / dur,
-                         peak=v[start:end + 1].max(), flags=sorted(set(flags))))
+                         peak=v[start:end + 1].max(), leveled=leveled, flags=sorted(set(flags))))
     return reps
 
 
@@ -188,6 +247,7 @@ def main():
         print(f"(ignored {n_candidates - len(runs)} 'still' periods that were really steady motion)")
 
     v, windows = velocity_between_anchors(a, t, fs, runs)
+    v = level_tops(a, t, v, windows)
     x = integrate(v, t)
     reps = find_reps(x, v, t, windows)
 
@@ -197,17 +257,18 @@ def main():
             "fs": float(fs), "g": float(g), "runs": [[int(s), int(e)] for s, e in runs],
             "reps": [{"start": int(r["start"]), "end": int(r["end"]), "rom": float(r["rom"]),
                       "dur": float(r["dur"]), "mcv": float(r["mcv"]), "peak": float(r["peak"]),
-                      "flags": r["flags"]} for r in reps],
+                      "leveled": r["leveled"], "flags": r["flags"]} for r in reps],
         }))
         return
 
     print(f"{path.name}: {t[-1]:.1f} s at {fs:.0f} Hz, g = {g:.3f} m/s^2")
+    n_lev = sum(1 for w in windows if w.get("leveled"))
     print(f"{len(runs)} still periods, {len(windows)} integration windows "
-          f"(longest {max(w['dur'] for w in windows):.1f} s)\n" if windows else "")
-    print(" rep |  ROM   | up time |  MCV   | peak v | flags")
+          f"(longest {max(w['dur'] for w in windows):.1f} s, {n_lev} leveled)\n" if windows else "")
+    print(" rep |  ROM   | up time |  MCV   | peak v | flags  (L = lockouts leveled)")
     for k, r in enumerate(reps, 1):
         print(f" {k:3d} | {r['rom'] * 100:5.1f}cm | {r['dur']:5.2f} s | {r['mcv']:.2f}   | "
-              f"{r['peak']:.2f}   | {', '.join(r['flags'])}")
+              f"{r['peak']:.2f}   | {'L ' if r['leveled'] else ''}{', '.join(r['flags'])}")
     if reps:
         roms = np.array([r["rom"] for r in reps]) * 100
         mcvs = np.array([r["mcv"] for r in reps])
