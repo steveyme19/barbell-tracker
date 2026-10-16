@@ -57,8 +57,9 @@ node webapp/test/parity.mjs
 
 Pass = ROM within 1 mm and MCV within 0.005 m/s on every rep, plus the same flags.
 Missing fake files get skipped; make them with the three commands in
-`analysis/data/README.md`. Last run (2026-10-16, with lockout leveling): all five test
-files passed with 0.000 mm difference. Rerun it any time either version changes.
+`analysis/data/README.md`. Last run (2026-10-16, with lockout leveling and the local
+coasting check): all six test files passed with 0.000 mm difference. Rerun it any time
+either version changes.
 
 ## GitHub Pages setup (once)
 
@@ -83,6 +84,11 @@ The empty `.nojekyll` file in the repo root tells Pages to serve files as-is.
   jitter (a few ms to 40+ ms apart in testing). The app uses the real timestamps, so
   jitter is handled. The footer shows the rate you're actually getting.
 - Uses the Screen Wake Lock API so the screen doesn't sleep mid-set.
+- **Hold still for a full second before tapping Stop.** Stills that long always count as
+  anchors. A shorter one at the end of a long no-pause set has to pass the coasting
+  check, and if it doesn't, the whole set goes uncorrected.
+- Browser motion data comes in at about 60 Hz with every value rounded to 0.1 (m/s² and
+  °/s). Fine for this, but it's why the phone is a prototype and not the product.
 - Live results update every 0.5 s. A rep shows up once the phone stops for a moment (a
   pause, or the end of the set), because that's when its drift can be corrected.
 - No-pause sets: with 3+ lockouts between two still moments, the algorithm also assumes

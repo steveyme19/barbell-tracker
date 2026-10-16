@@ -11,6 +11,9 @@ export const SETTINGS = {
   MIN_STILL: 0.25,       // s: a still period has to last at least this long
   STILL_MAX_SPEED: 0.1,  // m/s: faster than this during a "still" period = coasting
   LONG_STILL: 1.0,       // s: stills at least this long are real (nothing coasts that long)
+  COAST_TRUST: 4.0,      // s: past this long since the last anchor, drift is too big for the speed check
+  COAST_LOOK: 0.5,       // s: how far before and after a "still" period to look
+  COAST_DV: 0.1,         // m/s: speed change on both sides that marks a coast
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
@@ -93,22 +96,41 @@ export function findStillRuns(aRaw, g, fs, S = SETTINGS) {
 }
 
 /** Drop "still" periods that are really steady motion (accelerometers can't tell). */
-export function confirmStillRuns(a, t, runs, S = SETTINGS) {
+/** Change in velocity from sample i to sample j (clipped to the recording). */
+function speedChange(a, t, i, j) {
+  i = Math.max(i, 0);
+  j = Math.min(j, t.length - 1);
+  if (j <= i) return 0;
+  const v = integrate(a.slice(i, j + 1), t.slice(i, j + 1).map((x) => x - t[i]));
+  return v[v.length - 1];
+}
+
+/** Throw out "still" periods that are really coasting. See confirm_still_runs() in reps.py. */
+export function confirmStillRuns(a, t, fs, runs, S = SETTINGS) {
+  const n = Math.trunc(S.COAST_LOOK * fs);
   const confirmed = [runs[0]];
   for (const [s, e] of runs.slice(1)) {
-    if (t[e] - t[s] >= S.LONG_STILL) {   // long stills skip the coasting test
+    if (t[e] - t[s] >= S.LONG_STILL) {   // long stills are always real
       confirmed.push([s, e]);
       continue;
     }
     const i0 = confirmed[confirmed.length - 1][1];
-    const seg = a.slice(i0, e + 1);
-    const tw = t.slice(i0, e + 1).map((x) => x - t[i0]);
-    const vRaw = integrate(seg, tw);
-    let from = s - i0;
-    if (from < 0) from = Math.max(vRaw.length + from, 0);   // same as Python slicing
-    let sum = 0;
-    for (let k = from; k < vRaw.length; k++) sum += Math.abs(vRaw[k]);
-    if (sum / (vRaw.length - from) < S.STILL_MAX_SPEED) confirmed.push([s, e]);
+    let still;
+    if (t[s] - t[i0] < S.COAST_TRUST) {   // recent anchor: check the speed directly
+      const seg = a.slice(i0, e + 1);
+      const tw = t.slice(i0, e + 1).map((x) => x - t[i0]);
+      const vRaw = integrate(seg, tw);
+      let from = s - i0;
+      if (from < 0) from = Math.max(vRaw.length + from, 0);   // same as Python slicing
+      let sum = 0;
+      for (let k = from; k < vRaw.length; k++) sum += Math.abs(vRaw[k]);
+      still = sum / (vRaw.length - from) < S.STILL_MAX_SPEED;
+    } else {                              // old anchor: speeding up then slowing down = coast
+      const before = speedChange(a, t, s - n, s);
+      const after = speedChange(a, t, e, e + n);
+      still = !(before * after < 0 && Math.min(Math.abs(before), Math.abs(after)) > S.COAST_DV);
+    }
+    if (still) confirmed.push([s, e]);
   }
   return confirmed;
 }
@@ -293,7 +315,7 @@ export function analyze(tIn, aRaw, S = SETTINGS) {
   if (!runs.length) return { error: "No still periods found. Start with the phone still.", fs };
   const a = Float64Array.from(aRaw, (x) => x - g);
   const nCandidates = runs.length;
-  runs = confirmStillRuns(a, t, runs, S);
+  runs = confirmStillRuns(a, t, fs, runs, S);
 
   const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
   levelTops(a, t, v, windows, S);

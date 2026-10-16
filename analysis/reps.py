@@ -35,6 +35,9 @@ STILL_DEV = 0.3         # m/s^2: max |average - g| inside the window
 MIN_STILL = 0.25        # s: a still period has to last at least this long
 STILL_MAX_SPEED = 0.1   # m/s: faster than this during a "still" period = coasting, not still
 LONG_STILL = 1.0        # s: stills at least this long are real (nothing coasts dead steady that long)
+COAST_TRUST = 4.0       # s: past this long since the last anchor, drift is too big for the speed check
+COAST_LOOK = 0.5        # s: how far before and after a "still" period to look for speeding up / slowing down
+COAST_DV = 0.1          # m/s: speed change on both sides that marks a coast
 MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
@@ -71,27 +74,45 @@ def find_still_runs(a_raw, g, fs):
     return runs
 
 
-def confirm_still_runs(a, t, runs):
+def speed_change(a, t, i, j):
+    """Change in velocity from sample i to sample j (clipped to the recording)."""
+    i, j = max(i, 0), min(j, len(t) - 1)
+    if j <= i:
+        return 0.0
+    return integrate(a[i:j + 1], t[i:j + 1] - t[i])[-1]
+
+
+def confirm_still_runs(a, t, fs, runs):
     """Throw out "still" periods that are really the phone coasting at steady speed.
 
     An accelerometer can't tell resting from moving at constant velocity: both
-    read zero acceleration. So check: integrating from the last confirmed still
-    period, is the phone actually going (almost) nowhere during this one? Over a
-    few seconds drift is small, so real stillness shows up as ~0 velocity and
-    coasting shows up as a clear speed.
+    read zero acceleration. Two checks, depending on how much drift there could be:
 
-    Long stills skip the test. After a long no-pause set, drift alone can be
-    over 0.1 m/s, which used to throw out the real still at the end of the set.
+    - Last anchor was recent (< COAST_TRUST): integrate from it. Real stillness
+      shows up as ~0 velocity, coasting as a clear speed.
+    - Last anchor was long ago: drift alone can be bigger than a coast, so look
+      locally instead. A coast is entered by speeding up and left by slowing down
+      (or the reverse on the way down). A real stop is entered and left the same
+      way (stop at the top, then go down) or from/to rest.
+
+    Stills of LONG_STILL or more are always real.
     """
+    n = int(COAST_LOOK * fs)
     confirmed = [runs[0]]               # the recording starts at rest
     for s, e in runs[1:]:
         if t[e] - t[s] >= LONG_STILL:
             confirmed.append((s, e))
             continue
         i0 = confirmed[-1][1]
-        tw = t[i0:e + 1] - t[i0]
-        v_raw = integrate(a[i0:e + 1], tw)
-        if np.abs(v_raw[s - i0:]).mean() < STILL_MAX_SPEED:
+        if t[s] - t[i0] < COAST_TRUST:
+            tw = t[i0:e + 1] - t[i0]
+            v_raw = integrate(a[i0:e + 1], tw)
+            still = np.abs(v_raw[s - i0:]).mean() < STILL_MAX_SPEED
+        else:
+            before = speed_change(a, t, s - n, s)
+            after = speed_change(a, t, e, e + n)
+            still = not (before * after < 0 and min(abs(before), abs(after)) > COAST_DV)
+        if still:
             confirmed.append((s, e))
     return confirmed
 
@@ -242,7 +263,7 @@ def main():
     runs = find_still_runs(a_raw, g, fs)
     a = a_raw - g
     n_candidates = len(runs)
-    runs = confirm_still_runs(a, t, runs)
+    runs = confirm_still_runs(a, t, fs, runs)
     if len(runs) < n_candidates and not as_json:
         print(f"(ignored {n_candidates - len(runs)} 'still' periods that were really steady motion)")
 

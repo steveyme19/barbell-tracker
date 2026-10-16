@@ -105,10 +105,16 @@ integrated velocity, so there's no chicken-and-egg problem.
   0.15 m/s² wiggle limit. The bar will probably allow tighter.
 - **Long sets break the coasting check.** After 10+ s without a pause, drift alone can
   push the integrated speed past 0.1 m/s, so the real still at the end of the set got
-  thrown out as "coasting" and the whole set went uncorrected. Fix: stills of 1 s or
-  more skip the check (nothing coasts at dead-steady speed for a full second). The
-  opposite can happen too: drift can cancel a real coast and let a fake still in. If
-  that shows up on bar data, the coasting test needs a rethink.
+  thrown out as "coasting" and the whole set went uncorrected (first web app recording,
+  2026-10-16: reps came out 78 to 131 cm). Drift can also cancel a real coast and let a
+  fake still in. Fix, used only when the last anchor is more than 4 s back: look
+  locally instead of integrating. A coast is entered by speeding up and left by slowing
+  down (or the reverse on the way down), so the speed change over 0.5 s before and
+  after has opposite signs. A real stop is entered and left the same way (stop at the
+  top, then go down) or from/to rest. On every recording so far this agrees with the
+  old check wherever drift was small, and it fixed that set (68.9 ± 1.6 cm). Stills of
+  1 s or more are always accepted. Known blind spot: a slow grinder that coasts for a
+  while before the candidate, so there's no speed-up inside the 0.5 s look-back.
 
 Where you'll find stillness: before the first rep, at lockout between reps,
 deadlifts resting on the floor, after racking.
@@ -337,7 +343,11 @@ Software, free:
 1. **More constraints in the §6b fit.** Bottoms for bench and touch-and-go deadlifts.
    Rack height: the bar starts and ends on the same J-hooks, a deadlift starts and ends
    on the floor, so start height = end height. Each is one more row in the same least
-   squares. More rows make a more flexible drift curve safe to use.
+   squares. More rows make a more flexible drift curve safe to use. *Tried on the first
+   web app set:* counting the still at each end of the window as a lockout made it
+   worse (ROM spread 1.6 → 1.9 cm), because holding the phone still you don't hold it
+   at the exact height you turn around at. A racked bar might be different, so retest
+   on bar data.
 2. **Catch micro-pauses.** Most "no-pause" lockouts still stop for ~0.1 s. With the gyro
    confirming the bar isn't rotating, MIN_STILL can probably drop from 0.25 s to about
    0.1 s, which turns each lockout into a full anchor. Needs bar data (roadmap 2.2).
