@@ -330,6 +330,32 @@ def lift_from_name(name):
     return LIFT
 
 
+def analyze(t, a_raw, lift=LIFT):
+    """The whole per-set pipeline (same as analyze() in webapp/reps.js). t in seconds
+    (any start), a_raw = vertical signal in m/s^2 incl. gravity. Raises ValueError if
+    there's no still period to anchor on."""
+    t = t - t[0]
+    fs = 1 / np.median(np.diff(t))
+
+    # Gravity: rough guess from the first 0.3 s, then refine using every still period.
+    g = np.median(a_raw[t < 0.3])
+    runs = find_still_runs(a_raw, g, fs)
+    if not runs:
+        raise ValueError("No still periods found. Start and end the recording with the phone still.")
+    g = np.mean(np.concatenate([a_raw[s:e + 1] for s, e in runs]))
+    runs = find_still_runs(a_raw, g, fs)
+    a = a_raw - g
+    n_candidates = len(runs)
+    runs = confirm_still_runs(a, t, fs, runs)
+
+    v, windows = velocity_between_anchors(a, t, fs, runs)
+    v = level_heights(a, t, v, windows, lift)
+    x = integrate(v, t)
+    reps = find_reps(x, v, t, windows)
+    return dict(t=t, fs=fs, g=g, a=a, runs=runs, v=v, x=x, windows=windows, reps=reps,
+                ignored=n_candidates - len(runs))
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
@@ -342,26 +368,13 @@ def main():
     if until is not None:
         keep = (t - t[0]) < until
         t, a_raw = t[keep], a_raw[keep]
-    t = t - t[0]
-    fs = 1 / np.median(np.diff(t))
-
-    # Gravity: rough guess from the first 0.3 s, then refine using every still period.
-    g = np.median(a_raw[t < 0.3])
-    runs = find_still_runs(a_raw, g, fs)
-    if not runs:
-        sys.exit("No still periods found. Start and end the recording with the phone still.")
-    g = np.mean(np.concatenate([a_raw[s:e + 1] for s, e in runs]))
-    runs = find_still_runs(a_raw, g, fs)
-    a = a_raw - g
-    n_candidates = len(runs)
-    runs = confirm_still_runs(a, t, fs, runs)
-    if len(runs) < n_candidates and not as_json:
-        print(f"(ignored {n_candidates - len(runs)} 'still' periods that were really steady motion)")
-
-    v, windows = velocity_between_anchors(a, t, fs, runs)
-    v = level_heights(a, t, v, windows, lift)
-    x = integrate(v, t)
-    reps = find_reps(x, v, t, windows)
+    try:
+        r = analyze(t, a_raw, lift)
+    except ValueError as err:
+        sys.exit(str(err))
+    t, fs, g, a, runs, v, x, windows, reps = (r[k] for k in ("t", "fs", "g", "a", "runs", "v", "x", "windows", "reps"))
+    if r["ignored"] and not as_json:
+        print(f"(ignored {r['ignored']} 'still' periods that were really steady motion)")
 
     if as_json:
         import json

@@ -25,7 +25,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Phone accelerometer + gyro at the fastest rate the phone allows (docs/android.md A2),
- * plus keepScreenOn and saveText for sets (A3).
+ * plus keepScreenOn, saveText and deleteText (A3, session mode).
  *
  * Emits "samples" events, each a batch of about 50 ms:
  *   { t: [...], ax: [...], ay: [...], az: [...], gx: [...], gy: [...], gz: [...] }
@@ -105,27 +105,22 @@ public class BarSensorsPlugin extends Plugin implements SensorEventListener {
     }
 
     /**
-     * Save a text file to Documents/BarTracker/ on the phone (A3). { name, text } ->
-     * { uri, path }. Android 11+ lets an app create files in the shared Documents folder
-     * without a storage permission. (Our own method instead of @capacitor/filesystem,
-     * which needs a Java 21 toolchain this PC doesn't have, see D16.)
+     * Save a text file to Documents/BarTracker/[folder/]name on the phone (A3, session
+     * mode). { name, text, folder? } -> { uri, path }. Android 11+ lets an app create
+     * files in the shared Documents folder without a storage permission. (Our own method
+     * instead of @capacitor/filesystem, which needs a Java 21 toolchain, see D16.)
      */
     @PluginMethod
     public void saveText(PluginCall call) {
-        String name = call.getString("name");
-        String text = call.getString("text", "");
-        if (name == null || name.contains("/") || name.contains("\\")) {
-            call.reject("Bad file name.");
-            return;
-        }
-        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BarTracker");
-        File file = new File(dir, name);
+        File file = target(call);
+        if (file == null) return;
+        File dir = file.getParentFile();
         if (!dir.isDirectory() && !dir.mkdirs()) {
             call.reject("Couldn't create " + dir);
             return;
         }
         try (FileOutputStream out = new FileOutputStream(file)) {
-            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.write(call.getString("text", "").getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             call.reject("Couldn't write " + file + ": " + e.getMessage());
             return;
@@ -134,6 +129,34 @@ public class BarSensorsPlugin extends Plugin implements SensorEventListener {
         res.put("uri", Uri.fromFile(file).toString());   // the share plugin turns this into a content:// URI
         res.put("path", file.getAbsolutePath());
         call.resolve(res);
+    }
+
+    /** Delete a file saveText wrote (a set re-saved under a new lift name). { name, folder? } */
+    @PluginMethod
+    public void deleteText(PluginCall call) {
+        File file = target(call);
+        if (file == null) return;
+        JSObject res = new JSObject();
+        res.put("deleted", file.exists() && file.delete());
+        call.resolve(res);
+    }
+
+    /** Documents/BarTracker/[folder/]name from the call, or null (and rejected) if unsafe. */
+    private File target(PluginCall call) {
+        String name = call.getString("name");
+        String folder = call.getString("folder", "");
+        if (!safe(name) || !(folder.isEmpty() || safe(folder))) {
+            call.reject("Bad file or folder name.");
+            return null;
+        }
+        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BarTracker");
+        if (!folder.isEmpty()) dir = new File(dir, folder);
+        return new File(dir, name);
+    }
+
+    // One plain path piece: no slashes, no "..".
+    private static boolean safe(String s) {
+        return s != null && !s.isEmpty() && !s.contains("/") && !s.contains("\\") && !s.equals("..") && !s.equals(".");
     }
 
     @Override

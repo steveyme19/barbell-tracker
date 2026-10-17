@@ -29,6 +29,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* even on elements styled display: flex */
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body {
   font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -51,7 +52,14 @@ h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; te
 .pill.wait { color: var(--warn); border-color: var(--warn); }
 .pill.err { color: var(--bad); border-color: var(--bad); }
 
-.hero { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; }
+.hero { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 2px solid transparent; }
+/* Readable from a few meters with the phone on the bar: the state colors the card. */
+.hero[data-state="set"] { border-color: var(--accent); }
+.hero[data-state="rest"] { border-color: var(--good); }
+.hero[data-state="rest"] .big { color: var(--good); font-size: 88px; }
+.hero[data-state="idle"] .big, .hero[data-state="ready"] .big { font-size: 30px; line-height: 1.2; margin: 6px 0; }
+.hero[data-state="idle"] .stats, .hero[data-state="ready"] .stats { display: none; }
+.sub { color: var(--muted); font-size: 13px; margin-top: 10px; }
 .label { color: var(--muted); font-size: 13px; }
 .big { font-size: 64px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .big small { font-size: 18px; color: var(--muted); font-weight: 500; margin-left: 6px; }
@@ -96,3 +104,32 @@ th:first-child, td:first-child { text-align: left; }
 td.flag { color: var(--warn); font-size: 11px; text-align: left; }
 
 footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0; }
+
+button.small { flex: 0 0 auto; min-height: 36px; font-size: 13px; padding: 0 12px; border-radius: 10px; }
+select {
+  min-height: 36px; border-radius: 10px; border: 1px solid var(--grid); background: var(--card);
+  color: var(--text); font: inherit; padding: 0 8px;
+}
+.replay select { flex: 0 0 auto; min-height: 48px; }
+
+.session-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 2px 8px; color: var(--muted); font-size: 13px; }
+
+.set { background: var(--card); border-radius: 16px; padding: 12px; margin-bottom: 10px; }
+.set > header { display: flex; align-items: center; gap: 8px; padding: 0 0 8px; flex-wrap: wrap; }
+.set-title { font-size: 16px; }
+.set-rest { margin-left: auto; font-size: 13px; }
+.set-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-variant-numeric: tabular-nums; }
+.set-stats div { display: flex; flex-direction: column; }
+.set-stats span { font-size: 18px; font-weight: 650; }
+.set-stats label { font-size: 11px; color: var(--muted); }
+.set-inputs { display: flex; gap: 10px; margin-top: 10px; }
+.set-inputs label { flex: 1 1 0; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.set-inputs input {
+  min-height: 40px; border-radius: 10px; border: 1px solid var(--grid); background: var(--bg);
+  color: var(--text); font: inherit; font-size: 16px; padding: 0 10px; width: 100%;
+}
+.set-more { margin-top: 10px; }
+.set-more summary, .tools summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; padding: 6px 0; }
+.set-more canvas { margin: 8px 0; }
+.tools { margin-top: 16px; }
+.tools > summary { font-size: 14px; }

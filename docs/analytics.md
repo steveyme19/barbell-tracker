@@ -124,6 +124,13 @@ on. So estimating RPE means estimating RIR.
   ~0.10 m/s, so a 0.03 m/s error is 30%. Phase 3 has to check accuracy on slow reps
   specifically.
 
+### Model v0 (in the app now, D18)
+
+Until there are failure sets to fit on: RIR = (last rep MCV - v1RM) / DV_PER_REP per lift,
+v1RM from [1], DV_PER_REP a rough guess. Uncalibrated, shown as a range, labeled "RPE
+est." Every set also has a "Your RPE" box, and `session.csv` keeps both side by side,
+which is the data Model v1 needs.
+
 ### Model v1
 
 1. **Calibration sets.** Now and then, take a squat or bench set to failure at a few

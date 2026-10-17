@@ -140,6 +140,26 @@ one text file to Documents/BarTracker is ~15 lines of Java in `BarSensorsPlugin`
 no permission on Android 11+, and adds no dependency. `@capacitor/share` (plain Java)
 stays for the share sheet.
 
+**D17 (2026-10-16): Session mode. The app finds sets and rest by itself.**
+*Why:* Quentin wants to clip the sensor on, do the whole workout and walk away, not tap
+Start/Stop/Save per set. A set = motion with 15 s of quiet around it that the rep
+algorithm finds reps in (algorithm.md section 13). Python is still the reference
+(`sets.py`), and the live JS tracker must match it (session parity). Saving: every set's
+raw CSV on its own (`bar-<lift>-<stamp>-setNN.csv`, so Python reads the lift from the
+name as always), plus `session.csv` per workout with one row per set (lift, reps, rest,
+best/last MCV, velocity loss, RPE estimate, weight and your RPE) and no raw data. Rest
+time between sets isn't stored: at 400 Hz an hour is ~85 MB. The lift is a sticky picker,
+fixable per set afterwards (the set gets re-analyzed and re-saved under the new name).
+
+**D18 (2026-10-16): RPE estimate v0, uncalibrated, until failure sets exist.**
+*Why:* Quentin asked for an RPE estimate now; Model v1 (analytics.md section 5) needs
+his own sets to failure first. v0: RIR = (last rep MCV - v1RM) / DV_PER_REP, v1RM from
+the research in section 5 (squat 0.23, bench 0.10, deadlift 0.14 m/s), DV_PER_REP a
+rough starting guess (0.04, 0.035, 0.04 m/s per rep in reserve). Shown as a range of
++/-1, clamped to 5..10 ("<=6" when it's light). Phone tests get none. Expect it to be
+off for you specifically; it gets replaced by your own fit, and comparing it with your
+own RPE calls (the "Your RPE" box) is exactly the data that fit needs.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

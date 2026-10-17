@@ -11,22 +11,24 @@
 <body>
   <header>
     <h1>Bar Tracker</h1>
-    <span id="status" class="pill">Ready</span>
+    <span id="clock" class="pill">Not recording</span>
   </header>
 
   <main>
-    <section class="hero" aria-live="polite">
-      <div class="label" id="lastLabel">Last rep · mean velocity</div>
-      <div class="big"><span id="mcv">--</span><small>m/s</small></div>
-      <div class="stats">
-        <div><span id="repCount">0</span><label>reps</label></div>
-        <div><span id="rom">--</span><label>ROM cm</label></div>
-        <div><span id="peak">--</span><label>peak m/s</label></div>
-        <div><span id="loss">--</span><label>vel. loss</label></div>
+    <!-- One big card that changes with the state: idle / ready / in set / resting. -->
+    <section class="hero" id="hero" data-state="idle" aria-live="polite">
+      <div class="label" id="heroLabel">Session</div>
+      <div class="big" id="heroBig">Start a session</div>
+      <div class="stats" id="heroStats">
+        <div><span id="statA">--</span><label id="labelA">reps</label></div>
+        <div><span id="statB">--</span><label id="labelB">last MCV</label></div>
+        <div><span id="statC">--</span><label id="labelC">vel. loss</label></div>
+        <div><span id="statD">--</span><label id="labelD">RPE est.</label></div>
       </div>
+      <div class="sub" id="heroSub">Clip the phone to the bar, tap Start, then just lift. Sets and rest are found automatically.</div>
     </section>
 
-    <section class="lifts" role="radiogroup" aria-label="Lift">
+    <section class="lifts" role="radiogroup" aria-label="Lift for the next set">
       <label><input type="radio" name="lift" value="phone" checked><span>Phone test</span></label>
       <label><input type="radio" name="lift" value="squat"><span>Squat</span></label>
       <label><input type="radio" name="lift" value="bench"><span>Bench</span></label>
@@ -34,37 +36,65 @@
     </section>
 
     <section class="controls">
-      <button id="startBtn" class="primary">Start</button>
-      <button id="stopBtn" disabled>Stop</button>
-      <button id="downloadBtn" disabled>Save CSV</button>
-    </section>
-    <section class="controls replay">
-      <label class="file">Replay a recording<input type="file" id="fileInput" accept=".csv,.zip"></label>
-      <label class="check"><input type="checkbox" id="realtime"> real time</label>
+      <button id="startBtn" class="primary">Start session</button>
+      <button id="endBtn" disabled>End session</button>
     </section>
 
-    <p id="hint" class="hint">Pick the lift (it tells the drift fix which heights repeat). Hold still, tap Start, wait a second, then do reps.
-      End the set still for a second. No pauses needed with 3+ reps, as long as every lockout is at the same height.</p>
+    <p id="hint" class="hint"></p>
 
-    <section class="card">
-      <h2>Live acceleration <span class="muted">(last 8 s)</span></h2>
-      <canvas id="liveCanvas"></canvas>
-    </section>
-
-    <section class="card">
-      <h2>Height <span class="muted">(reps shaded, gray dashes = provisional until you pause)</span></h2>
+    <section class="card" id="liveCard" hidden>
+      <h2>This set <span class="muted">(gray dashes = provisional until you pause)</span></h2>
       <canvas id="heightCanvas"></canvas>
     </section>
 
-    <section class="card">
-      <h2>Reps</h2>
-      <table id="repTable">
-        <thead><tr><th>#</th><th>ROM</th><th>MCV</th><th>Peak</th><th>Time</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
+    <section id="sessionBar" class="session-bar" hidden>
+      <span id="sessionSummary"></span>
+      <button id="shareBtn" class="small">Share</button>
     </section>
+    <section id="setList"></section>
 
-    <footer><span id="rate">--</span> · <span id="samples">0 samples</span></footer>
+    <details class="tools">
+      <summary>Tools</summary>
+      <section class="controls replay">
+        <label class="file">Replay a recording<input type="file" id="fileInput" accept=".csv,.zip"></label>
+        <label class="check"><input type="checkbox" id="realtime"> real time</label>
+        <select id="speed" aria-label="Replay speed">
+          <option value="1">1x</option><option value="10" selected>10x</option><option value="30">30x</option>
+        </select>
+      </section>
+      <section class="card">
+        <h2>Live acceleration <span class="muted">(last 8 s)</span></h2>
+        <canvas id="liveCanvas"></canvas>
+      </section>
+      <footer><span id="rate">--</span> · <span id="samples">0 samples</span></footer>
+    </details>
   </main>
+
+  <template id="setCardTpl">
+    <article class="set">
+      <header>
+        <strong class="set-title"></strong>
+        <select class="set-lift" aria-label="Lift">
+          <option value="squat">Squat</option><option value="bench">Bench</option>
+          <option value="deadlift">Deadlift</option><option value="phone">Phone test</option>
+        </select>
+        <span class="set-rest muted"></span>
+      </header>
+      <div class="set-stats"></div>
+      <div class="set-inputs">
+        <label>Weight <input class="set-load" type="number" inputmode="decimal" min="0" step="5" placeholder="lb"></label>
+        <label>Your RPE <input class="set-rpe" type="number" inputmode="decimal" min="5" max="10" step="0.5" placeholder="--"></label>
+      </div>
+      <details class="set-more">
+        <summary>Reps</summary>
+        <table>
+          <thead><tr><th>#</th><th>ROM</th><th>MCV</th><th>Peak</th><th>Time</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <canvas class="set-canvas"></canvas>
+        <button class="small set-save">Save CSV</button>
+      </details>
+    </article>
+  </template>
 </body>
 </html>

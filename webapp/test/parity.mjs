@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { parseRecording } from "../fileio.js";
 import { analyze, magnitude, liftFromName, SETTINGS } from "../reps.js";
+import { SessionTracker, formatTime } from "../sets.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PYTHON = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
@@ -85,4 +86,43 @@ for (const file of files) {
   }
   }
 }
+// ---------- session mode (analysis/sets.py vs webapp/sets.js) ----------
+// The JS tracker is fed one sample at a time, like the live app. It has to find the
+// same sets as Python working on the whole file: same start/end and rest (within
+// 0.01 s), same rep count, reps within the usual tolerance, same RPE estimate.
+const sessions = [
+  ["analysis/data/fake_session_squat.csv", ["squat"]],
+  ["analysis/data/fake_session_joined.csv", ["squat", "phone"]],
+];
+for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
+  const file = path.resolve(ROOT, rel);
+  if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
+  const buf = readFileSync(file);
+  const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const tracker = new SessionTracker({ liftFor: (k) => lifts[Math.min(k, lifts.length - 1)] });
+  for (let i = 0; i < rec.t.length; i++) {
+    tracker.push({ t: rec.t[i], ax: rec.ax[i], ay: rec.ay[i], az: rec.az[i], gx: 0, gy: 0, gz: 0 });
+  }
+  tracker.finish();
+  const js = tracker.sets;
+  const py = JSON.parse(execFileSync(PYTHON, [path.join(ROOT, "analysis", "sets.py"), file, "--json", `--lifts=${lifts}`],
+    { cwd: path.join(ROOT, "analysis"), encoding: "utf8", maxBuffer: 1 << 26 }));
+  const problems = [];
+  if (js.length !== py.length) problems.push(`set count JS ${js.length} vs Python ${py.length}`);
+  else js.forEach((s, k) => {
+    const p = py[k];
+    const near = (x, y) => Math.abs(x - y) <= 0.01;
+    if (!near(s.startT, p.start_t) || !near(s.endT, p.end_t)) problems.push(`set ${k + 1} time JS ${s.startT.toFixed(2)}-${s.endT.toFixed(2)} vs Python ${p.start_t.toFixed(2)}-${p.end_t.toFixed(2)}`);
+    if ((s.restBefore === null) !== (p.rest_before === null) || (s.restBefore !== null && !near(s.restBefore, p.rest_before))) problems.push(`set ${k + 1} rest JS ${s.restBefore} vs Python ${p.rest_before}`);
+    if (s.reps.length !== p.reps.length) problems.push(`set ${k + 1} reps JS ${s.reps.length} vs Python ${p.reps.length}`);
+    else s.reps.forEach((r, j) => {
+      if (Math.abs(r.rom - p.reps[j].rom) > ROM_TOL) problems.push(`set ${k + 1} rep ${j + 1} ROM ${r.rom.toFixed(4)} vs ${p.reps[j].rom.toFixed(4)}`);
+      if (Math.abs(r.mcv - p.reps[j].mcv) > MCV_TOL) problems.push(`set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(4)} vs ${p.reps[j].mcv.toFixed(4)}`);
+    });
+    if (JSON.stringify(s.rpeEst) !== JSON.stringify(p.rpe_est)) problems.push(`set ${k + 1} RPE JS ${s.rpeEst} vs Python ${p.rpe_est}`);
+  });
+  if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
+  else console.log(`PASS session ${rel}: ${js.length} sets, rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}`);
+}
+
 process.exit(failures ? 1 : 0);

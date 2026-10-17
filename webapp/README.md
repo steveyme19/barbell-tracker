@@ -3,25 +3,40 @@
 Live rep tracking on your phone. Plain HTML + JS, no framework, no build step (P3).
 Hosted on GitHub Pages.
 
-**What it does now (v0):** reads your phone's motion sensor, finds reps live with the
-same algorithm as `analysis/reps.py`, shows the last rep's mean velocity big, plus ROM,
-peak velocity, velocity loss, a height plot and a rep table. Save CSV exports the session
-in a format the Python scripts read. Replay a recording runs a phyphox `.zip` or `.csv`
-through the same pipeline.
+**What it does now (session mode, D17):** start once and lift. It finds each set by
+itself (`sets.js`, same as `analysis/sets.py`), runs the rep algorithm on it (same as
+`analysis/reps.py`) and shows one big card: the live set (last rep's MCV, reps, ROM,
+velocity loss, RPE estimate), then a big rest timer after the set. Every set gets a card
+with its numbers, a lift picker to fix the lift, and boxes for weight and your RPE.
 
 ## Use it
 
-Open `https://<your-username>.github.io/<repo-name>/webapp/` in Chrome on your phone
-(setup below). Hold the phone flat and still, tap **Start**, wait a second, do reps,
-pausing briefly at the top or bottom of each. Tap **Stop**, then **Save CSV** if you
-want the data in `analysis/data/`.
+Android app (best: 400 Hz, auto-save): see `docs/android.md`. Browser: open
+`https://<your-username>.github.io/<repo-name>/webapp/` in Chrome on your phone.
+
+1. Pick the lift (it sticks until you change it), clip the phone to the bar, tap
+   **Start session**. The screen stays on.
+2. Lift. Hold the bar still for a second before and after each set (racked is fine).
+3. Rest: the card shows the timer. Fill in weight / your RPE on the set card if you like.
+4. **End session** when you're done.
+
+Saving: the app writes every set to `Documents/BarTracker/session-<stamp>/` as it
+finishes (`bar-<lift>-<stamp>-setNN.csv`, raw) plus `session.csv` (one row per set:
+lift, reps, rest, MCVs, velocity loss, RPE estimate, weight, your RPE; no raw data).
+**Share** sends `session.csv`; a set's **Save CSV** sends its raw file. In the browser
+those buttons download instead (no auto-save).
+
+Tools (at the bottom): replay a recording (a long file shows up as sets; real time at
+1/10/30x, or all at once), the live acceleration plot and the sample rate.
 
 ## Files
 
 | file | what |
 |---|---|
 | `index.html`, `style.css` | the page |
-| `app.js` | UI wiring: source → algorithm → UI |
+| `app.js` | UI wiring: source → session tracker → algorithm → UI |
+| `sets.js` | session mode: finds sets + rest live, ported from `analysis/sets.py`; RPE estimate v0 |
+| `native.js` | Android-app-only extras: save/share files, keep the screen on |
 | `sources.js` | `PhoneSource` (DeviceMotion), `ReplaySource` (recordings). `BleSource` comes in phase 4. |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
 | `fileio.js` | read phyphox CSV/zip, write CSV |

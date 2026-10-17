@@ -40,4 +40,6 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Lets sensors run above 200 Hz on Android 12+ (no prompt, it is a normal permission). -->
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <!-- A short buzz when a set starts and ends (session mode). No prompt. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 </manifest>

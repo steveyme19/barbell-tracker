@@ -75,14 +75,16 @@ export class NativeSensorSource {
 
 /**
  * Plays back a recording (from fileio.parseRecording).
- * realtime = true: at the speed it was recorded, like a live session.
+ * realtime = true: at the speed it was recorded, like a live session (speed = 10 plays
+ *   a whole workout 10x faster, timers and all).
  * realtime = false: all at once, for checking results quickly.
  */
 export class ReplaySource {
-  constructor(onSample, rec, { realtime = false, onDone = () => {} } = {}) {
+  constructor(onSample, rec, { realtime = false, speed = 1, onDone = () => {} } = {}) {
     this.onSample = onSample;
     this.rec = rec;
     this.realtime = realtime;
+    this.speed = speed;
     this.onDone = onDone;
     this.i = 0;
     this.timer = null;
@@ -98,7 +100,7 @@ export class ReplaySource {
     const t0 = this.rec.t[0];
     const wall0 = performance.now();
     this.timer = setInterval(() => {
-      const now = (performance.now() - wall0) / 1000;
+      const now = ((performance.now() - wall0) / 1000) * this.speed;
       while (this.i < n && this.rec.t[this.i] - t0 <= now) this.emit(this.i++);
       if (this.i >= n) { this.stop(); this.onDone(); }
     }, 20);

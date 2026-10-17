@@ -141,6 +141,22 @@ can check it on the phone.
   - Saved sets can also come off the phone with
     `adb pull /sdcard/Documents/BarTracker/<file> analysis/data/`.
 
+## Session mode in the app (D17)
+
+- Start once; the screen stays on for the whole session (`keepScreenOn`). Each set is
+  saved to `Documents/BarTracker/session-<stamp>/` as it finishes, plus `session.csv`.
+  Pull a whole session with `adb pull /sdcard/Documents/BarTracker/session-<stamp> analysis/data/`.
+- **If you lock the phone yourself mid-session**, Capacitor pauses the WebView: JS
+  timers stop (rest timer display, live analysis), but sensor batches still arrive as
+  events, so sets are still found and saved. Everything catches up when you wake it.
+  A screen-off foreground service is still "Later".
+- Testing over USB with the phone locked: timer-paced replay doesn't run (frozen
+  timers). Use the all-at-once replay, set `barDebug.autosaveReplays = true` to
+  exercise the save path, and use a plugin round trip as the clock.
+  Verified 2026-10-16: fake session -> 4 sets, rests 90/120/150 s, 4 set files +
+  session.csv written; changing a set's lift re-saved it under the new name and deleted
+  the old file.
+
 ## A4. Bluetooth to the XIAO (roadmap 4.1)
 
 - `@capacitor-community/bluetooth-le` for `BleSource` in the app, Web Bluetooth in the

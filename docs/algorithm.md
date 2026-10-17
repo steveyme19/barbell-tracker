@@ -400,6 +400,49 @@ Angle of the bar's long axis from horizontal: `asin(bar_axis · up)`. Positive =
 device's end is higher. Comes straight from orientation with no integration, so it's
 accurate. Shows uneven lockouts and shifting to one side.
 
+## 13. Sets and rest (session mode)
+
+One recording can be a whole workout: clip the sensor on, lift, walk away. A layer on
+top of sections 5 to 10 finds the sets (`analysis/sets.py`, ported to
+`webapp/sets.js` as a live, sample-by-sample tracker; parity-tested). D17.
+
+1. **Blocks.** Time is cut into 0.25 s blocks. A block is active when the std of |a|
+   inside it is over 0.15 m/s^2 (the stillness threshold, coarser). Coarse on purpose:
+   it only has to tell "lifting" from "bar in the rack".
+2. **Segments.** Active blocks with less than 15 s of quiet between them are one
+   segment. A segment closes after 15 s of quiet, so a breather at lockout inside a set
+   doesn't split it, and the shortest real rest between sets (~1 min) always does.
+3. **Each segment, plus 2 s of still before and after, goes through the per-set
+   pipeline** (`analyze()`). No reps = not a set: loading plates, bumping the bar.
+4. **Rack moves.** Unracking lifts the bar ~5 to 8 cm off the hooks, enough to pass
+   `MIN_ROM` as a tiny "rep". Reps at either end of a set shorter than half the set's
+   median ROM go, and for barbell lifts anything under 12 cm (that also handles an
+   unrack + rerack with no reps, and the first seconds of a set before a real rep).
+   **A guess until real bar sessions exist** (roadmap 2.x): walkouts and reracks may
+   look different on a real bar.
+5. **Rest** = first rep start of a set minus the last rep end of the set before. Live,
+   the app shows the rest timer 3 s after the last rep (provisional: more reps within
+   15 s and it's still the same set).
+
+**Saved set files** (`bar-<lift>-<stamp>-setNN.csv`) include the unrack. Analyze them
+with `python sets.py <file>` (rack filter applied, same reps as the app), not
+`reps.py` alone, which counts the unrack as a tiny first rep.
+
+The live app only ever analyzes the set in progress, and during rest it keeps a few
+seconds of samples, so an hour-long session costs the same per pass as one set.
+
+Known-answer test: `make_fake_session.py` (4 squat sets with unrack, walkout, rerack,
+plates, a 10 s breather, and an unrack + rerack with no reps): 4 sets, rests exact. Real
+data: two real 402 Hz sets joined with real still noise give the same reps as each file
+alone (ROM within 0.4 cm, MCV within 0.001 m/s).
+
+**Racked starts and the `ends` rule (6b).** Squat and bench assume the still before the
+set is at lockout height. With a rack it's the hooks, 5 to 8 cm lower. The rule only
+uses the start still as a lockout when the bar leaves it going *down*; an unrack goes up
+first, so the hook still is left alone. A still after the walkout (settle before the
+first rep) then starts the set's own window. Unracking and squatting with no settle at
+all hasn't been tested on real data yet.
+
 ---
 
 ## Known gap: sets with no pause at lockout

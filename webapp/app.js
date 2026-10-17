@@ -1,64 +1,127 @@
-// UI wiring: source -> algorithm -> UI (decision D4).
+// UI wiring: source -> session tracker (sets.js) -> rep algorithm -> UI (decision D4).
+// Session mode: start once, lift, and the tracker finds each set and the rest between.
 import { PhoneSource, NativeSensorSource, ReplaySource } from "./sources.js";
-import { isNativeApp, keepScreenOn, saveAndShare } from "./native.js";
+import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles } from "./native.js";
 import { analyze, magnitude, SETTINGS } from "./reps.js";
+import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { drawPlot } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
 const ANALYZE_EVERY_MS = 500;   // at least this long between live passes
 const LIVE_SECONDS = 8;
+const REST_AFTER = 3;           // s of quiet after a rep before the card shows the rest timer
+const LIFT_NAMES = { phone: "Phone test", squat: "Squat", bench: "Bench", deadlift: "Deadlift" };
+const native = isNativeApp();
 
-let samples = [];
 let source = null;
 let running = false;
-let result = null;
+let tracker = null;
+let session = null;       // { stamp, folder, autosave, sets: [] }
+let live = null;          // analysis of the set in progress: { res, reps, tAbs }
+let recent = [];          // last LIVE_SECONDS of samples (live plot, rate)
+let nSamples = 0;
+let lift = "phone";       // sticky picker: lift for the next set
+let segLift = null;       // lift captured when the current set's motion started
+let buzzed = false;       // vibrated for the set in progress yet?
 let analyzeTimer = null;
+let tickTimer = null;
 let wakeLock = null;
 let drawQueued = false;
 let sourceName = "";
-let lift = "phone";   // which heights repeat every rep (reps.js LIFTS)
 
 // ---------- incoming data ----------
 
 function onSample(s) {
-  samples.push(s);
+  tracker.push(s);
+  nSamples++;
+  recent.push(s);
+  if (recent.length > 50 && s.t - recent[0].t > LIVE_SECONDS + 1) {
+    recent = recent.filter((x) => s.t - x.t <= LIVE_SECONDS);
+  }
   if (!drawQueued) {
     drawQueued = true;
     requestAnimationFrame(() => { drawQueued = false; drawLive(); updateFooter(); });
   }
 }
 
-function runAnalysis() {
+// Live analysis of the set in progress only (the tracker hands over just that
+// segment), so a long session stays as fast as a single set.
+function runLive() {
+  if (!tracker?.inSegment) { live = null; return; }
+  const { samples, tAbs } = tracker.segmentSamples();
   if (samples.length < 10) return;
-  const t = samples.map((s) => s.t);
-  const a = magnitude(samples.map((s) => s.ax), samples.map((s) => s.ay), samples.map((s) => s.az));
-  result = analyze(t, a, { ...SETTINGS, LIFT: lift });
-  render();
+  const res = analyze(samples.map((s) => s.t),
+    magnitude(samples.map((s) => s.ax), samples.map((s) => s.ay), samples.map((s) => s.az)),
+    { ...SETTINGS, LIFT: segLift ?? lift });
+  const reps = res.error ? [] : dropRackMoves(res.reps, segLift ?? lift);
+  live = { res, reps, tAbs };
+  if (reps.length && !buzzed) { buzz(150); buzzed = true; }   // a set started
 }
 
-// Live re-analysis. Each pass redoes the whole set, so at 400 Hz (native sensors) a long
-// set takes a while: wait 2x the last pass's run time when that's more than 500 ms, so
-// the UI never spends more than about a third of its time on analysis.
+// Each pass redoes the whole set so far. At 400 Hz a long set takes a while: wait 2x
+// the last pass's run time when that's more than 500 ms.
 function scheduleAnalysis(lastMs = 0) {
   analyzeTimer = setTimeout(() => {
     if (!running) return;
     const t0 = performance.now();
-    runAnalysis();
+    runLive();
+    render();
     scheduleAnalysis(performance.now() - t0);
   }, Math.max(ANALYZE_EVERY_MS, 2 * lastMs));
 }
 
-// ---------- start / stop ----------
+// ---------- tracker events ----------
 
-async function startPhone() {
+function onSet(set) {
+  live = null;
+  buzzed = false;
+  segLift = null;
+  set.load = "";
+  set.rpe = "";
+  set.file = setFileName(set);
+  session.sets.push(set);
+  buzz([100, 80, 100]);                                  // a set finished
+  addSetCard(set);
+  if (session.autosave) saveSet(set).then(saveSummary).catch((err) => showError(`Couldn't save: ${err.message}`));
+  render();
+}
+
+function onDrop() {     // motion that wasn't a set (plates, a bump)
+  live = null;
+  buzzed = false;
+  segLift = null;
+  render();
+}
+
+// ---------- start / end ----------
+
+function newSession({ autosave }) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  session = { stamp, date: stamp.slice(0, 10), startedAt: d, folder: `session-${stamp}`, autosave, sets: [] };
+  tracker = new SessionTracker({
+    liftFor: () => segLift ?? lift,
+    onSegmentStart: () => { segLift = lift; },
+    onSet,
+    onDrop,
+  });
+  live = null;
+  recent = [];
+  nSamples = 0;
+  $("setList").innerHTML = "";
+  $("hint").textContent = "";
+  $("hint").classList.remove("err");
+}
+
+async function startSession() {
   if (!window.isSecureContext) {
     showError("Motion sensors need HTTPS. Open the GitHub Pages link on your phone.");
     return;
   }
-  reset();
+  newSession({ autosave: native });
   // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
-  const native = isNativeApp();
   sourceName = native ? "phone (native)" : "phone";
   source = native ? new NativeSensorSource(onSample) : new PhoneSource(onSample);
   try {
@@ -69,9 +132,7 @@ async function startPhone() {
   }
   begin();
   setTimeout(() => {
-    if (running && samples.length === 0) {
-      showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
-    }
+    if (running && nSamples === 0) showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
   }, 2000);
 }
 
@@ -83,12 +144,13 @@ async function startReplay(file) {
     showError(err.message);
     return;
   }
-  reset();
+  // Replays don't write files unless you tap Save (barDebug.autosaveReplays: USB testing).
+  newSession({ autosave: native && Boolean(window.barDebug?.autosaveReplays) });
   sourceName = file.name;
   const named = Object.keys(SETTINGS.LIFTS).find((l) => file.name.toLowerCase().includes(l));
   if (named) setLift(named);
   const realtime = $("realtime").checked;
-  source = new ReplaySource(onSample, rec, { realtime, onDone: stop });
+  source = new ReplaySource(onSample, rec, { realtime, speed: Number($("speed").value), onDone: endSession });
   begin();
   await source.start();
 }
@@ -96,105 +158,132 @@ async function startReplay(file) {
 function begin() {
   running = true;
   $("startBtn").disabled = true;
-  $("stopBtn").disabled = false;
-  $("downloadBtn").disabled = true;
-  setStatus("Hold still…", "wait");
+  $("endBtn").disabled = false;
+  $("fileInput").disabled = true;
   scheduleAnalysis();
+  tickTimer = setInterval(render, 1000);                 // the rest timer
   keepAwake();
+  render();
 }
 
-async function stop() {
+async function endSession() {
   if (!running) return;
   running = false;
-  await source?.stop();   // native source: wait for its last batch
+  await source?.stop();        // native source: wait for its last batch
   clearTimeout(analyzeTimer);
-  runAnalysis();
-  drawLive();
-  updateFooter();
+  clearInterval(tickTimer);
+  tracker.finish();            // a set still in progress gets closed (and saved)
+  live = null;
   $("startBtn").disabled = false;
-  $("stopBtn").disabled = true;
-  $("downloadBtn").disabled = samples.length === 0;
-  const n = result?.reps?.length ?? 0;
-  setStatus(`Done · ${n} rep${n === 1 ? "" : "s"}`, "");
+  $("endBtn").disabled = true;
+  $("fileInput").disabled = false;
   wakeLock?.release().catch(() => {});
   wakeLock = null;
-  if (isNativeApp()) keepScreenOn(false).catch(() => {});
-}
-
-function reset() {
-  samples = [];
-  result = null;
-  $("hint").classList.remove("err");
+  if (native) keepScreenOn(false).catch(() => {});
+  if (session.autosave && session.sets.length) await saveSummary().catch(() => {});
   render();
-  drawLive();
 }
 
-// ---------- screen stays on during a set ----------
+// ---------- screen stays on for the whole session ----------
 
 async function keepAwake() {
   // In the app, the window flag is certain; the WebView's Wake Lock API may not be (A3).
-  if (isNativeApp()) return keepScreenOn(true).catch(() => {});
+  if (native) return keepScreenOn(true).catch(() => {});
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch { /* not supported */ }
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && running && !isNativeApp()) keepAwake();
+  if (document.visibilityState === "visible" && running && !native) keepAwake();
 });
 
-// ---------- download ----------
-
-function recordingName() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `bar-${lift}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+function buzz(pattern) {
+  try { navigator.vibrate?.(pattern); } catch { /* no vibration */ }
 }
 
-async function download() {
-  if (isNativeApp()) {
-    // A browser download does nothing in the app's WebView: save a file and share it.
-    try {
-      const where = await saveAndShare(recordingName(), toCSV(samples));
-      $("hint").classList.remove("err");
-      $("hint").textContent = `Saved to ${where}`;
-    } catch (err) {
-      showError(`Couldn't save: ${err.message}`);
-    }
-    return;
-  }
-  const blob = new Blob([toCSV(samples)], { type: "text/csv" });
+// ---------- saving ----------
+// App: every set is written to Documents/BarTracker/session-<stamp>/ when it finishes,
+// plus session.csv (one row per set: lift, reps, rest, velocities, RPE; no raw data).
+// Browser: buttons only (auto downloads would pile up).
+
+function setFileName(set) {
+  return `bar-${set.lift}-${session.stamp}-set${String(set.index + 1).padStart(2, "0")}.csv`;
+}
+
+async function saveSet(set) {
+  const { uri } = await saveFile(session.folder, set.file, toCSV(set.samples));
+  return uri;
+}
+
+function summaryCSV() {
+  const head = "set,date,start,file,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv," +
+    "vel_loss_pct,avg_rom_cm,rep_mcvs,to_failure,mount,paused_lockout,notes";
+  const rows = session.sets.map((s, k) => {
+    const start = new Date(session.startedAt.getTime() + s.startT * 1000).toTimeString().slice(0, 8);
+    return [k + 1, session.date, start, s.file, s.lift, s.load, s.nReps, s.rpe,
+      s.rpeEst ? (s.rpeEst[0] === 5 ? `<=${s.rpeEst[1]}` : `${s.rpeEst[0]}-${s.rpeEst[1]}`) : "",
+      s.restBefore === null ? "" : Math.round(s.restBefore),
+      s.bestMcv.toFixed(3), s.lastMcv.toFixed(3), Math.round(s.velLoss * 100), (s.avgRom * 100).toFixed(1),
+      s.reps.map((r) => r.mcv.toFixed(2)).join(" "), "", "", "", ""].join(",");
+  });
+  return [head, ...rows].join("\n") + "\n";
+}
+
+async function saveSummary() {
+  return (await saveFile(session.folder, "session.csv", summaryCSV())).uri;
+}
+
+function download(name, text) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = recordingName();
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-// ---------- drawing ----------
-
-function render() {
-  const reps = result?.reps ?? [];
-  if (running) {
-    if (result?.error) setStatus("Hold still…", "wait");
-    else if (result) setStatus(`Live · ${reps.length} rep${reps.length === 1 ? "" : "s"}`, "live");
+async function shareSession() {
+  if (!session?.sets.length) return;
+  if (!native) { download(`${session.folder}.csv`, summaryCSV()); return; }
+  try {
+    await shareFiles([await saveSummary()], `Workout ${session.stamp}`);
+  } catch (err) {
+    showError(`Couldn't share: ${err.message}`);
   }
+}
 
-  const last = reps[reps.length - 1];
-  const pending = Boolean(last && last.flags.includes("no end anchor"));
-  $("mcv").textContent = last ? last.mcv.toFixed(2) : "--";
-  $("mcv").parentElement.classList.toggle("pending", pending);
-  $("lastLabel").textContent = pending ? "Last rep · pause to lock it in" : "Last rep · mean velocity";
-  $("repCount").textContent = reps.length;
-  $("rom").textContent = last ? (last.rom * 100).toFixed(1) : "--";
-  $("peak").textContent = last ? last.peak.toFixed(2) : "--";
-  if (reps.length >= 2) {
-    const best = Math.max(...reps.map((r) => r.mcv));
-    $("loss").textContent = `${Math.round((1 - last.mcv / best) * 100)}%`;
-  } else {
-    $("loss").textContent = "--";
+async function shareSet(set) {
+  if (!native) { download(set.file, toCSV(set.samples)); return; }
+  try {
+    await shareFiles([await saveSet(set)], set.file);
+  } catch (err) {
+    showError(`Couldn't share: ${err.message}`);
   }
+}
 
-  const tbody = $("repTable").querySelector("tbody");
+// ---------- set cards ----------
+
+function addSetCard(set) {
+  const card = $("setCardTpl").content.firstElementChild.cloneNode(true);
+  set.card = card;
+  card.querySelector(".set-lift").addEventListener("change", (e) => changeSetLift(set, e.target.value));
+  card.querySelector(".set-load").addEventListener("change", (e) => { set.load = e.target.value; saveSummaryLater(); });
+  card.querySelector(".set-rpe").addEventListener("change", (e) => { set.rpe = e.target.value; saveSummaryLater(); });
+  card.querySelector(".set-save").addEventListener("click", () => shareSet(set));
+  card.querySelector(".set-more").addEventListener("toggle", (e) => { if (e.target.open) drawSetPlot(set); });
+  fillSetCard(set);
+  $("setList").prepend(card);           // newest first
+}
+
+function fillSetCard(set) {
+  const c = set.card;
+  c.querySelector(".set-title").textContent = `Set ${set.index + 1}`;
+  c.querySelector(".set-lift").value = set.lift;
+  c.querySelector(".set-rest").textContent = set.restBefore === null ? "first set" : `rest ${formatTime(set.restBefore)}`;
+  c.querySelector(".set-stats").innerHTML = [
+    [set.nReps, "reps"], [set.bestMcv.toFixed(2), "best MCV"],
+    [`${Math.round(set.velLoss * 100)}%`, "vel. loss"], [formatRpe(set.rpeEst), "RPE est."],
+  ].map(([v, l]) => `<div><span>${v}</span><label>${l}</label></div>`).join("");
+  const tbody = c.querySelector("tbody");
   tbody.innerHTML = "";
-  reps.forEach((r, k) => {
+  set.reps.forEach((r, k) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${k + 1}</td><td>${(r.rom * 100).toFixed(1)} cm</td>` +
       `<td>${r.mcv.toFixed(2)}</td><td>${r.peak.toFixed(2)}</td><td>${r.dur.toFixed(2)} s</td>` +
@@ -202,33 +291,126 @@ function render() {
     if (r.flags.length) tr.title = r.flags.join(", ");
     tbody.appendChild(tr);
   });
-
-  drawHeight();
+  if (c.querySelector(".set-more").open) drawSetPlot(set);
 }
 
-function drawLive() {
-  const canvas = $("liveCanvas");
-  if (!samples.length) { drawPlot(canvas, { series: [] }); return; }
-  const g = result?.g ?? 9.81;
-  const tEnd = samples[samples.length - 1].t;
-  const xs = [];
-  const ys = [];
-  for (let i = samples.length - 1; i >= 0; i--) {
-    const s = samples[i];
-    if (tEnd - s.t > LIVE_SECONDS) break;
-    xs.push(s.t - tEnd);
-    ys.push(Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az) - g);
+// Picked the wrong lift? Re-run the set with the right one (the lift changes which
+// heights get leveled), re-save it under the new name, fix the rest times around it.
+async function changeSetLift(set, newLift) {
+  const s = set.samples;
+  const res = analyze(s.map((x) => x.t), magnitude(s.map((x) => x.ax), s.map((x) => x.ay), s.map((x) => x.az)),
+    { ...SETTINGS, LIFT: newLift });
+  const reps = res.error ? [] : dropRackMoves(res.reps, newLift);
+  if (!reps.length) { showError("No reps with that lift setting; kept the old one."); fillSetCard(set); return; }
+  const oldFile = set.file;
+  Object.assign(set, setSummary(newLift, reps, set.tAbs), { reps, analysis: res });
+  set.file = setFileName(set);
+  const sets = session.sets;
+  for (let k = Math.max(1, set.index); k <= Math.min(set.index + 1, sets.length - 1); k++) {
+    sets[k].restBefore = sets[k].startT - sets[k - 1].endT;
+    fillSetCard(sets[k]);
   }
-  drawPlot(canvas, { series: [{ x: xs.reverse(), y: ys.reverse(), color: cssVar("--line") }], yLabel: "m/s²", minRange: 2 });
+  fillSetCard(set);
+  render();
+  if (session.autosave) {
+    try {
+      await saveSet(set);
+      if (oldFile !== set.file) await deleteFile(session.folder, oldFile);
+      await saveSummary();
+    } catch (err) {
+      showError(`Couldn't save: ${err.message}`);
+    }
+  }
 }
 
-function drawHeight() {
-  const canvas = $("heightCanvas");
-  if (!result || result.error) { drawPlot(canvas, { series: [] }); return; }
-  const { t, x, reps, windows } = result;
+let summaryTimer = null;
+function saveSummaryLater() {
+  if (!session.autosave) return;
+  clearTimeout(summaryTimer);
+  summaryTimer = setTimeout(() => saveSummary().catch((err) => showError(`Couldn't save: ${err.message}`)), 800);
+}
+
+// ---------- the big card ----------
+
+function render() {
+  const hero = $("hero");
+  const sets = session?.sets ?? [];
+  const lastSet = sets[sets.length - 1];
+  const now = tracker?.now ?? 0;
+  const liveReps = live?.reps ?? [];
+  let state = "idle";
+  let restFrom = null;
+  let shown = null;                                    // the set whose numbers are shown
+
+  if (running && liveReps.length) {
+    const s = { ...setSummary(segLift ?? lift, liveReps, live.tAbs), index: sets.length };
+    if (tracker.quietFor >= REST_AFTER && now - s.endT >= REST_AFTER) {
+      state = "rest"; restFrom = s.endT;               // provisional: more reps soon = same set
+    } else {
+      state = "set";
+    }
+    shown = s;
+  } else if (running && lastSet) {
+    state = "rest"; restFrom = lastSet.endT; shown = lastSet;
+  } else if (running) {
+    state = "ready";
+  }
+  hero.dataset.state = state;
+
+  const stats = (pairs) => pairs.forEach(([v, l], k) => {
+    $(`stat${"ABCD"[k]}`).textContent = v;
+    $(`label${"ABCD"[k]}`).textContent = l;
+  });
+  const what = (s) => `Set ${s.index + 1} · ${LIFT_NAMES[s.lift]}`;
+
+  if (state === "set") {
+    const last = liveReps[liveReps.length - 1];
+    $("heroLabel").textContent = `${what(shown)} · live`;
+    $("heroBig").innerHTML = `${last.mcv.toFixed(2)}<small>m/s</small>`;
+    stats([[shown.nReps, "reps"], [(last.rom * 100).toFixed(0), "ROM cm"],
+      [shown.nReps >= 2 ? `${Math.round(shown.velLoss * 100)}%` : "--", "vel. loss"], [formatRpe(shown.rpeEst), "RPE est."]]);
+    $("heroSub").textContent = last.flags.includes("no end anchor") ? "Pause at the top to lock the last rep in." : "";
+  } else if (state === "rest") {
+    $("heroLabel").textContent = `Rest · after ${what(shown)}`;
+    $("heroBig").textContent = formatTime(Math.max(0, now - restFrom));
+    stats([[shown.nReps, "reps"], [shown.bestMcv.toFixed(2), "best MCV"],
+      [`${Math.round(shown.velLoss * 100)}%`, "vel. loss"], [formatRpe(shown.rpeEst), "RPE est."]]);
+    $("heroSub").textContent = tracker.inSegment && !liveReps.length ? "Movement… (not a set yet)" : "";
+  } else if (state === "ready") {
+    $("heroLabel").textContent = "Recording";
+    $("heroBig").textContent = "Ready. Do your first set.";
+    $("heroSub").textContent = `Lift: ${LIFT_NAMES[lift]}. Hold the bar still for a second before and after each set.`;
+  } else if (sets.length) {
+    const reps = sets.reduce((n, s) => n + s.nReps, 0);
+    $("heroLabel").textContent = "Session done";
+    $("heroBig").textContent = `${sets.length} set${sets.length === 1 ? "" : "s"} · ${reps} reps`;
+    $("heroSub").textContent = session.autosave ? `Saved to Documents/BarTracker/${session.folder}/` : "";
+  } else {
+    $("heroLabel").textContent = "Session";
+    $("heroBig").textContent = "Start a session";
+    $("heroSub").textContent = "Clip the phone to the bar, tap Start, then just lift. Sets and rest are found automatically.";
+  }
+
+  $("clock").textContent = running ? `● ${formatTime(now)}` : "Not recording";
+  $("clock").className = `pill ${running ? "live" : ""}`;
+  $("sessionBar").hidden = !sets.length;
+  if (sets.length) {
+    const reps = sets.reduce((n, s) => n + s.nReps, 0);
+    $("sessionSummary").textContent = `${sets.length} set${sets.length === 1 ? "" : "s"} · ${reps} reps`;
+  }
+  $("liveCard").hidden = state !== "set";
+  if (state === "set") drawHeight();
+}
+
+// ---------- drawing ----------
+
+// reps: the set's reps after the rack-move filter (not res.reps, which still has them)
+function heightPlot(canvas, res, reps) {
+  if (!res || res.error) { drawPlot(canvas, { series: [] }); return; }
+  const { t, x, windows } = res;
   const cm = Array.from(x, (v) => v * 100);
   // Everything after the last still is provisional: its drift fix gets redone once
-  // you pause (and before the 2nd lockout there's no fix at all). Gray and dashed.
+  // you pause. Gray and dashed.
   const open = windows.find((w) => !w.anchored);
   const cut = open ? open.i0 : t.length - 1;
   const series = [{ x: t.slice(0, cut + 1), y: cm.slice(0, cut + 1), color: cssVar("--line") }];
@@ -241,28 +423,38 @@ function drawHeight() {
   });
 }
 
+function drawHeight() { heightPlot($("heightCanvas"), live?.res, live?.reps ?? []); }
+function drawSetPlot(set) { heightPlot(set.card.querySelector(".set-canvas"), set.analysis, set.reps); }
+
+function drawLive() {
+  const canvas = $("liveCanvas");
+  if (!recent.length) { drawPlot(canvas, { series: [] }); return; }
+  const g = live?.res?.g ?? 9.81;
+  const tEnd = recent[recent.length - 1].t;
+  const xs = [], ys = [];
+  for (const s of recent) {
+    if (tEnd - s.t > LIVE_SECONDS) continue;
+    xs.push(s.t - tEnd);
+    ys.push(Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az) - g);
+  }
+  drawPlot(canvas, { series: [{ x: xs, y: ys, color: cssVar("--line") }], yLabel: "m/s²", minRange: 2 });
+}
+
 function updateFooter() {
   let rate = "--";
   if (source instanceof PhoneSource && source.interval) {
     rate = `${Math.round(1000 / source.interval)} Hz (interval ${source.interval.toFixed(1)} ms)`;
-  } else if (samples.length > 10) {
+  } else if (recent.length > 10) {
     // Measured from the sample timestamps, so it's the real rate, not the requested one.
-    const n = samples.length;
-    rate = `${Math.round((n - 1) / (samples[n - 1].t - samples[0].t))} Hz`;
+    const n = recent.length;
+    rate = `${Math.round((n - 1) / (recent[n - 1].t - recent[0].t))} Hz`;
     if (source instanceof NativeSensorSource && source.info) rate += ` (${source.info.accel})`;
   }
   $("rate").textContent = sourceName ? `${sourceName} · ${rate}` : rate;
-  $("samples").textContent = `${samples.length} samples`;
-}
-
-function setStatus(text, kind) {
-  const el = $("status");
-  el.textContent = text;
-  el.className = `pill ${kind || ""}`;
+  $("samples").textContent = `${nSamples} samples`;
 }
 
 function showError(msg) {
-  setStatus("Error", "err");
   $("hint").textContent = msg;
   $("hint").classList.add("err");
 }
@@ -271,30 +463,42 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-// ---------- wire up ----------
-
-$("startBtn").addEventListener("click", startPhone);
-$("stopBtn").addEventListener("click", stop);
-$("downloadBtn").addEventListener("click", download);
-// For android/pull-recording.mjs (over USB) until the app can save files itself (A3).
-window.barDebug = { recording: () => ({ name: recordingName(), csv: toCSV(samples) }) };
-// ---------- lift picker ----------
+// ---------- lift picker (sticky: applies to the next set) ----------
 
 function setLift(value) {
   lift = value in SETTINGS.LIFTS ? value : "phone";
   const radio = document.querySelector(`input[name="lift"][value="${lift}"]`);
   if (radio) radio.checked = true;
+  if (tracker?.inSegment) segLift = lift;       // changed it mid-set: this set too
   try { localStorage.setItem("lift", lift); } catch { /* storage blocked: just don't remember */ }
-  if (samples.length >= 10) runAnalysis();
+  render();
 }
+
+// ---------- wire up ----------
+
+$("startBtn").addEventListener("click", startSession);
+$("endBtn").addEventListener("click", endSession);
+$("shareBtn").addEventListener("click", shareSession);
 document.querySelectorAll('input[name="lift"]').forEach((r) => r.addEventListener("change", () => setLift(r.value)));
 try { setLift(localStorage.getItem("lift") || "phone"); } catch { setLift("phone"); }
-
 $("fileInput").addEventListener("change", (e) => {
   const f = e.target.files[0];
   if (f) startReplay(f);
   e.target.value = "";
 });
-window.addEventListener("resize", () => { drawLive(); drawHeight(); });
+window.addEventListener("resize", () => { drawLive(); if (live) drawHeight(); });
+
+// For checking the app over USB (android/pull-recording.mjs, DevTools): the session,
+// and the last finished set as a CSV.
+window.barDebug = {
+  autosaveReplays: false,
+  session: () => session,
+  tracker: () => tracker,
+  summary: () => (session ? summaryCSV() : ""),
+  recording: () => {
+    const s = session?.sets[session.sets.length - 1];
+    return s ? { name: s.file, csv: toCSV(s.samples) } : { name: "none.csv", csv: "" };
+  },
+};
 render();
 drawLive();

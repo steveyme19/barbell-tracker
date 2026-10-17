@@ -16,17 +16,23 @@ export async function keepScreenOn(on) {
 }
 
 /**
- * Write a CSV to Documents/BarTracker/ on the phone, then open the share sheet so it
- * can go on to Drive, a chat or email. The file stays saved even if sharing is
- * cancelled. Returns where it was saved.
+ * Write a text file to Documents/BarTracker/[folder/]name on the phone, no permission
+ * needed (BarSensorsPlugin.saveText). Returns { uri, path }.
  */
-export async function saveAndShare(name, text) {
-  // Our own plugin method (BarSensorsPlugin.saveText); no storage permission needed.
-  const { uri } = await plugins().BarSensors.saveText({ name, text });
+export async function saveFile(folder, name, text) {
+  return plugins().BarSensors.saveText({ folder, name, text });
+}
+
+/** Delete a file saveFile wrote (e.g. a set re-saved under a different lift name). */
+export async function deleteFile(folder, name) {
+  return plugins().BarSensors.deleteText({ folder, name });
+}
+
+/** Open the share sheet for saved files (Drive, a chat, email). Closing it isn't an error. */
+export async function shareFiles(uris, title) {
   try {
-    await plugins().Share.share({ title: name, files: [uri] });
+    await plugins().Share.share({ title, files: uris });
   } catch (err) {
-    if (!/cancel/i.test(err.message)) throw err;   // closing the share sheet isn't an error
+    if (!/cancel/i.test(err.message)) throw err;
   }
-  return `Documents/BarTracker/${name}`;
 }
