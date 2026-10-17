@@ -2,7 +2,7 @@
 // Session mode: start once, lift, and the tracker finds each set and the rest between.
 import { PhoneSource, NativeSensorSource, ReplaySource } from "./sources.js";
 import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles } from "./native.js";
-import { analyze, magnitude, SETTINGS } from "./reps.js";
+import { analyze, magnitude, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { drawPlot } from "./plot.js";
@@ -11,7 +11,16 @@ const $ = (id) => document.getElementById(id);
 const ANALYZE_EVERY_MS = 500;   // at least this long between live passes
 const LIVE_SECONDS = 8;
 const REST_AFTER = 3;           // s of quiet after a rep before the card shows the rest timer
-const LIFT_NAMES = { phone: "Phone test", squat: "Squat", bench: "Bench", deadlift: "Deadlift" };
+const DEFAULT_NAMES = { phone: "Phone test", squat: "Squat", bench: "Bench", deadlift: "Deadlift", machine: "Machine" };
+const SUGGESTIONS = ["Squat", "Bench", "Deadlift", "Lat pulldown", "Cable row", "Leg extension", "Leg curl", "Chest press", "Phone test"];
+// What the typed name means for tracking (liftForExercise, D19).
+const PROFILE_HINT = {
+  phone: "Tracked as a hand-held phone test.",
+  squat: "Tracked as a squat: lockouts level, RPE estimate on.",
+  bench: "Tracked as a bench: chest and lockout level, RPE estimate on.",
+  deadlift: "Tracked as a deadlift: floor and lockout level, RPE estimate on.",
+  machine: "Tracked as a weight-stack machine: strap the phone to the top plate. No RPE estimate.",
+};
 const native = isNativeApp();
 
 let source = null;
@@ -21,8 +30,10 @@ let session = null;       // { stamp, folder, autosave, sets: [] }
 let live = null;          // analysis of the set in progress: { res, reps, tAbs }
 let recent = [];          // last LIVE_SECONDS of samples (live plot, rate)
 let nSamples = 0;
-let lift = "phone";       // sticky picker: lift for the next set
-let segLift = null;       // lift captured when the current set's motion started
+let exercise = "Phone test";  // sticky: what you typed for the next set
+let weight = "";              // sticky: weight for the next set, lb (text, may be empty)
+let lift = "phone";           // tracking profile from the exercise name (liftForExercise)
+let seg = null;               // { exercise, weight, lift } as they were when this set started moving
 let buzzed = false;       // vibrated for the set in progress yet?
 let analyzeTimer = null;
 let tickTimer = null;
@@ -53,8 +64,8 @@ function runLive() {
   if (samples.length < 10) return;
   const res = analyze(samples.map((s) => s.t),
     magnitude(samples.map((s) => s.ax), samples.map((s) => s.ay), samples.map((s) => s.az)),
-    { ...SETTINGS, LIFT: segLift ?? lift });
-  const reps = res.error ? [] : dropRackMoves(res.reps, segLift ?? lift);
+    { ...SETTINGS, LIFT: seg?.lift ?? lift });
+  const reps = res.error ? [] : dropRackMoves(res.reps, seg?.lift ?? lift);
   live = { res, reps, tAbs };
   if (reps.length && !buzzed) { buzz(150); buzzed = true; }   // a set started
 }
@@ -74,11 +85,13 @@ function scheduleAnalysis(lastMs = 0) {
 // ---------- tracker events ----------
 
 function onSet(set) {
+  set.exercise = seg?.exercise ?? exercise;
+  set.load = seg?.weight ?? weight;
+  set.rpe = "";
+  rememberExercise(set.exercise);
   live = null;
   buzzed = false;
-  segLift = null;
-  set.load = "";
-  set.rpe = "";
+  seg = null;
   set.file = setFileName(set);
   session.sets.push(set);
   buzz([100, 80, 100]);                                  // a set finished
@@ -90,7 +103,7 @@ function onSet(set) {
 function onDrop() {     // motion that wasn't a set (plates, a bump)
   live = null;
   buzzed = false;
-  segLift = null;
+  seg = null;
   render();
 }
 
@@ -102,8 +115,8 @@ function newSession({ autosave }) {
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
   session = { stamp, date: stamp.slice(0, 10), startedAt: d, folder: `session-${stamp}`, autosave, sets: [] };
   tracker = new SessionTracker({
-    liftFor: () => segLift ?? lift,
-    onSegmentStart: () => { segLift = lift; },
+    liftFor: () => seg?.lift ?? lift,
+    onSegmentStart: () => { seg = { exercise, weight, lift }; },
     onSet,
     onDrop,
   });
@@ -147,8 +160,8 @@ async function startReplay(file) {
   // Replays don't write files unless you tap Save (barDebug.autosaveReplays: USB testing).
   newSession({ autosave: native && Boolean(window.barDebug?.autosaveReplays) });
   sourceName = file.name;
-  const named = Object.keys(SETTINGS.LIFTS).find((l) => file.name.toLowerCase().includes(l));
-  if (named) setLift(named);
+  const named = liftFromName(file.name);
+  if (named !== lift && file.name.toLowerCase().includes(named)) setExercise(DEFAULT_NAMES[named]);
   const realtime = $("realtime").checked;
   source = new ReplaySource(onSample, rec, { realtime, speed: Number($("speed").value), onDone: endSession });
   begin();
@@ -201,12 +214,18 @@ function buzz(pattern) {
 
 // ---------- saving ----------
 // App: every set is written to Documents/BarTracker/session-<stamp>/ when it finishes,
-// plus session.csv (one row per set: lift, reps, rest, velocities, RPE; no raw data).
+// plus session.csv (one row per set: exercise, weight, reps, rest, velocities, RPE; no
+// raw data). Set files start bar-<profile>- so Python knows how to track them.
 // Browser: buttons only (auto downloads would pile up).
 
 function setFileName(set) {
-  return `bar-${set.lift}-${session.stamp}-set${String(set.index + 1).padStart(2, "0")}.csv`;
+  const slug = set.exercise.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30);
+  const tail = slug && slug !== set.lift ? `-${slug}` : "";
+  return `bar-${set.lift}-${session.stamp}-set${String(set.index + 1).padStart(2, "0")}${tail}.csv`;
 }
+
+// CSV field: quoted if it has a comma, quote or newline in it (exercise names are typed).
+const csvField = (x) => (/[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x));
 
 async function saveSet(set) {
   const { uri } = await saveFile(session.folder, set.file, toCSV(set.samples));
@@ -214,11 +233,11 @@ async function saveSet(set) {
 }
 
 function summaryCSV() {
-  const head = "set,date,start,file,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv," +
+  const head = "set,date,start,file,exercise,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv," +
     "vel_loss_pct,avg_rom_cm,rep_mcvs,to_failure,mount,paused_lockout,notes";
   const rows = session.sets.map((s, k) => {
     const start = new Date(session.startedAt.getTime() + s.startT * 1000).toTimeString().slice(0, 8);
-    return [k + 1, session.date, start, s.file, s.lift, s.load, s.nReps, s.rpe,
+    return [k + 1, session.date, start, s.file, csvField(s.exercise), s.lift, csvField(s.load), s.nReps, csvField(s.rpe),
       s.rpeEst ? (s.rpeEst[0] === 5 ? `<=${s.rpeEst[1]}` : `${s.rpeEst[0]}-${s.rpeEst[1]}`) : "",
       s.restBefore === null ? "" : Math.round(s.restBefore),
       s.bestMcv.toFixed(3), s.lastMcv.toFixed(3), Math.round(s.velLoss * 100), (s.avgRom * 100).toFixed(1),
@@ -263,7 +282,8 @@ async function shareSet(set) {
 function addSetCard(set) {
   const card = $("setCardTpl").content.firstElementChild.cloneNode(true);
   set.card = card;
-  card.querySelector(".set-lift").addEventListener("change", (e) => changeSetLift(set, e.target.value));
+  card.querySelector(".set-exercise").addEventListener("change", (e) => changeSetExercise(set, e.target.value));
+  card.querySelector(".set-load").value = set.load;
   card.querySelector(".set-load").addEventListener("change", (e) => { set.load = e.target.value; saveSummaryLater(); });
   card.querySelector(".set-rpe").addEventListener("change", (e) => { set.rpe = e.target.value; saveSummaryLater(); });
   card.querySelector(".set-save").addEventListener("click", () => shareSet(set));
@@ -275,7 +295,7 @@ function addSetCard(set) {
 function fillSetCard(set) {
   const c = set.card;
   c.querySelector(".set-title").textContent = `Set ${set.index + 1}`;
-  c.querySelector(".set-lift").value = set.lift;
+  c.querySelector(".set-exercise").value = set.exercise;
   c.querySelector(".set-rest").textContent = set.restBefore === null ? "first set" : `rest ${formatTime(set.restBefore)}`;
   c.querySelector(".set-stats").innerHTML = [
     [set.nReps, "reps"], [set.bestMcv.toFixed(2), "best MCV"],
@@ -294,16 +314,30 @@ function fillSetCard(set) {
   if (c.querySelector(".set-more").open) drawSetPlot(set);
 }
 
-// Picked the wrong lift? Re-run the set with the right one (the lift changes which
-// heights get leveled), re-save it under the new name, fix the rest times around it.
-async function changeSetLift(set, newLift) {
+// Typed the wrong exercise? Rename the set. If the new name means a different tracking
+// profile, re-run the set with it (it changes which heights get leveled) and fix the rest
+// times around it. Either way it's re-saved under the new file name.
+async function changeSetExercise(set, name) {
+  name = name.trim();
+  if (!name) { fillSetCard(set); return; }
+  const newLift = liftForExercise(name);
+  rememberExercise(name);
+  if (newLift === set.lift) {
+    const oldFile = set.file;
+    set.exercise = name;
+    set.file = setFileName(set);
+    fillSetCard(set);
+    render();
+    if (session.autosave) await resave(set, oldFile);
+    return;
+  }
   const s = set.samples;
   const res = analyze(s.map((x) => x.t), magnitude(s.map((x) => x.ax), s.map((x) => x.ay), s.map((x) => x.az)),
     { ...SETTINGS, LIFT: newLift });
   const reps = res.error ? [] : dropRackMoves(res.reps, newLift);
   if (!reps.length) { showError("No reps with that lift setting; kept the old one."); fillSetCard(set); return; }
   const oldFile = set.file;
-  Object.assign(set, setSummary(newLift, reps, set.tAbs), { reps, analysis: res });
+  Object.assign(set, setSummary(newLift, reps, set.tAbs), { reps, analysis: res, exercise: name });
   set.file = setFileName(set);
   const sets = session.sets;
   for (let k = Math.max(1, set.index); k <= Math.min(set.index + 1, sets.length - 1); k++) {
@@ -312,14 +346,16 @@ async function changeSetLift(set, newLift) {
   }
   fillSetCard(set);
   render();
-  if (session.autosave) {
-    try {
-      await saveSet(set);
-      if (oldFile !== set.file) await deleteFile(session.folder, oldFile);
-      await saveSummary();
-    } catch (err) {
-      showError(`Couldn't save: ${err.message}`);
-    }
+  if (session.autosave) await resave(set, oldFile);
+}
+
+async function resave(set, oldFile) {
+  try {
+    await saveSet(set);
+    if (oldFile !== set.file) await deleteFile(session.folder, oldFile);
+    await saveSummary();
+  } catch (err) {
+    showError(`Couldn't save: ${err.message}`);
   }
 }
 
@@ -343,7 +379,7 @@ function render() {
   let shown = null;                                    // the set whose numbers are shown
 
   if (running && liveReps.length) {
-    const s = { ...setSummary(segLift ?? lift, liveReps, live.tAbs), index: sets.length };
+    const s = { ...setSummary(seg?.lift ?? lift, liveReps, live.tAbs), index: sets.length, exercise: seg?.exercise ?? exercise };
     if (tracker.quietFor >= REST_AFTER && now - s.endT >= REST_AFTER) {
       state = "rest"; restFrom = s.endT;               // provisional: more reps soon = same set
     } else {
@@ -361,7 +397,7 @@ function render() {
     $(`stat${"ABCD"[k]}`).textContent = v;
     $(`label${"ABCD"[k]}`).textContent = l;
   });
-  const what = (s) => `Set ${s.index + 1} · ${LIFT_NAMES[s.lift]}`;
+  const what = (s) => `Set ${s.index + 1} · ${s.exercise}`;
 
   if (state === "set") {
     const last = liveReps[liveReps.length - 1];
@@ -379,7 +415,7 @@ function render() {
   } else if (state === "ready") {
     $("heroLabel").textContent = "Recording";
     $("heroBig").textContent = "Ready. Do your first set.";
-    $("heroSub").textContent = `Lift: ${LIFT_NAMES[lift]}. Hold the bar still for a second before and after each set.`;
+    $("heroSub").textContent = `Next: ${exercise}${weight ? ` · ${weight} lb` : ""}. Hold still for a second before and after each set.`;
   } else if (sets.length) {
     const reps = sets.reduce((n, s) => n + s.nReps, 0);
     $("heroLabel").textContent = "Session done";
@@ -463,15 +499,38 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-// ---------- lift picker (sticky: applies to the next set) ----------
+// ---------- next set: exercise + weight (sticky) ----------
 
-function setLift(value) {
-  lift = value in SETTINGS.LIFTS ? value : "phone";
-  const radio = document.querySelector(`input[name="lift"][value="${lift}"]`);
-  if (radio) radio.checked = true;
-  if (tracker?.inSegment) segLift = lift;       // changed it mid-set: this set too
-  try { localStorage.setItem("lift", lift); } catch { /* storage blocked: just don't remember */ }
+function setExercise(name) {
+  exercise = name.trim() || "Phone test";
+  lift = liftForExercise(exercise);
+  $("exercise").value = exercise;
+  $("profileHint").textContent = PROFILE_HINT[lift];
+  if (seg) seg = { ...seg, exercise, lift };         // changed it mid-set: this set too
+  try { localStorage.setItem("exercise", exercise); } catch { /* storage blocked */ }
   render();
+}
+
+function setWeight(value) {
+  weight = String(value).trim();
+  $("weight").value = weight;
+  if (seg) seg.weight = weight;
+  try { localStorage.setItem("weight", weight); } catch { /* storage blocked */ }
+  render();
+}
+
+// Suggestions: names you've used (newest first), then the common ones.
+let recents = [];
+function rememberExercise(name) {
+  recents = [name, ...recents.filter((r) => r.toLowerCase() !== name.toLowerCase())].slice(0, 12);
+  try { localStorage.setItem("recentExercises", JSON.stringify(recents)); } catch { /* storage blocked */ }
+  fillSuggestions();
+}
+function fillSuggestions() {
+  const seen = new Set();
+  $("exerciseList").innerHTML = [...recents, ...SUGGESTIONS]
+    .filter((n) => !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()))
+    .map((n) => `<option value="${n.replace(/"/g, "&quot;")}"></option>`).join("");
 }
 
 // ---------- wire up ----------
@@ -479,8 +538,15 @@ function setLift(value) {
 $("startBtn").addEventListener("click", startSession);
 $("endBtn").addEventListener("click", endSession);
 $("shareBtn").addEventListener("click", shareSession);
-document.querySelectorAll('input[name="lift"]').forEach((r) => r.addEventListener("change", () => setLift(r.value)));
-try { setLift(localStorage.getItem("lift") || "phone"); } catch { setLift("phone"); }
+$("exercise").addEventListener("change", (e) => setExercise(e.target.value));
+$("exercise").addEventListener("input", (e) => { $("profileHint").textContent = PROFILE_HINT[liftForExercise(e.target.value || "phone")]; });
+$("weight").addEventListener("change", (e) => setWeight(e.target.value));
+try { recents = JSON.parse(localStorage.getItem("recentExercises") || "[]"); } catch { recents = []; }
+fillSuggestions();
+let saved = {};
+try { saved = { exercise: localStorage.getItem("exercise"), weight: localStorage.getItem("weight") }; } catch { /* storage blocked */ }
+setExercise(saved.exercise || "Phone test");
+setWeight(saved.weight || "");
 $("fileInput").addEventListener("change", (e) => {
   const f = e.target.files[0];
   if (f) startReplay(f);

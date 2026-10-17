@@ -11,7 +11,7 @@ How it works (docs/algorithm.md section 12):
      reps.analyze(). No reps = not a set (loading plates, bumping the bar).
   4. Rack moves: unracking lifts the bar a few cm, which can count as a tiny "rep".
      Reps at the start or end of a set under RACK_FRAC of the set's median ROM go, and
-     for barbell lifts anything under RACK_MIN_ROM.
+     (except phone tests) anything under RACK_MIN_ROM.
   5. Rest = first rep of a set minus the last rep of the set before.
 
 Blocks and segments are defined so a live, sample-by-sample version (webapp/sets.js)
@@ -39,8 +39,9 @@ SET_GAP = 15.0      # s: this much quiet ends a set. Shorter pauses stay inside 
 LEAD = 2.0          # s: still before the first active block handed to the rep algorithm
 TRAIL = 2.0         # s: still after the last active block
 RACK_FRAC = 0.5     # reps at either end of a set shorter than this x median ROM = rack moves
-RACK_MIN_ROM = 0.12 # m: barbell lifts only, a rep at either end shorter than this is a rack
-                    # move too (catches an unrack before any real rep, or unrack + rerack alone)
+RACK_MIN_ROM = 0.12 # m: a rep at either end shorter than this is a rack move or a stack bump
+                    # (an unrack before any real rep, unrack + rerack alone, setting the pin).
+                    # Everything but hand-held phone tests (D19)
 
 # RPE v0 (uncalibrated, analytics.md section 5): RIR = (last rep MCV - v1RM) / DV_PER_REP.
 # v1RM per lift from the research in section 5. DV_PER_REP is a rough starting guess
@@ -85,7 +86,7 @@ def drop_rack_moves(reps, lift):
     """Unrack/rerack bumps at the ends of a set are small 'reps'. Drop them."""
     if not reps:
         return reps
-    floor = RACK_MIN_ROM if lift in V1RM else 0.0          # barbell lifts only
+    floor = RACK_MIN_ROM if lift != "phone" else 0.0       # bar or stack, not hand-held
     if len(reps) >= 2:
         floor = max(floor, RACK_FRAC * np.median([r["rom"] for r in reps]))
     while reps and reps[0]["rom"] < floor:

@@ -56,6 +56,7 @@ LIFTS = {
     "squat":    dict(bottoms=False, ends=True),   # depth varies; starts and ends standing
     "bench":    dict(bottoms=True, ends=True),    # touches the chest; starts and ends at lockout
     "deadlift": dict(bottoms=True, ends=True),    # touches the floor; starts and ends on the floor
+    "machine":  dict(bottoms=True, ends=True),    # weight stack: comes to rest on the stack every rep (D19)
 }
 LIFT = "phone"          # default; --lift=bench, or put the lift in the file name
 
@@ -323,11 +324,27 @@ def find_reps(x, v, t, windows):
 
 
 def lift_from_name(name):
-    """'bar-bench-2026-11-03-1830.csv' -> 'bench'. Anything else -> the default LIFT."""
+    """'bar-bench-2026-11-03-1830.csv' -> 'bench'. The word right after 'bar-' wins (session
+    files end in the exercise name, e.g. bar-machine-...-set02-lat-pulldown.csv); else any
+    lift name in it; else the default LIFT."""
+    lower = Path(name).name.lower()
+    if lower.startswith("bar-") and lower[4:].split("-", 1)[0] in LIFTS:
+        return lower[4:].split("-", 1)[0]
     for lift in LIFTS:
-        if lift in name.lower():
+        if lift in lower:
             return lift
     return LIFT
+
+
+def lift_for_exercise(exercise):
+    """Typed exercise name -> tracking profile (D19). Squat, bench and deadlift by name
+    (front squat, pause bench...); "phone" for a hand-held test; anything else is
+    assumed to be a weight-stack machine (lat pulldown, cable row, leg curl...)."""
+    lower = exercise.lower()
+    for lift in ("phone", "deadlift", "bench", "squat"):
+        if lift in lower:
+            return lift
+    return "machine"
 
 
 def analyze(t, a_raw, lift=LIFT):

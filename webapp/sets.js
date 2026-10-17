@@ -12,7 +12,7 @@ export const SET_SETTINGS = {
   LEAD: 2.0,        // s: still before the first active block handed to the rep algorithm
   TRAIL: 2.0,       // s: still after the last active block
   RACK_FRAC: 0.5,   // reps at either end shorter than this x median ROM = rack moves
-  RACK_MIN_ROM: 0.12, // m: barbell lifts only, an end rep shorter than this is a rack move too
+  RACK_MIN_ROM: 0.12, // m: an end rep shorter than this is a rack move / stack bump (not phone tests)
   // RPE v0, uncalibrated (analytics.md section 5): RIR = (last MCV - v1RM) / DV_PER_REP
   V1RM: { squat: 0.23, bench: 0.10, deadlift: 0.14 },
   DV_PER_REP: { squat: 0.04, bench: 0.035, deadlift: 0.04 },
@@ -28,7 +28,7 @@ function median(xs) {
 /** Unrack/rerack bumps at the ends of a set are small "reps". Drop them. */
 export function dropRackMoves(reps, lift) {
   if (!reps.length) return reps;
-  let floor = lift in S.V1RM ? S.RACK_MIN_ROM : 0;     // barbell lifts only
+  let floor = lift !== "phone" ? S.RACK_MIN_ROM : 0;   // bar or stack, not hand-held
   if (reps.length >= 2) floor = Math.max(floor, S.RACK_FRAC * median(reps.map((r) => r.rom)));
   let a = 0, b = reps.length;
   while (a < b && reps[a].rom < floor) a++;

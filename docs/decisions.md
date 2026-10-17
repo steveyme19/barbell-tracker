@@ -160,6 +160,20 @@ rough starting guess (0.04, 0.035, 0.04 m/s per rep in reserve). Shown as a rang
 off for you specifically; it gets replaced by your own fit, and comparing it with your
 own RPE calls (the "Your RPE" box) is exactly the data that fit needs.
 
+**D19 (2026-10-16): You type the exercise; its name picks the tracking profile.**
+*Why:* Quentin wants to log real exercise names and weights, and to try session mode on
+gym machines before the hardware exists. The algorithm still needs to know which heights
+repeat (LIFTS), so the name maps to a profile: contains "squat" / "bench" / "deadlift"
+-> that lift (RPE estimate on), "phone" -> phone test, anything else -> **machine**: a
+weight stack, which rests on the stack every rep (a hard stop, like the floor) and before
+and after the set, so `bottoms=True, ends=True` like deadlift, no RPE estimate. The
+12 cm rack-move floor now covers machines too (a fake 1-rep "set" from bumping the
+stack showed up in testing without it). Set files are `bar-<profile>-<stamp>-setNN-<exercise>.csv`;
+`lift_from_name` reads the profile from the word after `bar-` first, so the exercise
+part can't confuse it. Known misfits: an RDL maps to deadlift (its bottom isn't a hard
+stop), and hack squat / leg press map to squat / machine but move on an incline, which
+the vertical-only tracking can't measure right.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

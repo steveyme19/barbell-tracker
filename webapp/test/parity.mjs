@@ -92,6 +92,7 @@ for (const file of files) {
 // 0.01 s), same rep count, reps within the usual tolerance, same RPE estimate.
 const sessions = [
   ["analysis/data/fake_session_squat.csv", ["squat"]],
+  ["analysis/data/fake_session_squat.csv", ["machine"]],      // same motion as a weight-stack machine (D19)
   ["analysis/data/fake_session_joined.csv", ["squat", "phone"]],
 ];
 for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {

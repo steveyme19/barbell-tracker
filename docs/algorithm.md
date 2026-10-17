@@ -191,6 +191,7 @@ the fit can't be forced through every point. Code: `level_heights()` in `reps.py
 | deadlift | yes, the floor | on the floor (a bottom) |
 | squat | no, depth varies (and that's worth measuring) | standing, at lockout |
 | phone test | no | no: hand-held, you don't hold still at the turnaround height |
+| machine (D19) | yes: the stack rests on the stack | yes: at rest on the stack |
 
 The app has a lift picker, and Python reads the lift from the file name
 (`bar-bench-...csv`) or `--lift=`. Bottoms are a second group with their own height,
@@ -416,8 +417,9 @@ top of sections 5 to 10 finds the sets (`analysis/sets.py`, ported to
    pipeline** (`analyze()`). No reps = not a set: loading plates, bumping the bar.
 4. **Rack moves.** Unracking lifts the bar ~5 to 8 cm off the hooks, enough to pass
    `MIN_ROM` as a tiny "rep". Reps at either end of a set shorter than half the set's
-   median ROM go, and for barbell lifts anything under 12 cm (that also handles an
-   unrack + rerack with no reps, and the first seconds of a set before a real rep).
+   median ROM go, and (except phone tests) anything under 12 cm: that also handles an
+   unrack + rerack with no reps, bumping a machine's stack, and the first seconds of a
+   set before a real rep.
    **A guess until real bar sessions exist** (roadmap 2.x): walkouts and reracks may
    look different on a real bar.
 5. **Rest** = first rep start of a set minus the last rep end of the set before. Live,

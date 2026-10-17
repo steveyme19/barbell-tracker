@@ -28,14 +28,26 @@ export const SETTINGS = {
     squat: { bottoms: false, ends: true },     // depth varies; starts and ends standing
     bench: { bottoms: true, ends: true },      // touches the chest; starts and ends at lockout
     deadlift: { bottoms: true, ends: true },   // touches the floor; starts and ends on the floor
+    machine: { bottoms: true, ends: true },    // weight stack: comes to rest on the stack every rep (D19)
   },
   LIFT: "phone",
 };
 
 /** 'bar-bench-2026-11-03-1830.csv' -> 'bench'. Anything else -> the default lift. */
+// The word right after "bar-" wins (session files end in the exercise name, e.g.
+// bar-machine-...-set02-lat-pulldown.csv); else any lift name in it; else the default.
 export function liftFromName(name, S = SETTINGS) {
-  const lower = name.toLowerCase();
+  const lower = name.split(/[\\/]/).pop().toLowerCase();   // file name only, either slash
+  const first = lower.startsWith("bar-") ? lower.slice(4).split("-")[0] : "";
+  if (first in S.LIFTS) return first;
   return Object.keys(S.LIFTS).find((l) => lower.includes(l)) ?? S.LIFT;
+}
+
+/** Typed exercise name -> tracking profile (D19). Squat/bench/deadlift by name, "phone"
+ *  for a hand-held test, anything else is assumed to be a weight-stack machine. */
+export function liftForExercise(exercise) {
+  const lower = exercise.toLowerCase();
+  return ["phone", "deadlift", "bench", "squat"].find((l) => lower.includes(l)) ?? "machine";
 }
 
 /** Total acceleration, sqrt(x^2 + y^2 + z^2). Tilt-proof vertical signal (D9). */

@@ -28,12 +28,17 @@
       <div class="sub" id="heroSub">Clip the phone to the bar, tap Start, then just lift. Sets and rest are found automatically.</div>
     </section>
 
-    <section class="lifts" role="radiogroup" aria-label="Lift for the next set">
-      <label><input type="radio" name="lift" value="phone" checked><span>Phone test</span></label>
-      <label><input type="radio" name="lift" value="squat"><span>Squat</span></label>
-      <label><input type="radio" name="lift" value="bench"><span>Bench</span></label>
-      <label><input type="radio" name="lift" value="deadlift"><span>Deadlift</span></label>
+    <!-- Next set: what you're doing and with how much. Both stick until you change them. -->
+    <section class="next-set" aria-label="Next set">
+      <label class="grow">Exercise
+        <input id="exercise" list="exerciseList" autocomplete="off" enterkeyhint="done" placeholder="Squat, Lat pulldown...">
+      </label>
+      <label>Weight
+        <input id="weight" type="number" inputmode="decimal" min="0" step="5" placeholder="lb">
+      </label>
+      <datalist id="exerciseList"></datalist>
     </section>
+    <p class="profile" id="profileHint"></p>
 
     <section class="controls">
       <button id="startBtn" class="primary">Start session</button>
@@ -74,10 +79,7 @@
     <article class="set">
       <header>
         <strong class="set-title"></strong>
-        <select class="set-lift" aria-label="Lift">
-          <option value="squat">Squat</option><option value="bench">Bench</option>
-          <option value="deadlift">Deadlift</option><option value="phone">Phone test</option>
-        </select>
+        <input class="set-exercise" list="exerciseList" autocomplete="off" aria-label="Exercise">
         <span class="set-rest muted"></span>
       </header>
       <div class="set-stats"></div>

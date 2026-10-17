@@ -14,10 +14,13 @@ with its numbers, a lift picker to fix the lift, and boxes for weight and your R
 Android app (best: 400 Hz, auto-save): see `docs/android.md`. Browser: open
 `https://<your-username>.github.io/<repo-name>/webapp/` in Chrome on your phone.
 
-1. Pick the lift (it sticks until you change it), clip the phone to the bar, tap
-   **Start session**. The screen stays on.
+1. Type the exercise and weight for the next set (both stick until you change them;
+   recent names are suggested). The line under them says how it'll be tracked: squat /
+   bench / deadlift by name, anything else as a weight-stack machine (phone strapped
+   to the top plate). Clip the phone on, tap **Start session**. The screen stays on.
 2. Lift. Hold the bar still for a second before and after each set (racked is fine).
-3. Rest: the card shows the timer. Fill in weight / your RPE on the set card if you like.
+3. Rest: the card shows the timer. Type the next exercise / weight if it changes, and
+   your RPE on the set card if you like. Wrong name on a set? Fix it on its card.
 4. **End session** when you're done.
 
 Saving: the app writes every set to `Documents/BarTracker/session-<stamp>/` as it
