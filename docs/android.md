@@ -43,6 +43,19 @@ can check it on the phone.
   `analysis/data/`, and Start with the phone sensor still works (inside the app it's the
   same browser sensor, ~60 Hz, until A2).
 - Watch for: the Save CSV download doesn't work in the app's WebView. That's A3.
+- Build notes (2026-10-16, laptop): Capacitor 8.5. The Gradle wrapper is bumped to
+  9.1.0 so it runs on Java 25 (D13). `android/local.properties` (gitignored) holds
+  `sdk.dir=C:/Users/quent/AppData/Local/Android/Sdk`, with forward slashes: single
+  backslashes are escapes in a properties file and the build fails with "The filename,
+  directory name, or volume label syntax is incorrect". Build and install without
+  opening Android Studio:
+  ```
+  npx cap sync android
+  cd android && gradlew.bat assembleDebug
+  adb install -r app\build\outputs\apk\debug\app-debug.apk
+  ```
+  `adb` is `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`. Run `cap sync` after
+  every change in `webapp/`, because the app ships a copy of it.
 
 ## A2. Native sensors
 

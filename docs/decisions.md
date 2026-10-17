@@ -109,6 +109,13 @@ plain JS with no build step (P3); only the Android shell has a build. Building n
 Android Studio, Gradle and the phone on USB, so that work runs in Claude Code on
 Quentin's PC. Plan: `docs/android.md`.
 
+**D13 (2026-10-16): The Android shell's Gradle wrapper is 9.1.0, not Capacitor's 8.14.3.**
+*Why:* the only JDK on this PC is Java 25 (Temurin, and Android Studio's bundled JBR is
+25 too). Gradle 8.14 can't run on Java 25; 9.1 is the first release that can. AGP stays
+at Capacitor's 8.13.0 and builds fine on it. The alternative was installing a second JDK
+(21) and pointing `JAVA_HOME` at it per build, which is one more thing to forget. If a
+later `npx cap` update rewrites the wrapper, set it back to 9.1.0 or newer.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
