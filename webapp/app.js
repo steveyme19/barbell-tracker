@@ -40,6 +40,8 @@ let weight = "";              // sticky: weight for the next set, lb (text, may 
 let lift = "free";            // profile the name asks for (liftForExercise); blank = "free" if the sensor can't tell
 let seg = null;               // { exercise, weight, lift } as they were when this set started moving
 let buzzed = false;       // vibrated for the set in progress yet?
+let vlTarget = 20;        // velocity-loss stop target, % (0 = off). Sticky.
+let vlAlerted = false;    // buzzed for the target in this set yet?
 let analyzeTimer = null;
 let tickTimer = null;
 let wakeLock = null;
@@ -75,6 +77,11 @@ function runLive() {
   const reps = res.error ? [] : dropRackMoves(res.reps, used);
   live = { res, reps, tAbs, lift: used };
   if (reps.length && !buzzed) { buzz(150); buzzed = true; }   // a set started
+  // Velocity-loss stop: last rep vs best rep in this set, same number the card shows.
+  if (reps.length >= 2 && !vlAlerted && overTarget(setSummary(used, reps, tAbs).velLoss)) {
+    buzz([400, 120, 400]);
+    vlAlerted = true;
+  }
 }
 
 // Each pass redoes the whole set so far. At 400 Hz a long set takes a while: wait 2x
@@ -98,6 +105,7 @@ function onSet(set) {
   if (set.exercise) rememberExercise(set.exercise);
   live = null;
   buzzed = false;
+  vlAlerted = false;
   seg = null;
   set.file = setFileName(set);
   session.sets.push(set);
@@ -110,6 +118,7 @@ function onSet(set) {
 function onDrop() {     // motion that wasn't a set (plates, a bump)
   live = null;
   buzzed = false;
+  vlAlerted = false;
   seg = null;
   render();
 }
@@ -310,8 +319,8 @@ function fillSetCard(set) {
   c.querySelector(".set-rest").textContent = set.restBefore === null ? "first set" : `rest ${formatTime(set.restBefore)}`;
   c.querySelector(".set-stats").innerHTML = [
     [set.nReps, "reps"], [set.bestMcv.toFixed(2), "best MCV"],
-    [`${Math.round(set.velLoss * 100)}%`, "vel. loss"], [formatRpe(set.rpeEst), "RPE est."],
-  ].map(([v, l]) => `<div><span>${v}</span><label>${l}</label></div>`).join("");
+    [`${Math.round(set.velLoss * 100)}%`, "vel. loss", overTarget(set.velLoss)], [formatRpe(set.rpeEst), "RPE est."],
+  ].map(([v, l, over]) => `<div><span${over ? ' class="over" title="over your velocity-loss target"' : ""}>${v}</span><label>${l}</label></div>`).join("");
   const tbody = c.querySelector("tbody");
   tbody.innerHTML = "";
   set.reps.forEach((r, k) => {
@@ -394,6 +403,8 @@ function render() {
     state = "ready";
   }
   hero.dataset.state = state;
+  const alert = state === "set" && shown.nReps >= 2 && overTarget(shown.velLoss);
+  hero.classList.toggle("alert", alert);
 
   const stats = (pairs) => pairs.forEach(([v, l], k) => {
     $(`stat${"ABCD"[k]}`).textContent = v;
@@ -407,7 +418,9 @@ function render() {
     $("heroBig").innerHTML = `${last.mcv.toFixed(2)}<small>m/s</small>`;
     stats([[shown.nReps, "reps"], [(last.rom * 100).toFixed(0), "ROM cm"],
       [shown.nReps >= 2 ? `${Math.round(shown.velLoss * 100)}%` : "--", "vel. loss"], [formatRpe(shown.rpeEst), "RPE est."]]);
-    $("heroSub").textContent = last.flags.includes("no end anchor") ? "Pause at the top to lock the last rep in." : "";
+    $("heroSub").textContent = alert
+      ? `Velocity loss ${Math.round(shown.velLoss * 100)}%, past your ${vlTarget}%: stop the set.`
+      : last.flags.includes("no end anchor") ? "Pause at the top to lock the last rep in." : "";
   } else if (state === "rest") {
     $("heroLabel").textContent = `Rest · after ${what(shown)}`;
     $("heroBig").textContent = formatTime(Math.max(0, now - restFrom));
@@ -521,6 +534,17 @@ function setWeight(value) {
   render();
 }
 
+// Velocity-loss target, % of the set's best rep (0 = off). Sticky like the weight.
+function setVlTarget(value) {
+  const n = Number(value);
+  vlTarget = Number.isFinite(n) && n > 0 ? Math.min(60, n) : 0;
+  $("vlTarget").value = vlTarget || "";
+  try { localStorage.setItem("vlTarget", String(vlTarget)); } catch { /* storage blocked */ }
+  for (const s of session?.sets ?? []) fillSetCard(s);
+  render();
+}
+const overTarget = (velLoss) => vlTarget > 0 && velLoss * 100 >= vlTarget;
+
 // Suggestions: names you've used (newest first), then the common ones.
 let recents = [];
 function rememberExercise(name) {
@@ -543,6 +567,7 @@ $("shareBtn").addEventListener("click", shareSession);
 $("exercise").addEventListener("change", (e) => setExercise(e.target.value));
 $("exercise").addEventListener("input", (e) => { $("profileHint").textContent = hintFor(e.target.value); });
 $("weight").addEventListener("change", (e) => setWeight(e.target.value));
+$("vlTarget").addEventListener("change", (e) => setVlTarget(e.target.value));
 try { recents = JSON.parse(localStorage.getItem("recentExercises") || "[]"); } catch { recents = []; }
 fillSuggestions();
 let saved = {};
@@ -550,6 +575,9 @@ try { saved = { exercise: localStorage.getItem("exercise"), weight: localStorage
 // Real use is never hand-held (D21): start blank. A saved "Phone test" was only the old default.
 setExercise(saved.exercise && saved.exercise !== "Phone test" ? saved.exercise : "");
 setWeight(saved.weight || "");
+let savedVl = null;
+try { savedVl = localStorage.getItem("vlTarget"); } catch { /* storage blocked */ }
+setVlTarget(savedVl ?? 20);
 $("fileInput").addEventListener("change", (e) => {
   const f = e.target.files[0];
   if (f) startReplay(f);

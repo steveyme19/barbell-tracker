@@ -36,6 +36,9 @@
       <label>Weight
         <input id="weight" type="number" inputmode="decimal" min="0" step="5" placeholder="lb">
       </label>
+      <label class="narrow" title="Buzz when velocity loss in a set reaches this. 0 = off.">Stop at loss
+        <input id="vlTarget" type="number" inputmode="numeric" min="0" max="60" step="5" placeholder="%">
+      </label>
       <datalist id="exerciseList"></datalist>
     </section>
     <p class="profile" id="profileHint"></p>
