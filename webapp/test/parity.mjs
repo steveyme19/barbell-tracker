@@ -34,6 +34,7 @@ const defaults = [
   "analysis/data/bar-2026-10-16-1844.csv",
   "analysis/data/bar-2026-10-16-1845.csv",
   "analysis/data/bar-2026-10-16-1920.csv",
+  "analysis/data/bar-phone-2026-10-16-2123.csv",   // Android app, native sensors, 402 Hz (A2)
 ];
 const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
   .map((f) => path.resolve(ROOT, f))

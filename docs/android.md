@@ -79,9 +79,10 @@ can check it on the phone.
 - Then compare honestly: the 55.9 cm paper test and a box-squat set, native vs browser.
 - Status (2026-10-16): built and running. `BarSensorsPlugin.java` + `NativeSensorSource`.
   On the Pixel 9 Pro XL (ICM45631) it measures **402 Hz** from sensor timestamps, spacing
-  2.46 to 2.51 ms, |a| = 9.79 m/s^2 at rest. Python reads a pulled recording as fs 402 Hz
-  and matches JS (still-only so far). Left: a real moving set, checked in Python and
-  added to the parity list, then the native vs browser comparison.
+  2.46 to 2.51 ms, |a| = 9.79 m/s^2 at rest. A 5-rep phone test recorded in the app,
+  `analysis/data/bar-phone-2026-10-16-2123.csv`, gives the same ROM/MCV/peak/flags in
+  Python as on screen (0.000 mm ROM difference) and is in the parity list. **Done.**
+  Left: the native vs browser comparison (paper test, box squat).
 - Notes from building it:
   - No bundler means no `@capacitor/core`, so no `registerPlugin`. Use the proxy the
     bridge builds, `window.Capacitor.Plugins.BarSensors`.

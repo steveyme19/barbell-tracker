@@ -52,7 +52,7 @@ Capacitor wrapper around the web app (D12). Steps A0 to A4 in
 [android.md](android.md): setup, app shell, native sensors, files and screen, then
 Bluetooth to the XIAO (same time as 4.1).
 
-- [x] **A0** setup · [ ] **A1** shell runs on the phone · [ ] **A2** native sensors
+- [x] **A0** setup · [ ] **A1** shell runs on the phone · [x] **A2** native sensors
   200+ Hz · [ ] **A3** save/share CSV, screen on · [ ] **A4** BLE
 
 ## Phase 1: Hardware prototype (XIAO nRF52840 Sense)
