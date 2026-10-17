@@ -187,7 +187,7 @@ Bluetooth to the XIAO (same time as 4.1).
 
 By now `sets_log.csv` has months of sets in it. That's what makes this phase possible.
 
-- [ ] **5.1 Storage.** IndexedDB with the Session → Set → Rep model, `persist()`, export
+- [ ] **5.1 Storage.** *(2026-10-17: sessions + raw sets in IndexedDB, history list, resume. Not yet: export JSON, delete.)* IndexedDB with the Session → Set → Rep model, `persist()`, export
       and import (analytics.md §7).
 - [ ] **5.2 Features + consistency in Python.** Analytics §1 and §2 on your logged data,
       using the noise floor from 3.5. Rep to rep, set to set, session to session.

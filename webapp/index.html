@@ -15,6 +15,12 @@
   </header>
 
   <main>
+    <!-- The app lost a session (killed, crashed): offer to pick it back up. -->
+    <section id="resumeBar" class="resume" hidden>
+      <span id="resumeText"></span>
+      <button id="resumeBtn" class="small primary">Resume</button>
+      <button id="closeOldBtn" class="small">Close it</button>
+    </section>
     <!-- One big card that changes with the state: idle / ready / in set / resting. -->
     <section class="hero" id="hero" data-state="idle" aria-live="polite">
       <div class="label" id="heroLabel">Session</div>
@@ -60,6 +66,11 @@
       <button id="shareBtn" class="small">Share</button>
     </section>
     <section id="setList"></section>
+
+    <details class="history" id="history">
+      <summary>History</summary>
+      <div id="historyList"></div>
+    </details>
 
     <details class="tools">
       <summary>Tools</summary>

@@ -5,6 +5,7 @@ import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles } from "./n
 import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { parseRecording, toCSV } from "./fileio.js";
+import { askPersist, putSession, listSessions, putSetSamples, getSetSamples } from "./store.js";
 import { drawPlot } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
@@ -51,6 +52,7 @@ let sourceName = "";
 // ---------- incoming data ----------
 
 function onSample(s) {
+  session.t0Wall ??= Date.now();      // wall clock at this tracker's time 0 (rest across a resume)
   tracker.push(s);
   nSamples++;
   recent.push(s);
@@ -99,6 +101,11 @@ function scheduleAnalysis(lastMs = 0) {
 // ---------- tracker events ----------
 
 function onSet(set) {
+  set.index = session.sets.length;               // continues the count after a resume
+  set.wallStart = session.t0Wall + set.startT * 1000;
+  set.wallEnd = session.t0Wall + set.endT * 1000;
+  const prev = session.sets[session.sets.length - 1];
+  if (prev?.restored && set.restBefore === null) set.restBefore = (set.wallStart - prev.wallEnd) / 1000;
   set.exercise = seg?.exercise ?? exercise;
   set.load = seg?.weight ?? weight;
   set.rpe = "";
@@ -112,6 +119,10 @@ function onSet(set) {
   buzz([100, 80, 100]);                                  // a set finished
   addSetCard(set);
   if (session.autosave) saveSet(set).then(saveSummary).catch((err) => showError(`Couldn't save: ${err.message}`));
+  if (session.persist) {
+    putSetSamples(session.id, set.index, set.samples, set.tAbs).then(persistSession)
+      .catch((err) => showError(`Couldn't store the set: ${err.message}`));
+  }
   render();
 }
 
@@ -125,11 +136,19 @@ function onDrop() {     // motion that wasn't a set (plates, a bump)
 
 // ---------- start / end ----------
 
-function newSession({ autosave }) {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-  session = { stamp, date: stamp.slice(0, 10), startedAt: d, folder: `session-${stamp}`, autosave, sets: [] };
+function newSession({ autosave, persist = false, from = null }) {
+  if (from) {
+    // picking up a stored session: same id, folder and sets, a new tracker
+    session = sessionFromRecord(from, { autosave, persist });
+  } else {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+    // seconds in the id/folder: two sessions in the same minute must not overwrite each other
+    const id = `session-${stamp}${pad(d.getSeconds())}`;
+    session = { id, stamp, date: stamp.slice(0, 10), startedAt: d, folder: id,
+      autosave, persist, ended: false, sets: [] };
+  }
   tracker = new SessionTracker({
     liftFor: () => seg?.lift ?? lift,
     onSegmentStart: () => { seg = { exercise, weight, lift }; },
@@ -139,17 +158,26 @@ function newSession({ autosave }) {
   live = null;
   recent = [];
   nSamples = 0;
-  $("setList").innerHTML = "";
+  if (!from) $("setList").innerHTML = "";
   $("hint").textContent = "";
   $("hint").classList.remove("err");
 }
 
-async function startSession() {
+async function startSession(from = null) {
   if (!window.isSecureContext) {
     showError("Motion sensors need HTTPS. Open the GitHub Pages link on your phone.");
     return;
   }
-  newSession({ autosave: native });
+  $("resumeBar").hidden = true;
+  if (from) {
+    newSession({ autosave: native, persist: true, from });
+    await restoreSets(from);
+  } else {
+    newSession({ autosave: native, persist: true });
+  }
+  session.ended = false;
+  persistSession();
+  askPersist();
   // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
   sourceName = native ? "phone (native)" : "phone";
   source = native ? new NativeSensorSource(onSample) : new PhoneSource(onSample);
@@ -174,7 +202,7 @@ async function startReplay(file) {
     return;
   }
   // Replays don't write files unless you tap Save (barDebug.autosaveReplays: USB testing).
-  newSession({ autosave: native && Boolean(window.barDebug?.autosaveReplays) });
+  newSession({ autosave: native && Boolean(window.barDebug?.autosaveReplays), persist: Boolean(window.barDebug?.persistReplays) });
   sourceName = file.name;
   const named = liftFromName(file.name);
   if (named !== lift && file.name.toLowerCase().includes(named)) setExercise(DEFAULT_NAMES[named]);
@@ -210,7 +238,99 @@ async function endSession() {
   wakeLock = null;
   if (native) keepScreenOn(false).catch(() => {});
   if (session.autosave && session.sets.length) await saveSummary().catch(() => {});
+  session.ended = true;
+  if (session.persist) await persistSession();
   render();
+  renderHistory();
+}
+
+// ---------- stored sessions: history, resume ----------
+
+const SET_FIELDS = ["index", "exercise", "load", "rpe", "file", "restBefore", "wallStart", "wallEnd",
+  "lift", "nReps", "bestMcv", "lastMcv", "velLoss", "avgRom", "rpeEst"];
+
+function sessionRecord() {
+  return {
+    id: session.id, stamp: session.stamp, date: session.date, folder: session.folder,
+    startedAtMs: session.startedAt.getTime(), ended: Boolean(session.ended), autosave: session.autosave,
+    sets: session.sets.map((s) => Object.fromEntries(SET_FIELDS.map((k) => [k, s[k] ?? null]))),
+  };
+}
+
+function persistSession() {
+  if (!session?.persist) return Promise.resolve();
+  return putSession(sessionRecord()).catch((err) => showError(`Couldn't store the session: ${err.message}`));
+}
+
+function sessionFromRecord(rec, { autosave, persist }) {
+  return { id: rec.id, stamp: rec.stamp, date: rec.date, folder: rec.folder, startedAt: new Date(rec.startedAtMs),
+    autosave, persist, ended: rec.ended, sets: [] };
+}
+
+// Load a stored session's sets back in: raw samples from the store, re-analyzed (same
+// pipeline, so the same reps), cards rebuilt. Rest and wall times come from the record.
+async function restoreSets(rec) {
+  $("setList").innerHTML = "";
+  for (const r of rec.sets) {
+    const raw = await getSetSamples(rec.id, r.index);
+    if (!raw) continue;
+    const set = { ...r, samples: raw.samples, tAbs: raw.tAbs, restored: true };
+    const { res, used, reps } = analyzeSet(set.samples, set.exercise);
+    if (!reps.length) continue;
+    Object.assign(set, setSummary(used, reps, set.tAbs), { reps, analysis: res, restBefore: r.restBefore });
+    session.sets.push(set);
+    addSetCard(set);
+  }
+}
+
+async function viewSession(rec) {
+  if (running) return;
+  session = sessionFromRecord(rec, { autosave: native && rec.autosave, persist: true });
+  session.viewing = true;
+  tracker = null;
+  live = null;
+  await restoreSets(rec);
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+const fmtWhen = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+async function renderHistory() {
+  let all = [];
+  try { all = (await listSessions()).filter((s) => s.sets.length); } catch { /* no IndexedDB */ }
+  const list = $("historyList");
+  list.innerHTML = all.length ? "" : '<p class="history-empty">No saved sessions yet.</p>';
+  for (const rec of all) {
+    const reps = rec.sets.reduce((n, s) => n + (s.nReps || 0), 0);
+    const names = [...new Set(rec.sets.map((s) => s.exercise || DEFAULT_NAMES[s.lift] || "Set"))].slice(0, 3).join(", ");
+    const b = document.createElement("button");
+    b.className = "history-item";
+    b.innerHTML = `<span>${fmtWhen(rec.startedAtMs)}${rec.ended ? "" : " (unfinished)"}</span><span>${rec.sets.length} sets · ${reps} reps · ${names}</span>`;
+    b.addEventListener("click", () => viewSession(rec));
+    list.appendChild(b);
+  }
+}
+
+// A session that never got "End session" (app killed, phone died): offer to resume it.
+async function checkUnfinished() {
+  let all = [];
+  try { all = await listSessions(); } catch { return; }
+  const rec = all.find((s) => !s.ended);
+  if (!rec) return;
+  if (!rec.sets.length) {                     // nothing in it: just close it
+    await putSession({ ...rec, ended: true }).catch(() => {});
+    return;
+  }
+  const last = rec.sets[rec.sets.length - 1];
+  $("resumeText").textContent = `Unfinished session from ${fmtWhen(rec.startedAtMs)}: ${rec.sets.length} sets, last one ${formatTime(Math.max(0, Date.now() - (last.wallEnd ?? rec.startedAtMs)) / 1000)} ago.`;
+  $("resumeBar").hidden = false;
+  $("resumeBtn").onclick = () => startSession(rec);
+  $("closeOldBtn").onclick = async () => {
+    await putSession({ ...rec, ended: true }).catch(() => {});
+    $("resumeBar").hidden = true;
+    renderHistory();
+  };
 }
 
 // ---------- screen stays on for the whole session ----------
@@ -337,15 +457,20 @@ function fillSetCard(set) {
 // Typed the wrong exercise? Rename the set and re-run it: squat / bench / deadlift / phone
 // pick their own profile, anything else (or blank) lets the sensor pick machine or free
 // weight (D21). Fix the rest times around it and re-save under the new file name.
-async function changeSetExercise(set, name) {
-  name = name.trim();
+// One set through the pipeline, with the profile its name asks for (D21: the sensor picks
+// for anything but squat / bench / deadlift / phone).
+function analyzeSet(s, name) {
   const named = name ? liftForExercise(name) : "free";
-  if (name) rememberExercise(name);
-  const s = set.samples;
   const res = analyze(s.map((x) => x.t), magnitude(s.map((x) => x.ax), s.map((x) => x.ay), s.map((x) => x.az)),
     { ...SETTINGS, LIFT: named }, imuOf(s));
   const used = res.error ? named : res.lift;
-  const reps = res.error ? [] : dropRackMoves(res.reps, used);
+  return { res, used, reps: res.error ? [] : dropRackMoves(res.reps, used) };
+}
+
+async function changeSetExercise(set, name) {
+  name = name.trim();
+  if (name) rememberExercise(name);
+  const { res, used, reps } = analyzeSet(set.samples, name);
   if (!reps.length) { showError("No reps with that lift setting; kept the old one."); fillSetCard(set); return; }
   const oldFile = set.file;
   Object.assign(set, setSummary(used, reps, set.tAbs), { reps, analysis: res, exercise: name });
@@ -357,6 +482,7 @@ async function changeSetExercise(set, name) {
   }
   fillSetCard(set);
   render();
+  persistSession();
   if (session.autosave) await resave(set, oldFile);
 }
 
@@ -372,6 +498,7 @@ async function resave(set, oldFile) {
 
 let summaryTimer = null;
 function saveSummaryLater() {
+  persistSession();
   if (!session.autosave) return;
   clearTimeout(summaryTimer);
   summaryTimer = setTimeout(() => saveSummary().catch((err) => showError(`Couldn't save: ${err.message}`)), 800);
@@ -398,7 +525,9 @@ function render() {
     }
     shown = s;
   } else if (running && lastSet) {
-    state = "rest"; restFrom = lastSet.endT; shown = lastSet;
+    state = "rest"; shown = lastSet;
+    // a set from before a resume lives on the old clock: count its rest in wall time
+    restFrom = lastSet.restored ? now - (Date.now() - lastSet.wallEnd) / 1000 : lastSet.endT;
   } else if (running) {
     state = "ready";
   }
@@ -433,7 +562,7 @@ function render() {
     $("heroSub").textContent = `Next: ${exercise || "any exercise (the sensor decides)"}${weight ? ` · ${weight} lb` : ""}. Hold still for a second before and after each set.`;
   } else if (sets.length) {
     const reps = sets.reduce((n, s) => n + s.nReps, 0);
-    $("heroLabel").textContent = "Session done";
+    $("heroLabel").textContent = session.viewing ? `Past session · ${fmtWhen(session.startedAt.getTime())}` : "Session done";
     $("heroBig").textContent = `${sets.length} set${sets.length === 1 ? "" : "s"} · ${reps} reps`;
     $("heroSub").textContent = session.autosave ? `Saved to Documents/BarTracker/${session.folder}/` : "";
   } else {
@@ -561,7 +690,7 @@ function fillSuggestions() {
 
 // ---------- wire up ----------
 
-$("startBtn").addEventListener("click", startSession);
+$("startBtn").addEventListener("click", () => startSession());
 $("endBtn").addEventListener("click", endSession);
 $("shareBtn").addEventListener("click", shareSession);
 $("exercise").addEventListener("change", (e) => setExercise(e.target.value));
@@ -589,6 +718,7 @@ window.addEventListener("resize", () => { drawLive(); if (live) drawHeight(); })
 // and the last finished set as a CSV.
 window.barDebug = {
   autosaveReplays: false,
+  persistReplays: false,      // store replayed sessions in history (testing)
   session: () => session,
   tracker: () => tracker,
   summary: () => (session ? summaryCSV() : ""),
@@ -601,3 +731,5 @@ window.barDebug = {
 $("masthead").textContent = `Training log · ${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}`;
 render();
 drawLive();
+renderHistory();
+checkUnfinished();

@@ -33,6 +33,14 @@ Look: classic and restrained (warm off-white, ink, oxblood for a set in progress
 for rest; sans for the UI, serif for the title and big numbers). Colors are CSS
 variables at the top of `style.css`; device fonts only, so it works offline.
 
+History (below the sets): every session is also kept in the app (IndexedDB). Open an old
+one to see or edit it; if the app was killed mid-session, the next start offers **Resume**
+(rest across the gap is timed with the wall clock). The CSVs in Documents stay the real
+backup: browser storage can be wiped.
+
+Velocity-loss alert: **Stop at loss** (default 20 %, 0 = off). When a set's last rep is that
+much slower than its best, the phone buzzes long-short-long and the card turns red.
+
 Tools (at the bottom): replay a recording (a long file shows up as sets; real time at
 1/10/30x, or all at once), the live acceleration plot and the sample rate.
 
@@ -44,6 +52,7 @@ Tools (at the bottom): replay a recording (a long file shows up as sets; real ti
 | `app.js` | UI wiring: source → session tracker → algorithm → UI |
 | `sets.js` | session mode: finds sets + rest live, ported from `analysis/sets.py`; RPE estimate v0 |
 | `native.js` | Android-app-only extras: save/share files, keep the screen on |
+| `store.js` | session history in IndexedDB: a small record per session + each set's raw samples (history list, resume after the app was killed) |
 | `sources.js` | `PhoneSource` (DeviceMotion), `ReplaySource` (recordings). `BleSource` comes in phase 4. |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
 | `fileio.js` | read phyphox CSV/zip, write CSV |

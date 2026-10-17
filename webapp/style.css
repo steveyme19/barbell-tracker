@@ -135,6 +135,19 @@ th { color: var(--muted); font-size: 12px; font-weight: 600; }
 th:first-child, td:first-child { text-align: left; }
 td.flag { color: var(--ochre); font-size: 11px; text-align: left; }
 
+.resume {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--navy); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px;
+}
+.resume span { flex: 1 1 100%; }
+.history { margin-top: 18px; }
+.history summary { cursor: pointer; color: var(--muted); font-size: 14px; font-weight: 600; padding: 6px 0; }
+.history-item {
+  display: flex; justify-content: space-between; gap: 8px; width: 100%; min-height: 44px; margin-bottom: 6px;
+  text-align: left; font-weight: 400; font-size: 14px;
+}
+.history-item span:last-child { color: var(--muted); }
+.history-empty { color: var(--muted); font-size: 13px; }
 .tools { margin-top: 18px; }
 .tools > summary { font-size: 14px; }
 footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0; }
