@@ -1,7 +1,8 @@
 # Hardware
 
-Design files start at roadmap phase 4. The parts list for every phase is in
-[BOM.md](BOM.md).
+The parts list for every phase is in [BOM.md](BOM.md). The printed pod and bar
+adapters for phases 1 to 3 are in [enclosure.md](enclosure.md) (one pod, two adapters,
+sketch in `layout_v1.png`). The final enclosure and carrier PCB start at phase 4.
 
 Planned layout:
 

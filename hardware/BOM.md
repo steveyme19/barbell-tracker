@@ -30,7 +30,8 @@ Plans change, and phase 4 depends on what phase 3 finds.
 | Seeed XIAO nRF52840 **Sense** 3-pack (unsoldered) | 1.1 | $53.49 (Amazon, Oct 2026) | One for dev, one for the carrier PCB in phase 4, one spare. Must say **Sense**: the plain nRF52840 has no IMU. Phases 1.1 to 1.5 only need USB-C, so headers can wait. |
 | USB-C cable, **data-capable** | 1.1 | have one? | Some USB-C cables only charge. If the board never shows up on the laptop, suspect the cable first. |
 | 2.54 mm male headers, breadboard, jumper wires | 1.6 | est. a few $ | Only needed once you wire something external (the laser). Solder headers onto one XIAO then. |
-| 3D-printed calibration cube | 1.3 | filament | Holds the XIAO square so each face can sit flat for the 6-position calibration and the full-turn gyro test. Design it in Fusion. |
+| 3D-printed pod (case + lid) | 1.3 | filament | Holds the XIAO and LiPo. Its flat, square faces make it the calibration cube for the 6-position calibration and the full-turn gyro test. See [enclosure.md](enclosure.md). |
+| M2 + M3 heat-set inserts and screws | 1.3 | est. ~$10 for a kit | lid (M2) and the adapter interface (M3) |
 | 3.7 V LiPo, ~400 mAh, **with protection circuit** | 1.5 | $9.15 each at Jameco (Adafruit #3898, sold in pairs) | JST-PH connector. Protection circuit cuts off at 3.0 V and blocks shorts. A spare is handy. |
 | JST-PH 2-pin socket with pigtail wires | 1.5 | est. a few $ | The XIAO has battery solder pads, not a connector. Solder a socket on so the battery unplugs. |
 | *Optional:* TF-Luna lidar | 1.6 | $30.99 (Waveshare) | UART or I2C, 3.3 V logic (works with the XIAO directly). Needs a **3.7 to 5.2 V supply**, so power it from the XIAO's 5 V pin while on USB for the bench test. |
@@ -45,8 +46,8 @@ Battery life estimate: the XIAO streaming IMU data probably draws something like
 | item | step | price | notes |
 |---|---|---|---|
 | Hook-and-loop straps + zip ties | 2.1 | est. a few $ | temporary mount on the shaft |
-| Neodymium pot (cup) magnets, a few | 2.1 | est. a few $ each | temporary mount on the sleeve end (O3). Pot magnets hold far harder than plain disc magnets of the same size. |
-| 3D-printed temporary case | 2.1 | filament | XIAO + LiPo in one piece so nothing flaps around. **Nothing loose on a loaded bar.** |
+| Neodymium pot (cup) magnets, Ø16 countersunk M3, 3 or 4 | 2.1 | est. a few $ each | sleeve-end adapter (O3). Pot magnets hold far harder than plain disc magnets of the same size. Only on a steel end face. |
+| 3D-printed bar adapters: sleeve-end puck, shaft saddle | 2.1 | filament | Screw to the pod. Shaft saddle uses the strap or a small hose clamp, plus a TPU or rubber pad. **Nothing loose on a loaded bar.** See [enclosure.md](enclosure.md). |
 | *Optional (2.8):* Pololu 5 V step-up regulator U1V11F5 | 2.8 | $7.95 (Pololu) | Runs the TF-Luna from the LiPo: 0.5 to 5.5 V in, 12 × 15 mm. Its SHDN pin can switch the laser off between sets. |
 
 With the laser on, battery draw jumps to roughly 120 mA (70 mA at 5 V through a boost

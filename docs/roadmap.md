@@ -64,7 +64,8 @@ Bluetooth to the XIAO (same time as 4.1).
 - [ ] **1.1 Hello board.** Blink + Serial print. Pick the board package (decision O4).
 - [ ] **1.2 IMU over USB.** Read accel + gyro at a fixed rate, print over serial, log
       to CSV in Python. No BLE yet. One new thing at a time.
-- [ ] **1.3 Characterize the IMU.** Set sample rate and ranges (O5). Measure noise and
+- [ ] **1.3 Characterize the IMU.** (Print the pod first: it's the calibration cube,
+      [hardware/enclosure.md](../hardware/enclosure.md).) Set sample rate and ranges (O5). Measure noise and
       bias at rest. Do a 6-position calibration (each face down, each axis should read
       ±g) to get per-axis bias and scale. This is the fix for the scale error that
       zero-velocity correction can't catch. Then calibrate **gyro scale** per axis
