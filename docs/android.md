@@ -77,6 +77,21 @@ can check it on the phone.
 - **Done when:** the footer shows 200+ Hz, and a recording replays in Python with the
   same results as the app (add one to `analysis/data/` and to the parity list).
 - Then compare honestly: the 55.9 cm paper test and a box-squat set, native vs browser.
+- Status (2026-10-16): built and running. `BarSensorsPlugin.java` + `NativeSensorSource`.
+  On the Pixel 9 Pro XL (ICM45631) it measures **402 Hz** from sensor timestamps, spacing
+  2.46 to 2.51 ms, |a| = 9.79 m/s^2 at rest. Python reads a pulled recording as fs 402 Hz
+  and matches JS (still-only so far). Left: a real moving set, checked in Python and
+  added to the parity list, then the native vs browser comparison.
+- Notes from building it:
+  - No bundler means no `@capacitor/core`, so no `registerPlugin`. Use the proxy the
+    bridge builds, `window.Capacitor.Plugins.BarSensors`.
+  - Samples wait for the first gyro event, so none carries a fake 0 deg/s.
+  - Stop waits for the plugin's last batch, so the final analysis and the CSV agree.
+  - At 400 Hz one analysis pass over a 60 s set takes ~170 ms in the WebView (60 ms at
+    60 Hz). Live passes now wait max(500 ms, 2x the last pass). Same algorithm, same input.
+  - Getting a recording to the PC before A3: Stop the set, then
+    `node android/pull-recording.mjs` saves it to `analysis/data/` with the usual name
+    (reads `window.barDebug` in the debug WebView over adb).
 
 ## A3. Files and screen
 

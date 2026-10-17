@@ -1,11 +1,11 @@
 // UI wiring: source -> algorithm -> UI (decision D4).
-import { PhoneSource, ReplaySource } from "./sources.js";
+import { PhoneSource, NativeSensorSource, ReplaySource, isNativeApp } from "./sources.js";
 import { analyze, magnitude, SETTINGS } from "./reps.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { drawPlot } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
-const ANALYZE_EVERY_MS = 500;
+const ANALYZE_EVERY_MS = 500;   // at least this long between live passes
 const LIVE_SECONDS = 8;
 
 let samples = [];
@@ -36,6 +36,18 @@ function runAnalysis() {
   render();
 }
 
+// Live re-analysis. Each pass redoes the whole set, so at 400 Hz (native sensors) a long
+// set takes a while: wait 2x the last pass's run time when that's more than 500 ms, so
+// the UI never spends more than about a third of its time on analysis.
+function scheduleAnalysis(lastMs = 0) {
+  analyzeTimer = setTimeout(() => {
+    if (!running) return;
+    const t0 = performance.now();
+    runAnalysis();
+    scheduleAnalysis(performance.now() - t0);
+  }, Math.max(ANALYZE_EVERY_MS, 2 * lastMs));
+}
+
 // ---------- start / stop ----------
 
 async function startPhone() {
@@ -44,8 +56,10 @@ async function startPhone() {
     return;
   }
   reset();
-  sourceName = "phone";
-  source = new PhoneSource(onSample);
+  // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
+  const native = isNativeApp();
+  sourceName = native ? "phone (native)" : "phone";
+  source = native ? new NativeSensorSource(onSample) : new PhoneSource(onSample);
   try {
     await source.start();
   } catch (err) {
@@ -84,15 +98,15 @@ function begin() {
   $("stopBtn").disabled = false;
   $("downloadBtn").disabled = true;
   setStatus("Hold still…", "wait");
-  analyzeTimer = setInterval(runAnalysis, ANALYZE_EVERY_MS);
+  scheduleAnalysis();
   keepAwake();
 }
 
-function stop() {
+async function stop() {
   if (!running) return;
   running = false;
-  source?.stop();
-  clearInterval(analyzeTimer);
+  await source?.stop();   // native source: wait for its last batch
+  clearTimeout(analyzeTimer);
   runAnalysis();
   drawLive();
   updateFooter();
@@ -124,14 +138,17 @@ document.addEventListener("visibilitychange", () => {
 
 // ---------- download ----------
 
-function download() {
-  const blob = new Blob([toCSV(samples)], { type: "text/csv" });
+function recordingName() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  const name = `bar-${lift}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+  return `bar-${lift}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+}
+
+function download() {
+  const blob = new Blob([toCSV(samples)], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = name;
+  a.download = recordingName();
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
@@ -214,8 +231,10 @@ function updateFooter() {
   if (source instanceof PhoneSource && source.interval) {
     rate = `${Math.round(1000 / source.interval)} Hz (interval ${source.interval.toFixed(1)} ms)`;
   } else if (samples.length > 10) {
+    // Measured from the sample timestamps, so it's the real rate, not the requested one.
     const n = samples.length;
     rate = `${Math.round((n - 1) / (samples[n - 1].t - samples[0].t))} Hz`;
+    if (source instanceof NativeSensorSource && source.info) rate += ` (${source.info.accel})`;
   }
   $("rate").textContent = sourceName ? `${sourceName} · ${rate}` : rate;
   $("samples").textContent = `${samples.length} samples`;
@@ -242,6 +261,8 @@ function cssVar(name) {
 $("startBtn").addEventListener("click", startPhone);
 $("stopBtn").addEventListener("click", stop);
 $("downloadBtn").addEventListener("click", download);
+// For android/pull-recording.mjs (over USB) until the app can save files itself (A3).
+window.barDebug = { recording: () => ({ name: recordingName(), csv: toCSV(samples) }) };
 // ---------- lift picker ----------
 
 function setLift(value) {

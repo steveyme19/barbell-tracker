@@ -1,7 +1,8 @@
 // Data sources. Every source calls onSample({ t, ax, ay, az, gx, gy, gz })
 // with t in seconds, acceleration in m/s^2 (including gravity), rotation in deg/s.
 // The algorithm and UI never know which source they're getting (decision D4).
-// Phase 4 adds a BleSource (Web Bluetooth) with the same shape.
+// Phase 4 adds a BleSource (Web Bluetooth) with the same shape. NativeSensorSource is
+// the Android app's phone sensor (docs/android.md A2).
 
 /** Live phone sensor via DeviceMotion. Chrome typically delivers ~60 Hz. */
 export class PhoneSource {
@@ -37,6 +38,44 @@ export class PhoneSource {
       ax: a.x, ay: a.y, az: a.z,
       gx: r.beta ?? 0, gy: r.gamma ?? 0, gz: r.alpha ?? 0,
     });
+  }
+}
+
+// The Capacitor bridge puts window.Capacitor in the Android app (no import needed, so
+// webapp/ keeps no build step). In a normal browser it isn't there.
+let barSensors = null;
+export function isNativeApp() {
+  return !!window.Capacitor?.isNativePlatform?.();
+}
+
+/**
+ * Live phone sensor in the Android app, via the BarSensors plugin
+ * (android/.../BarSensorsPlugin.java). Full rate (200+ Hz), full precision, and t from
+ * the sensor's own clock. Samples arrive in ~50 ms batches.
+ */
+export class NativeSensorSource {
+  constructor(onSample) {
+    this.onSample = onSample;
+    this.listener = null;
+    this.info = null;                // sensor names and max rates, from the plugin
+  }
+
+  async start() {
+    // The bridge builds a proxy for every native plugin; registerPlugin lives in
+    // @capacitor/core, which a no-build app never loads.
+    barSensors ??= window.Capacitor.Plugins.BarSensors;
+    this.listener = await barSensors.addListener("samples", (b) => {
+      for (let i = 0; i < b.t.length; i++) {
+        this.onSample({ t: b.t[i], ax: b.ax[i], ay: b.ay[i], az: b.az[i], gx: b.gx[i], gy: b.gy[i], gz: b.gz[i] });
+      }
+    });
+    this.info = await barSensors.start();
+  }
+
+  async stop() {
+    await barSensors?.stop();
+    await this.listener?.remove();
+    this.listener = null;
   }
 }
 

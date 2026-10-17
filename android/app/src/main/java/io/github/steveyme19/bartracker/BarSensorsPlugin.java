@@ -1,0 +1,165 @@
+package io.github.steveyme19.bartracker;
+
+import android.content.Context;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.os.Handler;
+import android.os.HandlerThread;
+
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+/**
+ * Phone accelerometer + gyro at the fastest rate the phone allows (docs/android.md A2).
+ *
+ * Emits "samples" events, each a batch of about 50 ms:
+ *   { t: [...], ax: [...], ay: [...], az: [...], gx: [...], gy: [...], gz: [...] }
+ * t is seconds since start() on the sensor's own clock (SensorEvent.timestamp), never
+ * the time the batch reaches JS. Acceleration in m/s^2 including gravity, gyro in deg/s,
+ * same device axes as the browser's DeviceMotion, so it's the D4 sample format.
+ */
+@CapacitorPlugin(name = "BarSensors")
+public class BarSensorsPlugin extends Plugin implements SensorEventListener {
+
+    private static final long BATCH_NS = 50_000_000L;   // flush to JS every ~50 ms
+    private static final double RAD_TO_DEG = 180.0 / Math.PI;
+
+    private SensorManager sm;
+    private Sensor accel;
+    private Sensor gyro;
+    private HandlerThread thread;    // sensor callbacks run here, off the UI thread
+
+    // Everything below is only touched on the sensor thread.
+    private long t0 = -1;            // timestamp of the first accel event, ns
+    private long lastFlush = 0;
+    private float gx, gy, gz;        // latest gyro reading, deg/s
+    private boolean haveGyro;        // false until the first gyro event
+    private JSArray bt, bax, bay, baz, bgx, bgy, bgz;
+
+    @Override
+    public void load() {
+        sm = (SensorManager) getContext().getSystemService(Context.SENSOR_SERVICE);
+        accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gyro = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+    }
+
+    @PluginMethod
+    public void start(PluginCall call) {
+        if (accel == null) {
+            call.reject("This phone has no accelerometer.");
+            return;
+        }
+        stopSensors();
+        thread = new HandlerThread("BarSensors");
+        thread.start();
+        Handler h = new Handler(thread.getLooper());
+        h.post(() -> {   // reset state on the sensor thread so no callback sees it half done
+            t0 = -1;
+            gx = gy = gz = 0;
+            haveGyro = (gyro == null);   // no gyro: never wait for one
+            newBatch();
+        });
+        // Delay 0 = SENSOR_DELAY_FASTEST. Above 200 Hz needs HIGH_SAMPLING_RATE_SENSORS (manifest).
+        sm.registerListener(this, accel, SensorManager.SENSOR_DELAY_FASTEST, h);
+        if (gyro != null) sm.registerListener(this, gyro, SensorManager.SENSOR_DELAY_FASTEST, h);
+
+        JSObject info = new JSObject();
+        info.put("accel", accel.getName());
+        info.put("accelMaxHz", accel.getMinDelay() > 0 ? 1e6 / accel.getMinDelay() : 0);
+        info.put("gyro", gyro != null ? gyro.getName() : null);
+        info.put("gyroMaxHz", gyro != null && gyro.getMinDelay() > 0 ? 1e6 / gyro.getMinDelay() : 0);
+        call.resolve(info);
+    }
+
+    @PluginMethod
+    public void stop(PluginCall call) {
+        stopSensors();
+        call.resolve();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        stopSensors();
+    }
+
+    private void stopSensors() {
+        sm.unregisterListener(this);
+        if (thread != null) {
+            // Flush what's left, then end the thread after that runs.
+            Handler h = new Handler(thread.getLooper());
+            h.post(this::flush);
+            thread.quitSafely();
+            // Wait for that last flush, so JS gets every sample before stop() resolves.
+            try { thread.join(500); } catch (InterruptedException ignored) {}
+            thread = null;
+        }
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent e) {
+        if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            gx = (float) (e.values[0] * RAD_TO_DEG);
+            gy = (float) (e.values[1] * RAD_TO_DEG);
+            gz = (float) (e.values[2] * RAD_TO_DEG);
+            haveGyro = true;
+            return;
+        }
+        // One sample per accel event, paired with the most recent gyro reading. Skip the
+        // first few ms before the gyro has reported, so no sample carries a fake 0 deg/s.
+        if (!haveGyro) return;
+        if (t0 < 0) {
+            t0 = e.timestamp;
+            lastFlush = e.timestamp;
+        }
+        bt.put(Double.valueOf((e.timestamp - t0) / 1e9));
+        add(bax, e.values[0]);
+        add(bay, e.values[1]);
+        add(baz, e.values[2]);
+        add(bgx, gx);
+        add(bgy, gy);
+        add(bgz, gz);
+        if (e.timestamp - lastFlush >= BATCH_NS) {
+            lastFlush = e.timestamp;
+            flush();
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+
+    private void flush() {
+        if (bt == null || bt.length() == 0) return;
+        JSObject batch = new JSObject();
+        batch.put("t", bt);
+        batch.put("ax", bax);
+        batch.put("ay", bay);
+        batch.put("az", baz);
+        batch.put("gx", bgx);
+        batch.put("gy", bgy);
+        batch.put("gz", bgz);
+        notifyListeners("samples", batch);
+        newBatch();
+    }
+
+    // put(Object) instead of put(double), which throws a checked exception. Going through
+    // Float.toString keeps a float like 9.81f as 9.81 instead of 9.8100004196167.
+    private static void add(JSArray a, float v) {
+        a.put(Double.valueOf(Float.toString(v)));
+    }
+
+    private void newBatch() {
+        bt = new JSArray();
+        bax = new JSArray();
+        bay = new JSArray();
+        baz = new JSArray();
+        bgx = new JSArray();
+        bgy = new JSArray();
+        bgz = new JSArray();
+    }
+}
