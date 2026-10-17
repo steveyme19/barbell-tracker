@@ -37,6 +37,7 @@ const defaults = [
   "analysis/data/bar-phone-2026-10-16-2123.csv",   // Android app, native sensors, 402 Hz (A2)
   "analysis/data/bar-squat-2026-10-16-2131.csv",   // native squat set, box-sit bottoms (A2 comparison)
   "analysis/data/bar-squat-2026-10-16-2134-browser.csv",   // same squats, browser 60 Hz (A2 comparison)
+  "analysis/data/bar-phone-2026-10-16-2206.csv",   // saved by the app's Save CSV (A3)
 ];
 const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
   .map((f) => path.resolve(ROOT, f))

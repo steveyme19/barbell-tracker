@@ -128,8 +128,10 @@ can check it on the phone.
   - Save CSV in the app: `BarSensorsPlugin.saveText` writes
     `Documents/BarTracker/bar-<lift>-....csv` (no storage permission on Android 11+),
     then `@capacitor/share` opens the share sheet. Closing the sheet keeps the file.
-    Code in `webapp/native.js`; the browser keeps its download. Verified: a 2308-row
-    set saved. Not verified yet: the share sheet itself (needs the phone unlocked).
+    Code in `webapp/native.js`; the browser keeps its download. Verified: Quentin saved
+    a set and the share sheet opened and shared; the file
+    (`analysis/data/bar-phone-2026-10-16-2206.csv`) pulled with adb reads in Python at
+    402 Hz and passes parity. **Done.**
   - Not `@capacitor/filesystem`: it's Kotlin with `jvmToolchain(21)` and this PC only
     has Java 25 (D16). Writing one text file is ~15 lines in our own plugin.
   - Screen: `BarSensorsPlugin.keepScreenOn` sets `FLAG_KEEP_SCREEN_ON` on the window
