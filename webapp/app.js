@@ -2,7 +2,7 @@
 // Session mode: start once, lift, and the tracker finds each set and the rest between.
 import { PhoneSource, NativeSensorSource, ReplaySource } from "./sources.js";
 import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles } from "./native.js";
-import { analyze, magnitude, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
+import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { drawPlot } from "./plot.js";
@@ -11,16 +11,21 @@ const $ = (id) => document.getElementById(id);
 const ANALYZE_EVERY_MS = 500;   // at least this long between live passes
 const LIVE_SECONDS = 8;
 const REST_AFTER = 3;           // s of quiet after a rep before the card shows the rest timer
-const DEFAULT_NAMES = { phone: "Phone test", squat: "Squat", bench: "Bench", deadlift: "Deadlift", machine: "Machine" };
+const DEFAULT_NAMES = { phone: "Phone test", squat: "Squat", bench: "Bench", deadlift: "Deadlift", machine: "Machine", free: "Free weight" };
 const SUGGESTIONS = ["Squat", "Bench", "Deadlift", "Lat pulldown", "Cable row", "Leg extension", "Leg curl", "Chest press", "Phone test"];
-// What the typed name means for tracking (liftForExercise, D19).
+// What the typed name means for tracking (liftForExercise D19, chooseLift D21).
 const PROFILE_HINT = {
   phone: "Tracked as a hand-held phone test.",
   squat: "Tracked as a squat: lockouts level, RPE estimate on.",
   bench: "Tracked as a bench: chest and lockout level, RPE estimate on.",
   deadlift: "Tracked as a deadlift: floor and lockout level, RPE estimate on.",
-  machine: "Tracked as a weight-stack machine: strap the phone to the top plate. No RPE estimate.",
+  machine: "Not squat, bench or deadlift: the sensor checks machine vs free weight.",
+  free: "Tracked as a free weight: lockouts only, no RPE estimate.",
 };
+const BLANK_HINT = "No name: the sensor checks machine vs free weight.";
+const hintFor = (name) => (name.trim() ? PROFILE_HINT[liftForExercise(name)] : BLANK_HINT);
+// What to call a set: its name, or what it was tracked as (machine / free weight).
+const nameOf = (s) => s.exercise || DEFAULT_NAMES[s.lift] || "Set";
 const native = isNativeApp();
 
 let source = null;
@@ -30,9 +35,9 @@ let session = null;       // { stamp, folder, autosave, sets: [] }
 let live = null;          // analysis of the set in progress: { res, reps, tAbs }
 let recent = [];          // last LIVE_SECONDS of samples (live plot, rate)
 let nSamples = 0;
-let exercise = "Phone test";  // sticky: what you typed for the next set
+let exercise = "";            // sticky: what you typed for the next set (blank = sensor decides)
 let weight = "";              // sticky: weight for the next set, lb (text, may be empty)
-let lift = "phone";           // tracking profile from the exercise name (liftForExercise)
+let lift = "free";            // profile the name asks for (liftForExercise); blank = "free" if the sensor can't tell
 let seg = null;               // { exercise, weight, lift } as they were when this set started moving
 let buzzed = false;       // vibrated for the set in progress yet?
 let analyzeTimer = null;
@@ -62,11 +67,13 @@ function runLive() {
   if (!tracker?.inSegment) { live = null; return; }
   const { samples, tAbs } = tracker.segmentSamples();
   if (samples.length < 10) return;
+  const named = seg?.lift ?? lift;
   const res = analyze(samples.map((s) => s.t),
     magnitude(samples.map((s) => s.ax), samples.map((s) => s.ay), samples.map((s) => s.az)),
-    { ...SETTINGS, LIFT: seg?.lift ?? lift });
-  const reps = res.error ? [] : dropRackMoves(res.reps, seg?.lift ?? lift);
-  live = { res, reps, tAbs };
+    { ...SETTINGS, LIFT: named }, imuOf(samples));
+  const used = res.error ? named : res.lift;        // the name, or what the sensor saw (D21)
+  const reps = res.error ? [] : dropRackMoves(res.reps, used);
+  live = { res, reps, tAbs, lift: used };
   if (reps.length && !buzzed) { buzz(150); buzzed = true; }   // a set started
 }
 
@@ -88,7 +95,7 @@ function onSet(set) {
   set.exercise = seg?.exercise ?? exercise;
   set.load = seg?.weight ?? weight;
   set.rpe = "";
-  rememberExercise(set.exercise);
+  if (set.exercise) rememberExercise(set.exercise);
   live = null;
   buzzed = false;
   seg = null;
@@ -296,6 +303,10 @@ function fillSetCard(set) {
   const c = set.card;
   c.querySelector(".set-title").textContent = `Set ${set.index + 1}`;
   c.querySelector(".set-exercise").value = set.exercise;
+  const m = set.analysis?.mount;                           // what the sensor saw (D21)
+  const det = c.querySelector(".set-mount");
+  det.textContent = m ? (m.kind === "machine" ? "machine" : "free weight") : "";
+  det.title = m ? `sensor: turning ${m.rot.toFixed(1)} deg/s, sideways ${m.side.toFixed(2)}` : "";
   c.querySelector(".set-rest").textContent = set.restBefore === null ? "first set" : `rest ${formatTime(set.restBefore)}`;
   c.querySelector(".set-stats").innerHTML = [
     [set.nReps, "reps"], [set.bestMcv.toFixed(2), "best MCV"],
@@ -314,30 +325,21 @@ function fillSetCard(set) {
   if (c.querySelector(".set-more").open) drawSetPlot(set);
 }
 
-// Typed the wrong exercise? Rename the set. If the new name means a different tracking
-// profile, re-run the set with it (it changes which heights get leveled) and fix the rest
-// times around it. Either way it's re-saved under the new file name.
+// Typed the wrong exercise? Rename the set and re-run it: squat / bench / deadlift / phone
+// pick their own profile, anything else (or blank) lets the sensor pick machine or free
+// weight (D21). Fix the rest times around it and re-save under the new file name.
 async function changeSetExercise(set, name) {
   name = name.trim();
-  if (!name) { fillSetCard(set); return; }
-  const newLift = liftForExercise(name);
-  rememberExercise(name);
-  if (newLift === set.lift) {
-    const oldFile = set.file;
-    set.exercise = name;
-    set.file = setFileName(set);
-    fillSetCard(set);
-    render();
-    if (session.autosave) await resave(set, oldFile);
-    return;
-  }
+  const named = name ? liftForExercise(name) : "free";
+  if (name) rememberExercise(name);
   const s = set.samples;
   const res = analyze(s.map((x) => x.t), magnitude(s.map((x) => x.ax), s.map((x) => x.ay), s.map((x) => x.az)),
-    { ...SETTINGS, LIFT: newLift });
-  const reps = res.error ? [] : dropRackMoves(res.reps, newLift);
+    { ...SETTINGS, LIFT: named }, imuOf(s));
+  const used = res.error ? named : res.lift;
+  const reps = res.error ? [] : dropRackMoves(res.reps, used);
   if (!reps.length) { showError("No reps with that lift setting; kept the old one."); fillSetCard(set); return; }
   const oldFile = set.file;
-  Object.assign(set, setSummary(newLift, reps, set.tAbs), { reps, analysis: res, exercise: name });
+  Object.assign(set, setSummary(used, reps, set.tAbs), { reps, analysis: res, exercise: name });
   set.file = setFileName(set);
   const sets = session.sets;
   for (let k = Math.max(1, set.index); k <= Math.min(set.index + 1, sets.length - 1); k++) {
@@ -379,7 +381,7 @@ function render() {
   let shown = null;                                    // the set whose numbers are shown
 
   if (running && liveReps.length) {
-    const s = { ...setSummary(seg?.lift ?? lift, liveReps, live.tAbs), index: sets.length, exercise: seg?.exercise ?? exercise };
+    const s = { ...setSummary(live.lift, liveReps, live.tAbs), index: sets.length, exercise: seg?.exercise ?? exercise };
     if (tracker.quietFor >= REST_AFTER && now - s.endT >= REST_AFTER) {
       state = "rest"; restFrom = s.endT;               // provisional: more reps soon = same set
     } else {
@@ -397,7 +399,7 @@ function render() {
     $(`stat${"ABCD"[k]}`).textContent = v;
     $(`label${"ABCD"[k]}`).textContent = l;
   });
-  const what = (s) => `Set ${s.index + 1} · ${s.exercise}`;
+  const what = (s) => `Set ${s.index + 1} · ${nameOf(s)}`;
 
   if (state === "set") {
     const last = liveReps[liveReps.length - 1];
@@ -415,7 +417,7 @@ function render() {
   } else if (state === "ready") {
     $("heroLabel").textContent = "Recording";
     $("heroBig").textContent = "Ready. Do your first set.";
-    $("heroSub").textContent = `Next: ${exercise}${weight ? ` · ${weight} lb` : ""}. Hold still for a second before and after each set.`;
+    $("heroSub").textContent = `Next: ${exercise || "any exercise (the sensor decides)"}${weight ? ` · ${weight} lb` : ""}. Hold still for a second before and after each set.`;
   } else if (sets.length) {
     const reps = sets.reduce((n, s) => n + s.nReps, 0);
     $("heroLabel").textContent = "Session done";
@@ -502,10 +504,10 @@ function cssVar(name) {
 // ---------- next set: exercise + weight (sticky) ----------
 
 function setExercise(name) {
-  exercise = name.trim() || "Phone test";
-  lift = liftForExercise(exercise);
+  exercise = name.trim();                                  // blank: the sensor decides (D21)
+  lift = exercise ? liftForExercise(exercise) : "free";
   $("exercise").value = exercise;
-  $("profileHint").textContent = PROFILE_HINT[lift];
+  $("profileHint").textContent = hintFor(exercise);
   if (seg) seg = { ...seg, exercise, lift };         // changed it mid-set: this set too
   try { localStorage.setItem("exercise", exercise); } catch { /* storage blocked */ }
   render();
@@ -539,13 +541,14 @@ $("startBtn").addEventListener("click", startSession);
 $("endBtn").addEventListener("click", endSession);
 $("shareBtn").addEventListener("click", shareSession);
 $("exercise").addEventListener("change", (e) => setExercise(e.target.value));
-$("exercise").addEventListener("input", (e) => { $("profileHint").textContent = PROFILE_HINT[liftForExercise(e.target.value || "phone")]; });
+$("exercise").addEventListener("input", (e) => { $("profileHint").textContent = hintFor(e.target.value); });
 $("weight").addEventListener("change", (e) => setWeight(e.target.value));
 try { recents = JSON.parse(localStorage.getItem("recentExercises") || "[]"); } catch { recents = []; }
 fillSuggestions();
 let saved = {};
 try { saved = { exercise: localStorage.getItem("exercise"), weight: localStorage.getItem("weight") }; } catch { /* storage blocked */ }
-setExercise(saved.exercise || "Phone test");
+// Real use is never hand-held (D21): start blank. A saved "Phone test" was only the old default.
+setExercise(saved.exercise && saved.exercise !== "Phone test" ? saved.exercise : "");
 setWeight(saved.weight || "");
 $("fileInput").addEventListener("change", (e) => {
   const f = e.target.files[0];

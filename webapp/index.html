@@ -31,7 +31,7 @@
     <!-- Next set: what you're doing and with how much. Both stick until you change them. -->
     <section class="next-set" aria-label="Next set">
       <label class="grow">Exercise
-        <input id="exercise" list="exerciseList" autocomplete="off" enterkeyhint="done" placeholder="Squat, Lat pulldown...">
+        <input id="exercise" list="exerciseList" autocomplete="off" enterkeyhint="done" placeholder="Blank = sensor decides">
       </label>
       <label>Weight
         <input id="weight" type="number" inputmode="decimal" min="0" step="5" placeholder="lb">
@@ -79,7 +79,8 @@
     <article class="set">
       <header>
         <strong class="set-title"></strong>
-        <input class="set-exercise" list="exerciseList" autocomplete="off" aria-label="Exercise">
+        <input class="set-exercise" list="exerciseList" autocomplete="off" aria-label="Exercise" placeholder="unnamed">
+        <span class="set-mount" title=""></span>
         <span class="set-rest muted"></span>
       </header>
       <div class="set-stats"></div>
