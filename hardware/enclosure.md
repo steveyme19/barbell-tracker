@@ -130,3 +130,28 @@ Two ways to get the model:
 - Or have Claude Code on the PC write a **Fusion 360 Python script** that builds it
   (in Fusion: Utilities → Add-Ins → Scripts and Add-Ins, add the script, Run). The
   result is a normal parametric Fusion model you can keep editing by hand.
+
+### Pod v1 script (2026-10-16): `hardware/enclosure/pod_v1/pod_v1.py`
+
+Builds the case + lid as a new parametric design: every size above is a user parameter
+(first guesses), plus the extras the model needs. Fusion wants the folder and the script
+to share a name, hence `pod_v1/pod_v1.py` + `pod_v1.manifest`. Adapters aren't in it yet.
+
+Changes from the sketch above, and why:
+
+- **The battery slides in from the far end**, through a slot in the end wall, under a
+  printed tray. The LiPo (20.5 mm) is wider than the XIAO (17.5 mm), so any ledge that
+  holds the board above it blocks a battery dropped in from the top. The tray is the
+  XIAO ledge (`ledge_w` under every board edge, a window in the middle for the pads and
+  wires) plus a fence that holds the board square. Foam tape keeps the battery put.
+- **Thicker floor:** `floor` is `floor_t` (floor() is a Fusion function) and gets
+  `iface_extra` = 3.5 mm on top, so the M3 insert holes leave 1 mm under the battery.
+  Short M3 x 3 inserts: set `m3_insert_h` = 3 and `iface_extra` = 2.5.
+- **USB-C end wall is `end_wall` = 5 mm** so two of the lid screws fit beside the board;
+  the other two go in square bosses in the far corners, standing on the tray.
+- First guesses give 40.8 x 25.3 x 22.5 mm with the lid (vs. ~39 x 27 x 18 estimated).
+- `imu_x/y`, `led_x/y`, `rst_x/y` are placeholders (marked MEASURE): measure from the
+  board's USB-end corner, component side up, USB-C pointing left, from the bottom-left
+  corner (x to the right, y up).
+- Not modeled yet: edge chamfers, embossed X/Y/Z arrows, the JST socket (it fits in the
+  ~10 x 9 mm space between the fence and the far bosses, over the wire hole).

@@ -1,0 +1,10 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "script",
+  "author": "Bar Tracker",
+  "description": {
+    "": "Bar Tracker pod v1: case + lid, parametric (see hardware/enclosure.md)"
+  },
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
