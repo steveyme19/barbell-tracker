@@ -479,6 +479,12 @@ Software, free:
 3. **Kalman smoother** (states: height, velocity, accel bias). Stills, lockouts and
    laser readings all become measurements, and the bias is allowed to wander instead of
    being a fixed cubic. More work, but it's the natural home for the laser (2.8).
+   *Prototyped 2026-10-17* in `analysis/experiments/` (forward filter + backward RTS
+   pass, plus adaptive stillness: shakier, shorter pauses count as weak zero-velocity
+   hints once the last still is 2+ s back). On fakes with wobbly drift the worst-rep ROM
+   error drops from 2.5 to 16.5 cm to 0.1 to 0.7 cm. On the real phone recordings it's a
+   tie. Port it only if it also wins on a recording with a known ROM (the 55.9 cm paper
+   test); see `analysis/experiments/README.md`.
 
 Fix it at the source:
 
