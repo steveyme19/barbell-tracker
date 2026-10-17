@@ -566,5 +566,7 @@ window.barDebug = {
     return s ? { name: s.file, csv: toCSV(s.samples) } : { name: "none.csv", csv: "" };
   },
 };
+// Masthead date, like the top of a logbook page.
+$("masthead").textContent = `Training log · ${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}`;
 render();
 drawLive();

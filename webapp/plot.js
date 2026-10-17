@@ -46,7 +46,7 @@ export function drawPlot(canvas, { series, spans = [], yLabel = "", minRange = 1
   ctx.strokeStyle = grid;
   ctx.lineWidth = 1;
   ctx.fillStyle = text;
-  ctx.font = "10px system-ui, sans-serif";
+  ctx.font = `11px ${css.getPropertyValue("--serif").trim() || "serif"}`;   // same type as the page
   const ticks = niceTicks(y0, y1, 4);
   for (const v of ticks) {
     ctx.beginPath(); ctx.moveTo(L, py(v)); ctx.lineTo(w - R, py(v)); ctx.stroke();

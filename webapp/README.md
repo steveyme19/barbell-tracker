@@ -29,6 +29,10 @@ lift, reps, rest, MCVs, velocity loss, RPE estimate, weight, your RPE; no raw da
 **Share** sends `session.csv`; a set's **Save CSV** sends its raw file. In the browser
 those buttons download instead (no auto-save).
 
+Look: a vintage training logbook (parchment, ink, oxblood for a set in progress, navy
+for rest, serif type, ruled entries). Colors are CSS variables at the top of
+`style.css`; fonts are the device's own serif (no web fonts, works offline).
+
 Tools (at the bottom): replay a recording (a long file shows up as sets; real time at
 1/10/30x, or all at once), the live acceleration plot and the sample rate.
 
