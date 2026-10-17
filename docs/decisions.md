@@ -174,6 +174,33 @@ part can't confuse it. Known misfits: an RDL maps to deadlift (its bottom isn't 
 stop), and hack squat / leg press map to squat / machine but move on an incline, which
 the vertical-only tracking can't measure right.
 
+**D20 (2026-10-17): Stillness limits match the sensor's own noise; reps can start at the
+usual bottom.**
+*Why:* Quentin's cable lat raise set (phone on the weight stack) came out as 3 reps of
+77, 34 and 39 cm, with height climbing to 115 cm. The lowering was smooth enough to
+pass the fixed stillness limits (made for a shaky hand) and got zeroed. At rest on the
+stack the sensor wiggles ~0.016 m/s², those fake stills 0.08 to 0.12. Limits are now 4x
+(wiggle) and 5x (average) the wiggle inside the longest still, between 0.06 / 0.08 and
+the old 0.15 / 0.3. Hand-held recordings sit at the old limits, so nothing changes for
+them; the fakes and the phone-on-a-table tests got slightly better. Separately, rep 1
+included taking up the cable (24.5 cm vs ~19 for the rest), so for bench, deadlift and
+machine a rep may start at a stop within 5 cm of the usual (median) bottom. The bar
+device will sit as still as the stack, so it needs the tighter limits too.
+
+**D21 (2026-10-17): The sensor decides machine or free weight; real use is never hand-held.**
+*Why:* Quentin: the app should work out on its own whether it's on a machine, and in
+real use the sensor is never in a hand. Since D19 the typed name decided: squat, bench
+and deadlift by name, everything else "machine", so a barbell row, OHP or curl got the
+machine's "bottoms repeat" assumption. Now the gyro decides for every name except
+squat, bench, deadlift and phone (those still win: a Smith squat rides on rods but the
+depth is still yours). A stack moves in a straight line without turning (lat raise: 0.7
+deg/s, sideways ratio 0.20); every hand-held recording turns 10 to 25 deg/s. Threshold
+3 deg/s and 0.35. Rest stillness can't do this (phone-on-a-table tests rest as quietly
+as the stack), so it stays what it is since D20: the source of the stillness limits.
+Unknown free weights get a new `free` profile (lockouts and end stills only). No gyro
+or under 1 s of motion: the name decides, as before. All recordings give the same reps
+as D20. Untested on a mounted bar; revisit with the first bar sessions (2.1).
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

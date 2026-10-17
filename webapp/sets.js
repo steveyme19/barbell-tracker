@@ -3,7 +3,7 @@
 // whole file at once; this works sample by sample, and the parity test checks that
 // both find the same sets, rests and reps.
 
-import { analyze, magnitude, SETTINGS } from "./reps.js";
+import { analyze, magnitude, imuOf, SETTINGS } from "./reps.js";
 
 export const SET_SETTINGS = {
   BLOCK: 0.25,      // s: activity is decided per block of this length
@@ -154,9 +154,10 @@ export class SessionTracker {
     const tAbs = idx.map((i) => this.bufT[i]);
     this.segStart = this.segLast = null;
     this.trim();
-    const lift = this.liftFor(this.sets.length);
+    const named = this.liftFor(this.sets.length);
     const res = analyze(samples.map((x) => x.t), magnitude(samples.map((x) => x.ax), samples.map((x) => x.ay),
-      samples.map((x) => x.az)), { ...SETTINGS, LIFT: lift });
+      samples.map((x) => x.az)), { ...SETTINGS, LIFT: named }, imuOf(samples));
+    const lift = res.error ? named : res.lift;            // the name, or what the sensor saw (D21)
     const reps = res.error ? [] : dropRackMoves(res.reps, lift);
     if (!reps.length) { this.onDrop(); return; }          // plates, a bump: not a set
     const set = { ...setSummary(lift, reps, tAbs), reps, samples, tAbs, analysis: res, index: this.sets.length };

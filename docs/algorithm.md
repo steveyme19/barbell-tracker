@@ -154,6 +154,18 @@ integrated velocity, so there's no chicken-and-egg problem.
   (§6b). Real lockouts usually stop sharper, and the bar should sit much stiller than a
   hand-held phone, so tighter thresholds on bar data (roadmap 2.2) are the likely fix.
   Check it with real slow reps in 3.4.
+- **Smooth lowering on a machine looks still (D20).** Phone lying on a cable stack, lat
+  raises: the stack rides on guide rods, so the lowering is so smooth that most of it
+  passed the stillness test and got zeroed. Height climbed like a staircase (to 115 cm),
+  3 "reps" of 77, 34 and 39 cm. The tell: at rest on the stack the sensor wiggles 0.016
+  m/s² (median 0.2 s rolling std), the fake stills 0.08 to 0.12, about 6x more. A phone
+  in your hand wiggles 0.08 to 0.13 even when you hold still, so a fixed limit can't
+  serve both. Fix: **noise-matched limits.** Measure the wiggle inside the longest still,
+  then a still has to stay under 4x that wiggle and its average within 5x of g, clamped
+  between 0.06 / 0.08 and the old 0.15 / 0.3. Hand-held recordings hit the old limits,
+  so they're unchanged. The lat raise set now gives 8 reps of 16 to 22 cm (plus a 6 cm
+  one at the end). This is also what the real bar device will need: it'll sit as still
+  as the stack.
 
 Where you'll find stillness: before the first rep, at lockout between reps,
 deadlifts resting on the floor, after racking.
@@ -192,10 +204,13 @@ the fit can't be forced through every point. Code: `level_heights()` in `reps.py
 | squat | no, depth varies (and that's worth measuring) | standing, at lockout |
 | phone test | no | no: hand-held, you don't hold still at the turnaround height |
 | machine (D19) | yes: the stack rests on the stack | yes: at rest on the stack |
+| free (D21): a free weight with another name (row, OHP, curl) | no | at lockout or the bottom |
 
 The app has a lift picker, and Python reads the lift from the file name
-(`bar-bench-...csv`) or `--lift=`. Bottoms are a second group with their own height,
-so the fit gets twice the points and can safely bend more (up to τ⁵). The stills count
+(`bar-bench-...csv`) or `--lift=`. Squat, bench and deadlift come from the name; for
+anything else the sensor decides between machine and free (below, D21). Bottoms are a
+second group with their own height, so the fit gets twice the points and can safely
+bend more (up to τ⁵). The stills count
 as a lockout or a bottom depending on whether the bar left them going down or up. On
 fake no-pause sets with wobbly drift (`make_fake_reps.py lifts` style, 10 sets each,
 worst-rep ROM error):
@@ -261,6 +276,45 @@ they went from 12.2 cm to 2.8 cm without being touched.
   flexibility.
 - Bottoms are only used for bench and deadlift (see "Per lift" above).
 
+### Machine or free weight, from the sensor (D21)
+
+Real use is a sensor fixed to a bar or sitting on a weight stack, never a hand. Whether
+it's on a machine doesn't need typing in; the gyro shows it. A weight stack (also a Smith
+machine or a sled on rails) runs on guide rods: it goes straight up and down and doesn't
+turn. A bar tilts, rolls and drifts forward and back. `detect_mount()` looks at the
+motion after the first still:
+
+- **rot**: median turning speed while moving, after taking off the gyro's offset (its
+  average during the stills). A median, so a bump or a setup move doesn't count.
+- **side**: rms sideways acceleration / rms vertical acceleration while moving, with the
+  3 axes smoothed over 0.2 s first (a stack rattles on its rods but can't travel
+  sideways). "Sideways" is off the gravity direction measured during the stills, so
+  tilting counts too.
+
+Machine when rot < 3 deg/s and side < 0.35, else free. Needs 1 s of motion and gyro
+data; otherwise the name decides.
+
+| recording | rot (deg/s) | side | result |
+|---|---|---|---|
+| cable lat raise, phone on the stack (1334) | 0.7 | 0.20 | machine (from 45% of the set on) |
+| hand-held squats and phone tests (9 files) | 10 to 25 | 0.36 to 1.9 | free |
+
+**How still it is at rest doesn't tell them apart.** The phone tests 2123 and 2206 sat on
+a table between reps as quietly as the stack (rest wiggle 0.010 to 0.013 vs 0.016 m/s²),
+and a racked bar or a bar on the floor will too. The rest wiggle sets the stillness
+limits (D20, §5), the motion decides the profile.
+
+`choose_lift()`: squat, bench, deadlift and phone by name always win, because they say
+more than the sensor can (a Smith squat rides on rods, but you still pick the depth).
+Anything else (an unknown exercise name, which D19 mapped to machine) goes by the sensor:
+machine, or `free` = lockouts and the end stills only, the safe choice for a barbell row,
+OHP or curl. The result says which profile it used and why (`lift`, `mount`).
+
+**Not tested on a mounted bar yet.** The free side of the line comes from hand-held
+data. A bar should turn and drift more than a stack, but the sleeve-end mount (O3) may
+be calm on a smooth bench. If a real bar set ever reads "machine", the name still wins
+for squat/bench/deadlift; raise `MACHINE_ROT` only with that recording in hand.
+
 ## 7. Turnarounds are outputs, never anchors
 
 Inside a window, find where corrected velocity crosses zero. A − to + crossing is the
@@ -317,6 +371,15 @@ or even sink a little before it keeps going. Velocity crosses zero, which could 
 one rep into two. §7's wiggle filter handles it: a sink shorter than 5 cm isn't a
 turnaround, so the rep stays whole. Log where the stall happened as the sticking point
 (analytics.md §4).
+
+**Setup moves before rep 1 (D20).** On the cable lat raise, taking up the cable lifted
+the stack 6 cm, it settled back 1 cm, then rep 1 went up. That 1 cm dip isn't a
+turnaround (under 5 cm), and the stop sat more than 5 cm above where the move began, so
+rep 1 started on the resting stack: 24.5 cm instead of 19.4. For lifts whose bottom
+repeats (bench, deadlift, machine), a rep may now start at a stop within 5 cm of the
+*usual* bottom (median of all the turnaround bottoms), not just its own. Deadlift and
+bench are unaffected (their usual bottom is the floor / chest anyway), and grinder
+stalls well above the usual bottom still don't split a rep.
 
 ## 9. Metrics (per concentric)
 
@@ -415,6 +478,7 @@ top of sections 5 to 10 finds the sets (`analysis/sets.py`, ported to
    doesn't split it, and the shortest real rest between sets (~1 min) always does.
 3. **Each segment, plus 2 s of still before and after, goes through the per-set
    pipeline** (`analyze()`). No reps = not a set: loading plates, bumping the bar.
+   Each set gets its own machine-or-free check (D21), so a session can mix them.
 4. **Rack moves.** Unracking lifts the bar ~5 to 8 cm off the hooks, enough to pass
    `MIN_ROM` as a tiny "rep". Reps at either end of a set shorter than half the set's
    median ROM go, and (except phone tests) anything under 12 cm: that also handles an

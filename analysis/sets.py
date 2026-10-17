@@ -22,6 +22,7 @@ Also: rpe_estimate(), a rough v0 RPE from the last rep's speed (analytics.md sec
 Usage:
     python sets.py data/fake_session.csv                 # lift from the file name
     python sets.py data/fake_session.csv --lifts=squat,bench   # per set; the last one repeats
+                                                         # (machine/free: the gyro decides, D21)
     python sets.py data/fake_session.csv --json          # for the parity test
 """
 
@@ -120,24 +121,28 @@ def set_summary(lift, reps, t_abs):
     )
 
 
-def find_sets(t, a_raw, lifts):
+def find_sets(t, a_raw, lifts, acc=None, gyro=None):
     """All sets in a session recording. lifts: list, one per set found (the last one
-    repeats). Returns a list of dicts: sample range, rep results, summary, rest before."""
+    repeats), from the typed names. acc, gyro (n x 3) let each set be checked for machine
+    vs free weight (D21). Returns a list of dicts: sample range, rep results, summary, the
+    profile used, rest before."""
     t = t - t[0]
     active, starts = block_activity(t, a_raw)
     sets = []
     for b0, b1 in find_segments(active):
         i0 = int(np.searchsorted(t, b0 * BLOCK - LEAD))                       # first t >= ...
         i1 = int(np.searchsorted(t, (b1 + 1) * BLOCK + TRAIL)) - 1           # last t < ...
-        lift = lifts[min(len(sets), len(lifts) - 1)]
+        named = lifts[min(len(sets), len(lifts) - 1)]
+        cut = lambda arr: None if arr is None else arr[i0:i1 + 1]
         try:
-            r = R.analyze(t[i0:i1 + 1], a_raw[i0:i1 + 1], lift)
+            r = R.analyze(t[i0:i1 + 1], a_raw[i0:i1 + 1], named, cut(acc), cut(gyro))
         except ValueError:
             continue
+        lift = r["lift"]                     # the name, or what the sensor saw (D21)
         reps = drop_rack_moves(r["reps"], lift)
         if not reps:
             continue                         # plates, a bump: not a set
-        s = dict(i0=i0, i1=i1, reps=reps, **set_summary(lift, reps, t[i0:i1 + 1]))
+        s = dict(i0=i0, i1=i1, reps=reps, mount=r["mount"], **set_summary(lift, reps, t[i0:i1 + 1]))
         s["rest_before"] = s["start_t"] - sets[-1]["end_t"] if sets else None
         sets.append(s)
     return sets
@@ -157,12 +162,12 @@ def main():
     lifts = next((a.split("=", 1)[1].split(",") for a in sys.argv if a.startswith("--lifts=")), None)
     lifts = lifts or [R.lift_from_name(path.name)]
     t, a_raw = R.load_phyphox(path, R.AXIS)
-    sets = find_sets(t, a_raw, lifts)
+    sets = find_sets(t, a_raw, lifts, *R.load_imu(path))
 
     if "--json" in sys.argv:
         import json
         print(json.dumps([{
-            "i0": s["i0"], "i1": s["i1"], "lift": s["lift"], "start_t": s["start_t"], "end_t": s["end_t"],
+            "i0": s["i0"], "i1": s["i1"], "lift": s["lift"], "mount": s["mount"], "start_t": s["start_t"], "end_t": s["end_t"],
             "rest_before": s["rest_before"], "rpe_est": s["rpe_est"],
             "reps": [{"rom": float(r["rom"]), "mcv": float(r["mcv"]), "dur": float(r["dur"])} for r in s["reps"]],
         } for s in sets]))
@@ -173,7 +178,7 @@ def main():
     for k, s in enumerate(sets, 1):
         rest = fmt_time(s["rest_before"]) if s["rest_before"] is not None else "--"
         rpe = "--" if not s["rpe_est"] else (f"<={s['rpe_est'][1]:g}" if s["rpe_est"][0] == 5 else f"{s['rpe_est'][0]:g}-{s['rpe_est'][1]:g}")
-        print(f" {k:3d} | {s['lift']:8s} | {s['start_t']:5.0f}s | {rest:>6s} | {s["n_reps"]:4d} | "
+        print(f" {k:3d} | {s['lift']:8s} | {s['start_t']:5.0f}s | {rest:>6s} | {s['n_reps']:4d} | "
               f"{s['best_mcv']:8.2f} | {s['last_mcv']:8.2f} | {s['vel_loss'] * 100:3.0f}% | {rpe}")
 
 

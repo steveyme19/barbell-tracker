@@ -8,6 +8,10 @@ export const SETTINGS = {
   STILL_WINDOW: 0.2,     // s: window for the stillness test
   STILL_STD: 0.15,       // m/s^2: max wiggle inside the window
   STILL_DEV: 0.3,        // m/s^2: max |average - g| inside the window
+  NOISE_STD_K: 4.0,      // noise-matched limits (D20): 4x the rest wiggle ...
+  NOISE_DEV_K: 5.0,      // ... and 5x it for |average - g|,
+  STILL_STD_MIN: 0.06,   // m/s^2  but never below these
+  STILL_DEV_MIN: 0.08,   // m/s^2  (and never above STILL_STD / STILL_DEV)
   MIN_STILL: 0.25,       // s: a still period has to last at least this long
   STILL_MAX_SPEED: 0.1,  // m/s: faster than this during a "still" period = coasting
   LONG_STILL: 1.0,       // s: stills at least this long are real (nothing coasts that long)
@@ -29,8 +33,14 @@ export const SETTINGS = {
     bench: { bottoms: true, ends: true },      // touches the chest; starts and ends at lockout
     deadlift: { bottoms: true, ends: true },   // touches the floor; starts and ends on the floor
     machine: { bottoms: true, ends: true },    // weight stack: comes to rest on the stack every rep (D19)
+    free: { bottoms: false, ends: true },      // a free weight with no name we know (row, OHP, curl): lockouts only (D21)
   },
   LIFT: "phone",
+  // Machine or free weight, from how the sensor moves (D21). See detect_mount() in reps.py.
+  MOUNT_MIN_MOVE: 1.0,   // s: need this much motion between the stills to judge
+  MACHINE_ROT: 3.0,      // deg/s: median turning speed while moving. Stack ~0.7, hand 10 to 25
+  MACHINE_SIDE: 0.35,    // sideways / vertical acceleration while moving. Stack ~0.2, hand 0.36 to 2
+  NAMED_WINS: ["phone", "squat", "bench", "deadlift"],   // these names say more than the sensor can
 };
 
 /** 'bar-bench-2026-11-03-1830.csv' -> 'bench'. Anything else -> the default lift. */
@@ -44,10 +54,67 @@ export function liftFromName(name, S = SETTINGS) {
 }
 
 /** Typed exercise name -> tracking profile (D19). Squat/bench/deadlift by name, "phone"
- *  for a hand-held test, anything else is assumed to be a weight-stack machine. */
+ *  for a hand-held test, anything else "machine", which only counts when the sensor
+ *  can't tell machine from free weight (chooseLift, D21). */
 export function liftForExercise(exercise) {
   const lower = exercise.toLowerCase();
   return ["phone", "deadlift", "bench", "squat"].find((l) => lower.includes(l)) ?? "machine";
+}
+
+/**
+ * 'machine' (weight stack, Smith, sled on rails) or 'free' (bar, dumbbell, hand), from the
+ * motion after the first still (D21), as { kind, rot, side }. null if there's no gyro data
+ * or too little motion yet. imu = { ax, ay, az, gx, gy, gz } arrays. See detect_mount() in
+ * reps.py: rot = median turning speed while moving (deg/s, gyro offset from the stills
+ * taken off), side = rms sideways / rms vertical acceleration while moving (smoothed over
+ * STILL_WINDOW so stack rattle doesn't count).
+ */
+export function detectMount(imu, runs, fs, S = SETTINGS) {
+  if (!imu || !imu.gx) return null;
+  const N = imu.gx.length;
+  let anyGyro = false;
+  for (let i = 0; i < N && !anyGyro; i++) anyGyro = imu.gx[i] !== 0 || imu.gy[i] !== 0 || imu.gz[i] !== 0;
+  if (!anyGyro) return null;
+  const still = new Uint8Array(N);
+  for (const [s, e] of runs) for (let i = s; i <= e; i++) still[i] = 1;
+  const moving = [];                                       // after the first still, not still
+  for (let i = runs[0][1] + 1; i < N; i++) if (!still[i]) moving.push(i);
+  if (moving.length < S.MOUNT_MIN_MOVE * fs) return null;
+  // gyro offset and gravity direction: averages over the still samples
+  const off = [0, 0, 0];
+  const up = [0, 0, 0];
+  let cnt = 0;
+  for (let i = 0; i < N; i++) {
+    if (!still[i]) continue;
+    off[0] += imu.gx[i]; off[1] += imu.gy[i]; off[2] += imu.gz[i];
+    up[0] += imu.ax[i]; up[1] += imu.ay[i]; up[2] += imu.az[i];
+    cnt++;
+  }
+  for (let k = 0; k < 3; k++) { off[k] /= cnt; up[k] /= cnt; }
+  const turn = moving.map((i) => Math.hypot(imu.gx[i] - off[0], imu.gy[i] - off[1], imu.gz[i] - off[2]));
+  const rot = median(turn);
+  const g = Math.hypot(up[0], up[1], up[2]);
+  for (let k = 0; k < 3; k++) up[k] /= g;
+  const n = Math.trunc(S.STILL_WINDOW * fs);
+  const [sx, sy, sz] = [imu.ax, imu.ay, imu.az].map((y) => rolling(y, n).mean);
+  let side2 = 0;
+  let vert2 = 0;
+  for (const i of moving) {
+    const along = sx[i] * up[0] + sy[i] * up[1] + sz[i] * up[2];
+    const px = sx[i] - along * up[0], py = sy[i] - along * up[1], pz = sz[i] - along * up[2];
+    side2 += px * px + py * py + pz * pz;
+    vert2 += (along - g) ** 2;
+  }
+  const side = Math.sqrt(side2 / vert2);
+  const kind = rot < S.MACHINE_ROT && side < S.MACHINE_SIDE ? "machine" : "free";
+  return { kind, rot, side };
+}
+
+/** The profile a set is tracked with (D21). See choose_lift() in reps.py. */
+export function chooseLift(named, mount, S = SETTINGS) {
+  if (S.NAMED_WINS.includes(named)) return named;
+  if (mount) return mount.kind;
+  return named || "free";
 }
 
 /** Total acceleration, sqrt(x^2 + y^2 + z^2). Tilt-proof vertical signal (D9). */
@@ -99,11 +166,11 @@ export function rolling(y, n) {
 }
 
 /** [start, end] index pairs of still periods at least MIN_STILL long. */
-export function findStillRuns(aRaw, g, fs, S = SETTINGS) {
+export function findStillRuns(aRaw, g, fs, S = SETTINGS, stdMax = S.STILL_STD, devMax = S.STILL_DEV) {
   const n = Math.trunc(S.STILL_WINDOW * fs);
   const { mean, std } = rolling(aRaw, n);
   const N = aRaw.length;
-  const still = (i) => std[i] < S.STILL_STD && Math.abs(mean[i] - g) < S.STILL_DEV;
+  const still = (i) => std[i] < stdMax && Math.abs(mean[i] - g) < devMax;
   const runs = [];
   let i = 0;
   while (i < N) {
@@ -121,6 +188,21 @@ export function findStillRuns(aRaw, g, fs, S = SETTINGS) {
     }
   }
   return runs;
+}
+
+/**
+ * Noise-matched still limits (D20): median wiggle inside the longest still, times
+ * NOISE_*_K, clamped between the *_MIN floors and the default limits. See reps.py.
+ */
+export function stillLimits(aRaw, fs, runs, S = SETTINGS) {
+  const n = Math.trunc(S.STILL_WINDOW * fs);
+  const { std } = rolling(aRaw, n);
+  let best = runs[0];
+  for (const r of runs) if (r[1] - r[0] > best[1] - best[0]) best = r;
+  const noise = median(Array.from(std.slice(best[0], best[1] + 1)));
+  const stdMax = Math.min(S.STILL_STD, Math.max(S.STILL_STD_MIN, S.NOISE_STD_K * noise));
+  const devMax = Math.min(S.STILL_DEV, Math.max(S.STILL_DEV_MIN, S.NOISE_DEV_K * noise));
+  return { stdMax, devMax, noise };
 }
 
 /** Drop "still" periods that are really steady motion (accelerometers can't tell). */
@@ -361,14 +443,27 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
   return v;
 }
 
-export function findReps(x, v, t, windows, S = SETTINGS) {
+/** Median height of the turnaround bottoms, for lifts whose bottom repeats; else null. */
+export function usualBottom(x, S = SETTINGS) {
+  if (!S.LIFTS[S.LIFT].bottoms) return null;
+  const { lows } = turningPoints(x, S.MIN_ROM);
+  return lows.length >= 3 ? median(lows.map((i) => x[i])) : null;
+}
+
+/**
+ * One rep per bottom-to-top move. bottomRef = the usual bottom height (bench, deadlift,
+ * machine): a rep may start from a stop near it even if the move began lower, which
+ * cuts a setup move off the first rep. See find_reps() in reps.py.
+ */
+export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null) {
   const { lows, highs } = turningPoints(x, S.MIN_ROM);
   const reps = [];
   for (const lo of lows) {
     const hi = highs.find((h) => h > lo);
     if (hi === undefined) continue;
+    const base = bottomRef === null ? x[lo] : Math.max(x[lo], bottomRef);
     let start = lo;
-    for (let i = lo; i <= hi; i++) if (v[i] <= S.V_ZERO && x[i] <= x[lo] + S.MIN_ROM) start = i;
+    for (let i = lo; i <= hi; i++) if (v[i] <= S.V_ZERO && x[i] <= base + S.MIN_ROM) start = i;
     let end = hi;
     for (let i = start + 1; i <= hi; i++) {
       if (v[i] <= S.V_ZERO && x[i] >= x[hi] - S.MIN_ROM) { end = i; break; }
@@ -397,9 +492,11 @@ export function findReps(x, v, t, windows, S = SETTINGS) {
 
 /**
  * Full pipeline. t in seconds (any start), aRaw = vertical signal in m/s^2
- * (use magnitude() for a phone). Returns everything the UI needs.
+ * (use magnitude() for a phone). S.LIFT = the profile the name or picker gave;
+ * imu = { ax, ay, az, gx, gy, gz } arrays lets the sensor check machine vs free weight
+ * (D21), and res.lift is the profile actually used. Returns everything the UI needs.
  */
-export function analyze(tIn, aRaw, S = SETTINGS) {
+export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
   if (tIn.length < 10) return { error: "Not enough data yet." };
   const t = Float64Array.from(tIn, (x) => x - tIn[0]);
   const dts = [];
@@ -417,13 +514,35 @@ export function analyze(tIn, aRaw, S = SETTINGS) {
   g = sum / cnt;
   runs = findStillRuns(aRaw, g, fs, S);
   if (!runs.length) return { error: "No still periods found. Start with the phone still.", fs };
+  // Noise-matched limits (D20), only when tighter than the defaults, then gravity again.
+  const { stdMax, devMax, noise } = stillLimits(aRaw, fs, runs, S);
+  if (stdMax < S.STILL_STD || devMax < S.STILL_DEV) {
+    runs = findStillRuns(aRaw, g, fs, S, stdMax, devMax);
+    if (!runs.length) return { error: "No still periods found. Start with the phone still.", fs };
+    sum = 0;
+    cnt = 0;
+    for (const [s, e] of runs) for (let i = s; i <= e; i++) { sum += aRaw[i]; cnt++; }
+    g = sum / cnt;
+    runs = findStillRuns(aRaw, g, fs, S, stdMax, devMax);
+    if (!runs.length) return { error: "No still periods found. Start with the phone still.", fs };
+  }
   const a = Float64Array.from(aRaw, (x) => x - g);
   const nCandidates = runs.length;
   runs = confirmStillRuns(a, t, fs, runs, S);
+  // Machine or free weight (D21). Stills don't depend on the lift, so this can wait till here.
+  const mount = detectMount(imu, runs, fs, S);
+  const lift = chooseLift(S.LIFT, mount, S);
+  S = { ...S, LIFT: lift };
 
   const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
   levelHeights(a, t, v, windows, S);
   const x = integrate(v, t);
-  const reps = findReps(x, v, t, windows, S);
-  return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length };
+  const reps = findReps(x, v, t, windows, S, usualBottom(x, S));
+  return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length, lift, mount, noise };
+}
+
+/** imu argument for analyze() from an array of samples { t, ax, ay, az, gx, gy, gz }. */
+export function imuOf(samples) {
+  const col = (k) => samples.map((x) => x[k] ?? 0);
+  return { ax: col("ax"), ay: col("ay"), az: col("az"), gx: col("gx"), gy: col("gy"), gz: col("gz") };
 }

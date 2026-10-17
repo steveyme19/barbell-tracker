@@ -39,34 +39,42 @@ const defaults = [
   "analysis/data/bar-squat-2026-10-16-2131.csv",   // native squat set, box-sit bottoms (A2 comparison)
   "analysis/data/bar-squat-2026-10-16-2134-browser.csv",   // same squats, browser 60 Hz (A2 comparison)
   "analysis/data/bar-phone-2026-10-16-2206.csv",   // saved by the app's Save CSV (A3)
+  "analysis/data/bar-machine-2026-10-17-1334-set01-lat-raise.csv",   // phone on a cable stack (D20)
+  // [file, lift]: track it under another name. Here the gyro has to say "machine" (D21).
+  ["analysis/data/bar-machine-2026-10-17-1334-set01-lat-raise.csv", "free"],
 ];
 const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
-  .map((f) => path.resolve(ROOT, f))
-  .filter((f) => {
+  .map((f) => (Array.isArray(f) ? [path.resolve(ROOT, f[0]), f[1]] : [path.resolve(ROOT, f), null]))
+  .filter(([f]) => {
     if (existsSync(f)) return true;
     console.log(`skip (not found): ${path.relative(ROOT, f)}`);
     return false;
   });
 
 let failures = 0;
-for (const file of files) {
+for (const [file, forced] of files) {
   const buf = readFileSync(file);
   const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-  const lift = liftFromName(path.basename(file));         // bench / squat / deadlift in the name, else phone
+  const lift = forced ?? liftFromName(path.basename(file));   // bench / squat / deadlift in the name, else phone
   const S = { ...SETTINGS, LIFT: lift };
   for (const frac of [null, 0.45, 0.7]) {
   const until = frac === null ? null : frac * (rec.t[rec.t.length - 1] - rec.t[0]);
   let n = rec.t.length;
   if (until !== null) n = rec.t.findIndex((x) => x - rec.t[0] >= until);
   const name = path.relative(ROOT, file) + ` [${lift}]` + (until === null ? "" : ` (first ${until.toFixed(1)} s)`);
-  const js = analyze(rec.t.slice(0, n), magnitude(rec.ax.slice(0, n), rec.ay.slice(0, n), rec.az.slice(0, n)), S);
+  const imu = Object.fromEntries(["ax", "ay", "az", "gx", "gy", "gz"].map((k) => [k, rec[k].slice(0, n)]));
+  const js = analyze(rec.t.slice(0, n), magnitude(imu.ax, imu.ay, imu.az), S, imu);
   const pyArgs = [path.join(ROOT, "analysis", "reps.py"), file, "--json", `--lift=${lift}`];
   if (until !== null) pyArgs.push(`--until=${until}`);
   const py = JSON.parse(execFileSync(PYTHON, pyArgs, { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
 
   const problems = [];
   if (js.error) problems.push(`JS error: ${js.error}`);
-  else if (js.reps.length !== py.reps.length) {
+  else if (js.lift !== py.lift) problems.push(`profile JS ${js.lift} vs Python ${py.lift}`);
+  else if (!js.mount !== !py.mount || (js.mount && (js.mount.kind !== py.mount.kind ||
+      Math.abs(js.mount.rot - py.mount.rot) > 1e-6 || Math.abs(js.mount.side - py.mount.side) > 1e-6))) {
+    problems.push(`mount JS ${JSON.stringify(js.mount)} vs Python ${JSON.stringify(py.mount)}`);
+  } else if (js.reps.length !== py.reps.length) {
     problems.push(`rep count JS ${js.reps.length} vs Python ${py.reps.length}`);
   } else {
     js.reps.forEach((r, k) => {
@@ -82,7 +90,8 @@ for (const file of files) {
     console.log(`FAIL ${name}\n  ${problems.join("\n  ")}`);
   } else {
     const worst = js.reps.reduce((m, r, k) => Math.max(m, Math.abs(r.rom - py.reps[k].rom)), 0);
-    console.log(`PASS ${name}: ${js.reps.length} reps, worst ROM difference ${(worst * 1000).toFixed(3)} mm`);
+    const seen = js.lift === lift ? "" : ` -> ${js.lift}`;
+    console.log(`PASS ${name}${seen}: ${js.reps.length} reps, worst ROM difference ${(worst * 1000).toFixed(3)} mm`);
   }
   }
 }
@@ -94,6 +103,8 @@ const sessions = [
   ["analysis/data/fake_session_squat.csv", ["squat"]],
   ["analysis/data/fake_session_squat.csv", ["machine"]],      // same motion as a weight-stack machine (D19)
   ["analysis/data/fake_session_joined.csv", ["squat", "phone"]],
+  ["analysis/data/fake_session_joined.csv", ["free"]],        // hand-held moves: the gyro says free (D21)
+  ["analysis/data/bar-machine-2026-10-17-1334-set01-lat-raise.csv", ["free"]],   // the gyro says machine (D21)
 ];
 for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
   const file = path.resolve(ROOT, rel);
@@ -102,7 +113,7 @@ for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
   const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
   const tracker = new SessionTracker({ liftFor: (k) => lifts[Math.min(k, lifts.length - 1)] });
   for (let i = 0; i < rec.t.length; i++) {
-    tracker.push({ t: rec.t[i], ax: rec.ax[i], ay: rec.ay[i], az: rec.az[i], gx: 0, gy: 0, gz: 0 });
+    tracker.push({ t: rec.t[i], ax: rec.ax[i], ay: rec.ay[i], az: rec.az[i], gx: rec.gx[i], gy: rec.gy[i], gz: rec.gz[i] });
   }
   tracker.finish();
   const js = tracker.sets;
@@ -115,6 +126,7 @@ for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
     const near = (x, y) => Math.abs(x - y) <= 0.01;
     if (!near(s.startT, p.start_t) || !near(s.endT, p.end_t)) problems.push(`set ${k + 1} time JS ${s.startT.toFixed(2)}-${s.endT.toFixed(2)} vs Python ${p.start_t.toFixed(2)}-${p.end_t.toFixed(2)}`);
     if ((s.restBefore === null) !== (p.rest_before === null) || (s.restBefore !== null && !near(s.restBefore, p.rest_before))) problems.push(`set ${k + 1} rest JS ${s.restBefore} vs Python ${p.rest_before}`);
+    if (s.lift !== p.lift) problems.push(`set ${k + 1} profile JS ${s.lift} vs Python ${p.lift}`);
     if (s.reps.length !== p.reps.length) problems.push(`set ${k + 1} reps JS ${s.reps.length} vs Python ${p.reps.length}`);
     else s.reps.forEach((r, j) => {
       if (Math.abs(r.rom - p.reps[j].rom) > ROM_TOL) problems.push(`set ${k + 1} rep ${j + 1} ROM ${r.rom.toFixed(4)} vs ${p.reps[j].rom.toFixed(4)}`);
@@ -123,7 +135,7 @@ for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
     if (JSON.stringify(s.rpeEst) !== JSON.stringify(p.rpe_est)) problems.push(`set ${k + 1} RPE JS ${s.rpeEst} vs Python ${p.rpe_est}`);
   });
   if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
-  else console.log(`PASS session ${rel}: ${js.length} sets, rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}`);
+  else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}`);
 }
 
 process.exit(failures ? 1 : 0);

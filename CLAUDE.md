@@ -49,7 +49,9 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
 3. **The lift matters.** `LIFTS` in `reps.py` / `reps.js` says which heights repeat
    (lockouts always; bottoms for bench and deadlift; the stills before and after a
    barbell set). Saved files are named `bar-<lift>-YYYY-MM-DD-HHMM.csv` and Python reads
-   the lift from the name.
+   the lift from the name. Squat/bench/deadlift/phone by name win; otherwise the gyro
+   picks `machine` or `free` (D21), so pass the 3-axis + gyro data to `analyze()`.
+   Real use is a sensor on a bar or a stack, never a hand: `phone` is for old test files.
 4. **Keep every raw recording** in `analysis/data/` (P2). Fake files (`fake_*.csv`) are
    gitignored and regenerated with the commands above.
 5. When something changes how the algorithm behaves or why, update `docs/algorithm.md`

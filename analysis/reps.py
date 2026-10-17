@@ -12,6 +12,8 @@ How it works (docs/algorithm.md sections 5 to 8):
      drift by assuming every lockout is at the same height (section 6b).
   4. Integrate velocity to height and find the turnarounds (bottoms and tops).
   5. Each bottom-to-top stretch is one rep.
+Which heights repeat (step 3) depends on the lift. Squat, bench and deadlift come from the
+name; otherwise the gyro decides machine or free weight (D21, detect_mount()).
 
 Usage:
     python reps.py data/reps_pause.zip
@@ -26,13 +28,20 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from phone_lift import load_phyphox, integrate
+from phone_lift import load_phyphox, read_phyphox, integrate
 
 # ---- Settings ----
 AXIS = "magnitude"      # tilt-proof vertical signal for a phone with no gyro
 STILL_WINDOW = 0.2      # s: window for the stillness test
 STILL_STD = 0.15        # m/s^2: max wiggle inside the window (hand-held pauses wiggle a bit)
 STILL_DEV = 0.3         # m/s^2: max |average - g| inside the window
+# Noise-matched stillness (D20): a sensor sitting on a weight stack is ~10x quieter at rest
+# than a phone in your hand, and a smooth cable lowering wiggles about as much as a hand-held
+# pause. So the limits shrink to a few times the wiggle of the longest rest in the recording.
+NOISE_STD_K = 4.0       # wiggle limit = 4x the rest wiggle ...
+NOISE_DEV_K = 5.0       # ... and |average - g| limit = 5x it,
+STILL_STD_MIN = 0.06    # m/s^2   but never below these
+STILL_DEV_MIN = 0.08    # m/s^2   (and never above STILL_STD / STILL_DEV)
 MIN_STILL = 0.25        # s: a still period has to last at least this long
 STILL_MAX_SPEED = 0.1   # m/s: faster than this during a "still" period = coasting, not still
 LONG_STILL = 1.0        # s: stills at least this long are real (nothing coasts dead steady that long)
@@ -57,8 +66,17 @@ LIFTS = {
     "bench":    dict(bottoms=True, ends=True),    # touches the chest; starts and ends at lockout
     "deadlift": dict(bottoms=True, ends=True),    # touches the floor; starts and ends on the floor
     "machine":  dict(bottoms=True, ends=True),    # weight stack: comes to rest on the stack every rep (D19)
+    "free":     dict(bottoms=False, ends=True),   # a free weight with no name we know (row, OHP, curl): lockouts only (D21)
 }
 LIFT = "phone"          # default; --lift=bench, or put the lift in the file name
+
+# Machine or free weight, from how the sensor moves (D21). A weight stack runs on guide
+# rods, so it goes straight up and down without turning. A bar tilts, rolls and drifts
+# forward and back; a hand does all of that a lot.
+MOUNT_MIN_MOVE = 1.0    # s: need this much motion between the stills to judge
+MACHINE_ROT = 3.0       # deg/s: median turning speed while moving. Stack ~0.7, hand 10 to 25
+MACHINE_SIDE = 0.35     # sideways / vertical acceleration while moving. Stack ~0.2, hand 0.36 to 2
+NAMED_WINS = ("phone", "squat", "bench", "deadlift")   # these names say more than the sensor can
 
 
 def rolling(y, n):
@@ -68,11 +86,11 @@ def rolling(y, n):
     return r.mean().to_numpy(), r.std().fillna(0).to_numpy()
 
 
-def find_still_runs(a_raw, g, fs):
+def find_still_runs(a_raw, g, fs, std_max=STILL_STD, dev_max=STILL_DEV):
     """(start, end) sample indices of every still period at least MIN_STILL long."""
     n = int(STILL_WINDOW * fs)
     mean, std = rolling(a_raw, n)
-    still = (std < STILL_STD) & (np.abs(mean - g) < STILL_DEV)
+    still = (std < std_max) & (np.abs(mean - g) < dev_max)
     runs, i = [], 0
     while i < len(still):
         if still[i]:
@@ -87,6 +105,18 @@ def find_still_runs(a_raw, g, fs):
         else:
             i += 1
     return runs
+
+
+def still_limits(a_raw, fs, runs):
+    """Noise-matched limits: median wiggle inside the longest still, times NOISE_*_K,
+    clamped between the *_MIN floors and the default limits."""
+    n = int(STILL_WINDOW * fs)
+    _, std = rolling(a_raw, n)
+    s, e = max(runs, key=lambda r: r[1] - r[0])
+    noise = float(np.median(std[s:e + 1]))
+    std_max = min(STILL_STD, max(STILL_STD_MIN, NOISE_STD_K * noise))
+    dev_max = min(STILL_DEV, max(STILL_DEV_MIN, NOISE_DEV_K * noise))
+    return std_max, dev_max, noise
 
 
 def speed_change(a, t, i, j):
@@ -287,8 +317,13 @@ def turning_points(x, min_move):
     return lows, highs
 
 
-def find_reps(x, v, t, windows):
-    """One rep per bottom-to-top move. Boundaries come from v = 0, never a threshold."""
+def find_reps(x, v, t, windows, bottom_ref=None):
+    """One rep per bottom-to-top move. Boundaries come from v = 0, never a threshold.
+
+    bottom_ref: the usual bottom height when the lift has one (bench chest, deadlift floor,
+    machine stack). A rep may then start from a stop near that height even if the move
+    began lower, which cuts a setup move off the first rep (taking up the cable before
+    rep 1 lifts the stack a few cm first)."""
     lows, highs = turning_points(x, MIN_ROM)
     reps = []
     for lo in lows:
@@ -298,7 +333,8 @@ def find_reps(x, v, t, windows):
         hi = later[0]
         seg = np.arange(lo, hi + 1)
         # start: last moment the bar wasn't moving up while still near the bottom
-        cand = seg[(v[seg] <= V_ZERO) & (x[seg] <= x[lo] + MIN_ROM)]
+        base = x[lo] if bottom_ref is None else max(x[lo], bottom_ref)
+        cand = seg[(v[seg] <= V_ZERO) & (x[seg] <= base + MIN_ROM)]
         start = cand[-1] if len(cand) else lo
         # end: first moment it stops moving up once it's near the top
         cand = seg[(seg > start) & (v[seg] <= V_ZERO) & (x[seg] >= x[hi] - MIN_ROM)]
@@ -323,6 +359,71 @@ def find_reps(x, v, t, windows):
     return reps
 
 
+def usual_bottom(x, lift):
+    """Median height of the turnaround bottoms, for lifts whose bottom repeats; else None."""
+    if not LIFTS[lift]["bottoms"]:
+        return None
+    lows, _ = turning_points(x, MIN_ROM)
+    return float(np.median(x[lows])) if len(lows) >= 3 else None
+
+
+def detect_mount(acc, gyro, runs, fs):
+    """'machine' (weight stack, Smith, sled on rails) or 'free' (bar, dumbbell, hand), from
+    the motion after the first still (D21). None if there's no gyro data or too little
+    motion to judge yet.
+
+    rot:  median turning speed while moving (deg/s), after taking off the gyro's offset
+          (its average during the stills). Median, so a bump or setup move doesn't count.
+    side: rms sideways acceleration / rms vertical acceleration while moving. Smoothed over
+          STILL_WINDOW first: a stack rattles on its rods but can't travel sideways.
+
+    How still the sensor is at rest doesn't tell them apart: a racked bar or a phone put
+    down on a bench is as quiet as a stack (bar-phone-2123/2206)."""
+    if acc is None or gyro is None or not np.any(gyro):
+        return None
+    still = np.zeros(len(acc), bool)
+    for s, e in runs:
+        still[s:e + 1] = True
+    moving = ~still
+    moving[:runs[0][1] + 1] = False         # before the first still: putting the sensor on
+    if moving.sum() < MOUNT_MIN_MOVE * fs:
+        return None
+    turn = np.linalg.norm(gyro - gyro[still].mean(axis=0), axis=1)
+    rot = float(np.median(turn[moving]))
+    up = acc[still].mean(axis=0)            # gravity as the sensor sees it at rest
+    g = np.linalg.norm(up)
+    up = up / g
+    n = int(STILL_WINDOW * fs)
+    a = np.column_stack([rolling(acc[:, k], n)[0] for k in range(3)])
+    along = a @ up
+    sideways = np.linalg.norm(a - np.outer(along, up), axis=1)
+    side = float(np.sqrt(np.mean(sideways[moving] ** 2) / np.mean((along[moving] - g) ** 2)))
+    kind = "machine" if rot < MACHINE_ROT and side < MACHINE_SIDE else "free"
+    return dict(kind=kind, rot=rot, side=side)
+
+
+def choose_lift(named, mount):
+    """The profile a set is tracked with (D21). Squat, bench, deadlift and phone by name
+    win, since they say more than the sensor can (a Smith squat rides on rods, but you
+    still pick the depth). Anything else (machine from an unknown exercise name, free, no
+    name) goes by what the sensor saw, or by the name if the sensor couldn't tell."""
+    if named in NAMED_WINS:
+        return named
+    if mount:
+        return mount["kind"]
+    return named or "free"
+
+
+def load_imu(path, n=None):
+    """3-axis acceleration and gyro (n x 3 arrays, first n rows) from a recording, or None
+    for whichever the file doesn't have."""
+    df = read_phyphox(path)
+    def cols(prefix):
+        names = [next((c for c in df.columns if c.startswith(f"{prefix} {k}")), None) for k in "xyz"]
+        return None if None in names else df[names].to_numpy(float)[:n]
+    return cols("Acceleration"), cols("Gyro")
+
+
 def lift_from_name(name):
     """'bar-bench-2026-11-03-1830.csv' -> 'bench'. The word right after 'bar-' wins (session
     files end in the exercise name, e.g. bar-machine-...-set02-lat-pulldown.csv); else any
@@ -338,8 +439,9 @@ def lift_from_name(name):
 
 def lift_for_exercise(exercise):
     """Typed exercise name -> tracking profile (D19). Squat, bench and deadlift by name
-    (front squat, pause bench...); "phone" for a hand-held test; anything else is
-    assumed to be a weight-stack machine (lat pulldown, cable row, leg curl...)."""
+    (front squat, pause bench...); "phone" for a hand-held test; anything else "machine"
+    (lat pulldown, cable row, leg curl...), which only counts when the sensor can't tell
+    machine from free weight (choose_lift, D21)."""
     lower = exercise.lower()
     for lift in ("phone", "deadlift", "bench", "squat"):
         if lift in lower:
@@ -347,10 +449,12 @@ def lift_for_exercise(exercise):
     return "machine"
 
 
-def analyze(t, a_raw, lift=LIFT):
+def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
     """The whole per-set pipeline (same as analyze() in webapp/reps.js). t in seconds
-    (any start), a_raw = vertical signal in m/s^2 incl. gravity. Raises ValueError if
-    there's no still period to anchor on."""
+    (any start), a_raw = vertical signal in m/s^2 incl. gravity. lift = the profile the
+    name or picker gave (choose_lift() has the last word). acc, gyro: n x 3 arrays, for
+    telling a machine from a free weight (D21); without them the name decides. Raises
+    ValueError if there's no still period to anchor on."""
     t = t - t[0]
     fs = 1 / np.median(np.diff(t))
 
@@ -361,16 +465,30 @@ def analyze(t, a_raw, lift=LIFT):
         raise ValueError("No still periods found. Start and end the recording with the phone still.")
     g = np.mean(np.concatenate([a_raw[s:e + 1] for s, e in runs]))
     runs = find_still_runs(a_raw, g, fs)
+    # Noise-matched limits (D20). Only when they're tighter than the defaults (a sensor on
+    # a stack or a bar, not a hand), then gravity again from the stills that survive them.
+    std_max, dev_max, noise = still_limits(a_raw, fs, runs)
+    if std_max < STILL_STD or dev_max < STILL_DEV:
+        runs = find_still_runs(a_raw, g, fs, std_max, dev_max)
+        if not runs:
+            raise ValueError("No still periods found. Start and end the recording with the phone still.")
+        g = np.mean(np.concatenate([a_raw[s:e + 1] for s, e in runs]))
+        runs = find_still_runs(a_raw, g, fs, std_max, dev_max)
+        if not runs:
+            raise ValueError("No still periods found. Start and end the recording with the phone still.")
     a = a_raw - g
     n_candidates = len(runs)
     runs = confirm_still_runs(a, t, fs, runs)
+    # Machine or free weight (D21). Stills don't depend on the lift, so this can wait till here.
+    mount = detect_mount(acc, gyro, runs, fs)
+    lift = choose_lift(lift, mount)
 
     v, windows = velocity_between_anchors(a, t, fs, runs)
     v = level_heights(a, t, v, windows, lift)
     x = integrate(v, t)
-    reps = find_reps(x, v, t, windows)
+    reps = find_reps(x, v, t, windows, usual_bottom(x, lift))
     return dict(t=t, fs=fs, g=g, a=a, runs=runs, v=v, x=x, windows=windows, reps=reps,
-                ignored=n_candidates - len(runs))
+                ignored=n_candidates - len(runs), lift=lift, mount=mount, noise=noise)
 
 
 def main():
@@ -385,8 +503,9 @@ def main():
     if until is not None:
         keep = (t - t[0]) < until
         t, a_raw = t[keep], a_raw[keep]
+    acc, gyro = load_imu(path, len(t))
     try:
-        r = analyze(t, a_raw, lift)
+        r = analyze(t, a_raw, lift, acc, gyro)
     except ValueError as err:
         sys.exit(str(err))
     t, fs, g, a, runs, v, x, windows, reps = (r[k] for k in ("t", "fs", "g", "a", "runs", "v", "x", "windows", "reps"))
@@ -397,13 +516,17 @@ def main():
         import json
         print(json.dumps({
             "fs": float(fs), "g": float(g), "runs": [[int(s), int(e)] for s, e in runs],
+            "lift": r["lift"], "mount": r["mount"],
             "reps": [{"start": int(r["start"]), "end": int(r["end"]), "rom": float(r["rom"]),
                       "dur": float(r["dur"]), "mcv": float(r["mcv"]), "peak": float(r["peak"]),
                       "leveled": r["leveled"], "flags": r["flags"]} for r in reps],
         }))
         return
 
-    print(f"{path.name}: {t[-1]:.1f} s at {fs:.0f} Hz, g = {g:.3f} m/s^2")
+    print(f"{path.name}: {t[-1]:.1f} s at {fs:.0f} Hz, g = {g:.3f} m/s^2, rest wiggle {r['noise']:.3f} m/s^2")
+    m = r["mount"]
+    seen = f"sensor says {m['kind']}, turning {m['rot']:.1f} deg/s, sideways {m['side']:.2f}" if m else "no gyro, went by the name"
+    print(f"Tracked as {r['lift']} ({seen})")
     n_lev = sum(1 for w in windows if w.get("leveled"))
     print(f"{len(runs)} still periods, {len(windows)} integration windows "
           f"(longest {max(w['dur'] for w in windows):.1f} s, {n_lev} leveled)\n" if windows else "")
