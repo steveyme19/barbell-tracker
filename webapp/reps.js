@@ -14,7 +14,7 @@ export const SETTINGS = {
   COAST_TRUST: 4.0,      // s: past this long since the last anchor, drift is too big for the speed check
   COAST_LOOK: 0.5,       // s: how far before and after a "still" period to look
   COAST_DV: 0.1,         // m/s: speed change on both sides that marks a coast
-  STILL_MAX_HUMP: 0.045, // m/s: velocity can't rise and fall more than this inside a still period
+  STILL_MAX_HUMP: 0.12,  // m/s: velocity can't rise and fall more than this inside a still period (D15)
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
   V_ZERO: 1e-9,          // m/s: "not moving up". Drift-corrected anchors are 0 up to roundoff (±1e-17)
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)

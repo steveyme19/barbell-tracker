@@ -122,6 +122,16 @@ later `npx cap` update rewrites the wrapper, set it back to 9.1.0 or newer.
 differed by 0.0054 m/s, just over the parity tolerance. 1e-9 m/s is far below any real
 speed, so it's not a threshold in the §8 sense, just "zero up to roundoff".
 
+**D15 (2026-10-16): Still-period hump limit 4.5 -> 12 cm/s.**
+*Why:* on the native squat set, the lockouts of reps 2 and 4 were held 1 to 2 s and
+failed the 4.5 cm/s hump test (7.5, 8.9), so they weren't anchors. That left a 9.6 s
+window whose drift showed up as (1) lockouts 9 cm off and (2) velocity creeping at +2
+cm/s while sitting on the box, so reps started ~0.5 s early and MCV read 0.31 and 0.38
+instead of ~0.45 and 0.61. With the limit at 12, only those two stills change across
+every recording on file. Coasts are still rejected by the coasting check, and the sim
+grinder (21) by the hump. No start-rule change was needed: with the tops anchored,
+every rep starts within 0.12 s / 0.5 cm of the drive.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

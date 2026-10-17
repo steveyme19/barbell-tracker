@@ -91,6 +91,8 @@ can check it on the phone.
   | ROM mean / spread | 66.1 / 2.4 cm | 64.3 / 1.5 cm |
   | MCV (m/s) | .52 **.31** .57 **.38** .65 | .41 .46 .62 .57 .63 |
   | peak (m/s) | .98 .91 .95 1.13 1.17 | 1.13 1.11 1.26 1.06 1.20 |
+  | after D15: ROM (cm) | 66.6 64.0 61.7 63.0 61.9 (63.5 / **1.8**) | unchanged |
+  | after D15: MCV (m/s) | .52 .44 .57 .61 .65 | unchanged |
 
   Native did *not* come out better, and the reason isn't the sensor. Native's signal
   is cleaner (still-period std 0.035 vs 0.07 m/s^2), but two algorithm problems hit that
@@ -101,6 +103,10 @@ can check it on the phone.
   sample-rate independent. Until those are fixed, the error budget is segmentation and
   drift, not sample rate, so 400 Hz can't show its benefit yet. Re-run this comparison
   after fixing them, with a tape-measured ROM.
+  **Fixed by D15** (hump limit; the early starts were a side effect of the same missing
+  anchors). Native now: all lockouts level, no "uneven lockout", longest window 4.5 s
+  (was 10.0), ROM spread 1.8 cm. Two different sets, so this is no per-rep proof that
+  native beats browser; that needs a tape ROM or a paper test.
 - Notes from building it:
   - No bundler means no `@capacitor/core`, so no `registerPlugin`. Use the proxy the
     bridge builds, `window.Capacitor.Plugins.BarSensors`.

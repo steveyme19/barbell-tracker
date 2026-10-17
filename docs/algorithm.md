@@ -142,7 +142,12 @@ integrated velocity, so there's no chicken-and-egg problem.
   across the candidate itself and remove a straight line (a steady sensor bias makes a
   straight line). What's left is how much velocity rose and fell inside it. Real stills
   on every recording: 0.2 to 3 cm/s. Coasts: 6 to 7 cm/s. The grinder: 21 cm/s. Cutoff
-  4.5 cm/s. No real recording changed.
+  was 4.5 cm/s, now **12 cm/s** (D15): a squat lockout held 1 to 2 s measured 7.5 and
+  8.9 cm/s, almost all of it the next descent leaking into the last ~0.1 s of the
+  window, and got thrown out. Coasts don't need the hump test: every coast on file is
+  also rejected by the coasting check above. 12 sits between real stills (up to 9) and
+  the grinder (21). A grinder slower and smoother than the sim's could now slip under
+  it; watch for that on real heavy sets.
 - **Still open:** the same fake grinder eases into lockout so gently that the end still
   starts ~0.07 s early, while the bar is still moving at 2 cm/s. Forcing v = 0 there costs
   that rep 3 cm of ROM with lockouts-only leveling, 0.7 cm with the bench profile
