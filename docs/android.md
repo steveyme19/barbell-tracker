@@ -124,6 +124,20 @@ can check it on the phone.
   (Drive, a chat, email). Keep the browser download path for the web version.
 - Keep the screen on during a set. Check whether the Screen Wake Lock API works in the
   WebView; if not, use a keep-awake plugin.
+- Status (2026-10-16): built, mostly verified over USB.
+  - Save CSV in the app: `BarSensorsPlugin.saveText` writes
+    `Documents/BarTracker/bar-<lift>-....csv` (no storage permission on Android 11+),
+    then `@capacitor/share` opens the share sheet. Closing the sheet keeps the file.
+    Code in `webapp/native.js`; the browser keeps its download. Verified: a 2308-row
+    set saved. Not verified yet: the share sheet itself (needs the phone unlocked).
+  - Not `@capacitor/filesystem`: it's Kotlin with `jvmToolchain(21)` and this PC only
+    has Java 25 (D16). Writing one text file is ~15 lines in our own plugin.
+  - Screen: `BarSensorsPlugin.keepScreenOn` sets `FLAG_KEEP_SCREEN_ON` on the window
+    from Start to Stop (checked with `dumpsys window`: set during, cleared after). The
+    WebView does have `navigator.wakeLock`, but whether it holds the screen depends on
+    the host app, and the window flag is certain. The browser still uses Wake Lock.
+  - Saved sets can also come off the phone with
+    `adb pull /sdcard/Documents/BarTracker/<file> analysis/data/`.
 
 ## A4. Bluetooth to the XIAO (roadmap 4.1)
 

@@ -41,12 +41,8 @@ export class PhoneSource {
   }
 }
 
-// The Capacitor bridge puts window.Capacitor in the Android app (no import needed, so
-// webapp/ keeps no build step). In a normal browser it isn't there.
+// The native plugin's proxy (see native.js for why it's Capacitor.Plugins).
 let barSensors = null;
-export function isNativeApp() {
-  return !!window.Capacitor?.isNativePlatform?.();
-}
 
 /**
  * Live phone sensor in the Android app, via the BarSensors plugin
@@ -61,8 +57,6 @@ export class NativeSensorSource {
   }
 
   async start() {
-    // The bridge builds a proxy for every native plugin; registerPlugin lives in
-    // @capacitor/core, which a no-build app never loads.
     barSensors ??= window.Capacitor.Plugins.BarSensors;
     this.listener = await barSensors.addListener("samples", (b) => {
       for (let i = 0; i < b.t.length; i++) {

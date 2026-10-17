@@ -6,7 +6,10 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Handler;
+import android.net.Uri;
+import android.os.Environment;
 import android.os.HandlerThread;
+import android.view.WindowManager;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -15,8 +18,14 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+
 /**
- * Phone accelerometer + gyro at the fastest rate the phone allows (docs/android.md A2).
+ * Phone accelerometer + gyro at the fastest rate the phone allows (docs/android.md A2),
+ * plus keepScreenOn and saveText for sets (A3).
  *
  * Emits "samples" events, each a batch of about 50 ms:
  *   { t: [...], ax: [...], ay: [...], az: [...], gx: [...], gy: [...], gz: [...] }
@@ -81,6 +90,50 @@ public class BarSensorsPlugin extends Plugin implements SensorEventListener {
     public void stop(PluginCall call) {
         stopSensors();
         call.resolve();
+    }
+
+    /** Keep the screen on during a set (A3). { on: true } sets the window flag, false clears it. */
+    @PluginMethod
+    public void keepScreenOn(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", true));
+        // Window flags have to be changed on the UI thread.
+        getActivity().runOnUiThread(() -> {
+            if (on) getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            else getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            call.resolve();
+        });
+    }
+
+    /**
+     * Save a text file to Documents/BarTracker/ on the phone (A3). { name, text } ->
+     * { uri, path }. Android 11+ lets an app create files in the shared Documents folder
+     * without a storage permission. (Our own method instead of @capacitor/filesystem,
+     * which needs a Java 21 toolchain this PC doesn't have, see D16.)
+     */
+    @PluginMethod
+    public void saveText(PluginCall call) {
+        String name = call.getString("name");
+        String text = call.getString("text", "");
+        if (name == null || name.contains("/") || name.contains("\\")) {
+            call.reject("Bad file name.");
+            return;
+        }
+        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "BarTracker");
+        File file = new File(dir, name);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            call.reject("Couldn't create " + dir);
+            return;
+        }
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            call.reject("Couldn't write " + file + ": " + e.getMessage());
+            return;
+        }
+        JSObject res = new JSObject();
+        res.put("uri", Uri.fromFile(file).toString());   // the share plugin turns this into a content:// URI
+        res.put("path", file.getAbsolutePath());
+        call.resolve(res);
     }
 
     @Override

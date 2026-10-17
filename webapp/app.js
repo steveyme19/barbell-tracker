@@ -1,5 +1,6 @@
 // UI wiring: source -> algorithm -> UI (decision D4).
-import { PhoneSource, NativeSensorSource, ReplaySource, isNativeApp } from "./sources.js";
+import { PhoneSource, NativeSensorSource, ReplaySource } from "./sources.js";
+import { isNativeApp, keepScreenOn, saveAndShare } from "./native.js";
 import { analyze, magnitude, SETTINGS } from "./reps.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { drawPlot } from "./plot.js";
@@ -117,6 +118,7 @@ async function stop() {
   setStatus(`Done · ${n} rep${n === 1 ? "" : "s"}`, "");
   wakeLock?.release().catch(() => {});
   wakeLock = null;
+  if (isNativeApp()) keepScreenOn(false).catch(() => {});
 }
 
 function reset() {
@@ -130,10 +132,12 @@ function reset() {
 // ---------- screen stays on during a set ----------
 
 async function keepAwake() {
+  // In the app, the window flag is certain; the WebView's Wake Lock API may not be (A3).
+  if (isNativeApp()) return keepScreenOn(true).catch(() => {});
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch { /* not supported */ }
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && running) keepAwake();
+  if (document.visibilityState === "visible" && running && !isNativeApp()) keepAwake();
 });
 
 // ---------- download ----------
@@ -144,7 +148,18 @@ function recordingName() {
   return `bar-${lift}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
 }
 
-function download() {
+async function download() {
+  if (isNativeApp()) {
+    // A browser download does nothing in the app's WebView: save a file and share it.
+    try {
+      const where = await saveAndShare(recordingName(), toCSV(samples));
+      $("hint").classList.remove("err");
+      $("hint").textContent = `Saved to ${where}`;
+    } catch (err) {
+      showError(`Couldn't save: ${err.message}`);
+    }
+    return;
+  }
   const blob = new Blob([toCSV(samples)], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

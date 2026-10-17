@@ -132,6 +132,14 @@ every recording on file. Coasts are still rejected by the coasting check, and th
 grinder (21) by the hump. No start-rule change was needed: with the tops anchored,
 every rep starts within 0.12 s / 0.5 cm of the drive.
 
+**D16 (2026-10-16): The app saves CSVs with its own plugin method, not @capacitor/filesystem.**
+*Why:* @capacitor/filesystem 8 is Kotlin and asks Gradle for a Java 21 toolchain
+(`jvmToolchain(21)`); this PC only has Java 25 (D13), so the build failed. The options
+were Gradle downloading a JDK 21, installing one, or writing the file ourselves. Saving
+one text file to Documents/BarTracker is ~15 lines of Java in `BarSensorsPlugin`, needs
+no permission on Android 11+, and adds no dependency. `@capacitor/share` (plain Java)
+stays for the share sheet.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
