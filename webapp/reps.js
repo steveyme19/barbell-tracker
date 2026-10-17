@@ -16,6 +16,7 @@ export const SETTINGS = {
   COAST_DV: 0.1,         // m/s: speed change on both sides that marks a coast
   STILL_MAX_HUMP: 0.045, // m/s: velocity can't rise and fall more than this inside a still period
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
+  V_ZERO: 1e-9,          // m/s: "not moving up". Drift-corrected anchors are 0 up to roundoff (±1e-17)
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
   LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve (lockouts only)
@@ -355,10 +356,10 @@ export function findReps(x, v, t, windows, S = SETTINGS) {
     const hi = highs.find((h) => h > lo);
     if (hi === undefined) continue;
     let start = lo;
-    for (let i = lo; i <= hi; i++) if (v[i] <= 0 && x[i] <= x[lo] + S.MIN_ROM) start = i;
+    for (let i = lo; i <= hi; i++) if (v[i] <= S.V_ZERO && x[i] <= x[lo] + S.MIN_ROM) start = i;
     let end = hi;
     for (let i = start + 1; i <= hi; i++) {
-      if (v[i] <= 0 && x[i] >= x[hi] - S.MIN_ROM) { end = i; break; }
+      if (v[i] <= S.V_ZERO && x[i] >= x[hi] - S.MIN_ROM) { end = i; break; }
     }
     const rom = x[end] - x[start];
     const dur = t[end] - t[start];

@@ -116,6 +116,12 @@ at Capacitor's 8.13.0 and builds fine on it. The alternative was installing a se
 (21) and pointing `JAVA_HOME` at it per build, which is one more thing to forget. If a
 later `npx cap` update rewrites the wrapper, set it back to 9.1.0 or newer.
 
+**D14 (2026-10-16): Rep boundaries treat |v| <= 1e-9 m/s as zero (`V_ZERO`).**
+*Why:* on the browser squat set, v at an anchored window end was -5.6e-17 in JS and
++5.6e-17 in Python. `v <= 0` then ended rep 2 one sample apart (17 ms at 60 Hz), and MCV
+differed by 0.0054 m/s, just over the parity tolerance. 1e-9 m/s is far below any real
+speed, so it's not a threshold in the §8 sense, just "zero up to roundoff".
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

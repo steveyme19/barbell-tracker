@@ -302,7 +302,9 @@ velocity passes 0.05 m/s". That adds a roughly fixed error in m/s (about 0.02 m/
 that threshold), which is nothing on fast reps and huge on grinders: +19% MCV on a
 0.10 m/s rep (`analysis/demos/threshold_bias.py`). Boundaries come from zero crossings
 and stillness only. §7's wiggle filter works by distance, not speed, so it doesn't have
-this problem.
+this problem. The one exception is `V_ZERO` = 1e-9 m/s: "zero" means within roundoff.
+A drift-corrected window ends at v = 0 only up to ±1e-17, and Python and JS round it
+with opposite signs, which moved a rep end by a sample (D14). 1e-9 m/s biases nothing.
 
 **Grinder stalls.** On a max-effort rep the bar can nearly stop at the sticking point,
 or even sink a little before it keeps going. Velocity crosses zero, which could split

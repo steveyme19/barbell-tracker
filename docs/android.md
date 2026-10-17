@@ -82,7 +82,25 @@ can check it on the phone.
   2.46 to 2.51 ms, |a| = 9.79 m/s^2 at rest. A 5-rep phone test recorded in the app,
   `analysis/data/bar-phone-2026-10-16-2123.csv`, gives the same ROM/MCV/peak/flags in
   Python as on screen (0.000 mm ROM difference) and is in the parity list. **Done.**
-  Left: the native vs browser comparison (paper test, box squat).
+  Native vs browser squat (2026-10-16, same box squat about 30 s apart, ROM by eye ~ the
+  same, no tape number):
+
+  | | native 402 Hz (`bar-squat-...-2131`) | browser 60 Hz (`...-2134-browser`) |
+  |---|---|---|
+  | ROM per rep (cm) | 66.6 69.5 63.4 67.7 63.3 | 65.1 66.6 64.1 63.9 61.9 |
+  | ROM mean / spread | 66.1 / 2.4 cm | 64.3 / 1.5 cm |
+  | MCV (m/s) | .52 **.31** .57 **.38** .65 | .41 .46 .62 .57 .63 |
+  | peak (m/s) | .98 .91 .95 1.13 1.17 | 1.13 1.11 1.26 1.06 1.20 |
+
+  Native did *not* come out better, and the reason isn't the sensor. Native's signal
+  is cleaner (still-period std 0.035 vs 0.07 m/s^2), but two algorithm problems hit that
+  set harder: (1) on reps 2 and 4 the start lands on a small bump while sitting on the
+  box, ~1 s early, halving MCV; (2) the tops of reps 2 and 4 were held 1-2 s, and
+  `velocity_hump` grows with still length (sway adds up), so they failed the 0.045 m/s
+  hump test and weren't anchors; the browser set's ~0.5 s tops passed. Both are
+  sample-rate independent. Until those are fixed, the error budget is segmentation and
+  drift, not sample rate, so 400 Hz can't show its benefit yet. Re-run this comparison
+  after fixing them, with a tape-measured ROM.
 - Notes from building it:
   - No bundler means no `@capacitor/core`, so no `registerPlugin`. Use the proxy the
     bridge builds, `window.Capacitor.Plugins.BarSensors`.

@@ -41,6 +41,7 @@ COAST_LOOK = 0.5        # s: how far before and after a "still" period to look f
 COAST_DV = 0.1          # m/s: speed change on both sides that marks a coast
 STILL_MAX_HUMP = 0.045  # m/s: velocity can't rise and fall more than this inside a still period
 MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
+V_ZERO = 1e-9           # m/s: "not moving up". Drift-corrected anchors are 0 up to roundoff (±1e-17)
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
 LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve (lockouts only)
@@ -296,10 +297,10 @@ def find_reps(x, v, t, windows):
         hi = later[0]
         seg = np.arange(lo, hi + 1)
         # start: last moment the bar wasn't moving up while still near the bottom
-        cand = seg[(v[seg] <= 0) & (x[seg] <= x[lo] + MIN_ROM)]
+        cand = seg[(v[seg] <= V_ZERO) & (x[seg] <= x[lo] + MIN_ROM)]
         start = cand[-1] if len(cand) else lo
         # end: first moment it stops moving up once it's near the top
-        cand = seg[(seg > start) & (v[seg] <= 0) & (x[seg] >= x[hi] - MIN_ROM)]
+        cand = seg[(seg > start) & (v[seg] <= V_ZERO) & (x[seg] >= x[hi] - MIN_ROM)]
         end = cand[0] if len(cand) else hi
         rom = x[end] - x[start]
         dur = t[end] - t[start]
