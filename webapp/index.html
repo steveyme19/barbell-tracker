@@ -81,6 +81,15 @@
           <option value="1">1x</option><option value="10" selected>10x</option><option value="30">30x</option>
         </select>
       </section>
+      <section class="card" id="calCard">
+        <h2>Sensor calibration</h2>
+        <p class="cal-status" id="calStatus">Not calibrated.</p>
+        <ul class="cal-faces" id="calFaces" hidden></ul>
+        <div class="controls">
+          <button id="calBtn" class="small">Calibrate</button>
+          <button id="calReset" class="small">Reset</button>
+        </div>
+      </section>
       <section class="card">
         <h2>Live acceleration <span class="muted">(last 8 s)</span></h2>
         <canvas id="liveCanvas"></canvas>

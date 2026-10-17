@@ -7,6 +7,7 @@ import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from
 import { parseRecording, toCSV } from "./fileio.js";
 import { askPersist, putSession, listSessions, putSetSamples, getSetSamples } from "./store.js";
 import { fitProfile } from "./lv.js";
+import { fitCalibration, applyCalibration, CalibrationRun, G_LOCAL } from "./calib.js";
 import { drawPlot } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
@@ -189,13 +190,17 @@ async function startSession(from = null) {
   askPersist();
   // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
   sourceName = native ? "phone (native)" : "phone";
-  source = native ? new NativeSensorSource(onSample) : new PhoneSource(onSample);
+  // Calibrated acceleration for live sensors (D23); replays are played as recorded.
+  const feed = (s) => onSample(applyCalibration(s, cal));
+  source = native ? new NativeSensorSource(feed) : new PhoneSource(feed);
   try {
     await source.start();
   } catch (err) {
     showError(err.message);
     return;
   }
+  // The calibration used, next to the set files, so the raw readings can be recovered.
+  if (cal && session.autosave) saveFile(session.folder, "calibration.json", JSON.stringify(cal, null, 1)).catch(() => {});
   begin();
   // Screen-off recording. Android only allows starting it while the app is in front (you
   // just tapped Start, so it is). If it's refused, the session still runs with the screen on.
@@ -707,6 +712,72 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// ---------- sensor calibration (algorithm.md section 1, D23) ----------
+// Lay the phone on each of its 6 faces, still for 2 s each. Per axis: scale and bias.
+
+const FACE_NAMES = { "z+": "screen up", "z-": "screen down", "x+": "right edge up", "x-": "left edge up",
+  "y+": "top edge up", "y-": "bottom edge up" };
+let cal = null;            // { bias, scale, residual, date } or null
+let calRun = null;         // the 6-face collection in progress
+let calSource = null;
+
+function showCal() {
+  const pct = (s) => `${s >= 1 ? "+" : ""}${((s - 1) * 100).toFixed(1)}%`;
+  $("calStatus").textContent = cal
+    ? `Calibrated ${new Date(cal.date).toLocaleDateString()}: scale x ${pct(cal.scale[0])}, y ${pct(cal.scale[1])}, z ${pct(cal.scale[2])}; ` +
+      `offset x ${cal.bias[0].toFixed(2)}, y ${cal.bias[1].toFixed(2)}, z ${cal.bias[2].toFixed(2)} m/s²; fit error ${cal.residual.toFixed(3)} m/s².`
+    : "Not calibrated. Lay the phone on each of its 6 sides, still for 2 s each; scale errors go straight into velocity.";
+  $("calReset").disabled = !cal;
+}
+
+function showFaces() {
+  $("calFaces").innerHTML = Object.entries(FACE_NAMES)
+    .map(([f, name]) => `<li class="${calRun?.faces.has(f) ? "got" : ""}">${name}</li>`).join("");
+}
+
+async function startCalibration() {
+  if (calRun) { stopCalibration("Calibration cancelled."); return; }
+  if (running) { showError("End the session first."); return; }
+  calRun = new CalibrationRun();
+  $("calFaces").hidden = false;
+  showFaces();
+  $("calBtn").textContent = "Cancel";
+  $("calStatus").textContent = "Lay the phone on each side below, still for 2 s. It buzzes when it has one.";
+  const take = (s) => {
+    const face = calRun?.push(s);                          // raw samples: that's what we calibrate
+    if (!face) return;
+    buzz(80);
+    showFaces();
+    if (calRun.done) finishCalibration();
+  };
+  calSource = native ? new NativeSensorSource(take) : new PhoneSource(take);
+  try { await calSource.start(); } catch (err) { stopCalibration(err.message); }
+}
+
+function finishCalibration() {
+  const c = fitCalibration(calRun.means, G_LOCAL);
+  if (!c) { stopCalibration("Couldn't fit: a side was missing."); return; }
+  if (c.residual > 0.1 || c.scale.some((s) => Math.abs(s - 1) > 0.1)) {
+    stopCalibration(`That doesn't look right (fit error ${c.residual.toFixed(2)} m/s²). Try again, flatter and stiller.`);
+    return;
+  }
+  cal = { ...c, date: Date.now(), g: G_LOCAL };
+  try { localStorage.setItem("calibration", JSON.stringify(cal)); } catch { /* storage blocked */ }
+  if (native) saveFile("", "calibration.json", JSON.stringify(cal, null, 1)).catch(() => {});
+  buzz([100, 80, 100]);
+  stopCalibration();
+}
+
+function stopCalibration(msg = "") {
+  calSource?.stop();
+  calSource = null;
+  calRun = null;
+  $("calBtn").textContent = "Calibrate";
+  $("calFaces").hidden = true;
+  showCal();
+  if (msg) $("calStatus").textContent = msg;
+}
+
 // ---------- next set: exercise + weight (sticky) ----------
 
 function setExercise(name) {
@@ -760,6 +831,14 @@ $("shareBtn").addEventListener("click", shareSession);
 $("exercise").addEventListener("change", (e) => setExercise(e.target.value));
 $("exercise").addEventListener("input", (e) => { $("profileHint").textContent = hintFor(e.target.value); });
 $("weight").addEventListener("change", (e) => setWeight(e.target.value));
+$("calBtn").addEventListener("click", startCalibration);
+$("calReset").addEventListener("click", () => {
+  cal = null;
+  try { localStorage.removeItem("calibration"); } catch { /* storage blocked */ }
+  showCal();
+});
+try { cal = JSON.parse(localStorage.getItem("calibration") || "null"); } catch { cal = null; }
+showCal();
 $("vlTarget").addEventListener("change", (e) => setVlTarget(e.target.value));
 try { recents = JSON.parse(localStorage.getItem("recentExercises") || "[]"); } catch { recents = []; }
 fillSuggestions();
@@ -786,6 +865,7 @@ window.barDebug = {
   session: () => session,
   tracker: () => tracker,
   summary: () => (session ? summaryCSV() : ""),
+  calRun: () => calRun,
   recording: () => {
     const s = session?.sets[session.sets.length - 1];
     return s ? { name: s.file, csv: toCSV(s.samples) } : { name: "none.csv", csv: "" };

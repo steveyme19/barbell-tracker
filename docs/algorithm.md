@@ -19,6 +19,9 @@ Cross-rep and cross-session stuff (consistency, RPE) lives in
 
 ## 1. Calibrate
 
+*Phone, 2026-10-17 (D23): Tools > Sensor calibration does the 6-face accelerometer part
+(`analysis/calib.py`, `webapp/calib.js`); live samples are corrected before anything else.*
+
 Subtract each axis's bias and divide by its scale factor (from the 6-position
 calibration in step 1.3).
 

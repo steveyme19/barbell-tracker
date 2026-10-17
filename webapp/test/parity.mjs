@@ -16,6 +16,7 @@ import { parseRecording } from "../fileio.js";
 import { analyze, magnitude, liftFromName, SETTINGS } from "../reps.js";
 import { SessionTracker, formatTime } from "../sets.js";
 import { fitProfile } from "../lv.js";
+import { fitCalibration } from "../calib.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PYTHON = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
@@ -156,6 +157,24 @@ for (const [lift, pts] of lvCases) {
     (js && py && near(js.a, py.a) && near(js.b, py.b) && near(js.r2, py.r2) && near(js.e1rm, py.e1rm) && js.n === py.n);
   if (!ok) { failures++; console.log(`FAIL lv ${lift} ${JSON.stringify(pts)}\n  JS ${JSON.stringify(js)}\n  Py ${JSON.stringify(py)}`); }
   else console.log(`PASS lv ${lift}: ${js ? `e1RM ${js.e1rm ? js.e1rm.toFixed(0) : "--"}, R2 ${js.r2.toFixed(2)}` : "no fit"}`);
+}
+
+// ---------- accelerometer calibration (analysis/calib.py vs webapp/calib.js) ----------
+// A fake sensor reading 1.5 % high on x, 0.8 % low on z, with offsets, in 6 positions.
+const calCases = [
+  [[0.12, 0.03, 9.80 * 0.992 - 0.05], [0.12, 0.03, -9.80 * 0.992 - 0.05], [9.80 * 1.015 + 0.12, 0.03, -0.05],
+    [-9.80 * 1.015 + 0.12, 0.03, -0.05], [0.12, 9.80 + 0.03, -0.05], [0.12, -9.80 + 0.03, -0.05]],
+  [[0.1, 0, 9.8], [0.1, 0, -9.8], [9.8, 0, 0]],                    // faces missing: no fit
+];
+for (const means of calCases) {
+  const js = fitCalibration(means);
+  const py = JSON.parse(execFileSync(PYTHON, [path.join(ROOT, "analysis", "calib.py"), JSON.stringify(means), "--json"],
+    { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
+  const close = (a, b) => a.every((x, i) => Math.abs(x - b[i]) < 1e-12);
+  const ok = (js === null && py === null) ||
+    (js && py && close(js.bias, py.bias) && close(js.scale, py.scale) && Math.abs(js.residual - py.residual) < 1e-12);
+  if (!ok) { failures++; console.log(`FAIL calib\n  JS ${JSON.stringify(js)}\n  Py ${JSON.stringify(py)}`); }
+  else console.log(`PASS calib: ${js ? `scale ${js.scale.map((s) => ((s - 1) * 100).toFixed(2) + "%").join(" ")}, bias ${js.bias.map((b) => b.toFixed(2)).join(" ")}` : "no fit (faces missing)"}`);
 }
 
 process.exit(failures ? 1 : 0);

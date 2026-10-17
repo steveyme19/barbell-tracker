@@ -152,5 +152,10 @@ td.flag { color: var(--ochre); font-size: 11px; text-align: left; }
 .history-item span:last-child { color: var(--muted); }
 .history-empty { color: var(--muted); font-size: 13px; }
 .tools { margin-top: 18px; }
+.cal-status { font-size: 14px; margin: 0 0 8px; }
+.cal-faces { list-style: none; padding: 0; margin: 0 0 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 14px; }
+.cal-faces li::before { content: "○ "; color: var(--muted); }
+.cal-faces li.got::before { content: "● "; color: var(--navy); }
+.cal-faces li.got { color: var(--muted); }
 .tools > summary { font-size: 14px; }
 footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0; }

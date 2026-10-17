@@ -212,6 +212,17 @@ machines and unknown free weights have no published v1RM, so they get the profil
 the heaviest weight used: that far out a 0.02 m/s error moves it by tens of pounds.
 Reference `analysis/lv.py`, port `webapp/lv.js`, parity-tested.
 
+**D23 (2026-10-17): Phone accelerometer calibration, applied at the source.**
+*Why:* algorithm.md section 1: a scale error goes straight into velocity and ROM and the
+drift fix can't see it. 6 still faces (Tools > Sensor calibration), per axis
+scale = (up - down) / 2g and bias = (up + down) / 2 with g = 9.80 (West Lafayette), fit
+rejected if it's off by more than 0.1 m/s^2 or 10 %. Reference `analysis/calib.py`, port
+`webapp/calib.js`, parity-tested; the collector was checked on a synthetic stream with
+planted errors (recovered to 0.01 %). It's applied to every live sample before anything
+else, so live numbers, saved sets and Python agree. That bends P2 (raw files): each
+session folder gets the `calibration.json` it used, so raw = calibrated x scale + bias.
+Gyro scale needs a known full turn, not this.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
