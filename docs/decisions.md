@@ -99,6 +99,16 @@ better in 10/10 sets each. Squat bottoms stay free because depth is something to
 measure, not assume. The lift goes in the CSV file name so Python knows it too, and
 the per-lift load-velocity and RPE models need it later anyway.
 
+**D12 (2026-10-17): Android app = Capacitor wrapper around `webapp/`, built on the PC
+with Claude Code.**
+*Why:* the browser gives the phone sensors at ~60 Hz rounded to 0.1, and Web Bluetooth
+needs the screen on and a tap to reconnect. A native wrapper gets full-rate sensors and
+native BLE while keeping the same JS, so `reps.js` and the Python parity test stay as
+they are. A full Kotlin rewrite would throw that away. The `webapp/` code itself stays
+plain JS with no build step (P3); only the Android shell has a build. Building needs
+Android Studio, Gradle and the phone on USB, so that work runs in Claude Code on
+Quentin's PC. Plan: `docs/android.md`.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

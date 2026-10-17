@@ -1,0 +1,61 @@
+# Bar Tracker: notes for Claude
+
+DIY barbell velocity tracker. A small IMU on the bar sleeve reports per rep: mean
+concentric velocity (MCV, the main number), peak velocity and range of motion (ROM).
+Later: load-velocity profile / e1RM, velocity-loss alert, bar path, consistency ratings,
+RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
+`docs/roadmap.md` for the big picture.
+
+## How Quentin wants to work
+
+- Build mode: give working code and clear steps, not exercises. Small steps that fit in
+  one sitting.
+- Casual and direct. Point out mistakes plainly. **Never use em dashes.**
+- Simple, commented code. Explain the why in a sentence, not a lecture.
+
+## Layout
+
+| folder | what |
+|---|---|
+| `analysis/` | Python. `reps.py` is the reference rep algorithm. Recordings in `analysis/data/` |
+| `webapp/` | Plain JS app (no framework, no build step). `reps.js` is a line-for-line port of `reps.py` |
+| `android/` (coming) | Capacitor shell around `webapp/`, see `docs/android.md` |
+| `firmware/` | XIAO nRF52840 Sense (Arduino IDE), not started |
+| `hardware/` | BOM, later KiCad + Fusion 360 |
+| `docs/` | `algorithm.md` (how it works), `decisions.md` (why), `roadmap.md` (what's next), `android.md` |
+
+## Rules that matter
+
+1. **Python is the reference** (decision P1). Change the algorithm in `analysis/reps.py`
+   first, then port the same change to `webapp/reps.js`, then run the parity test:
+   ```
+   cd analysis
+   python make_fake_reps.py && python make_fake_reps.py nopause && python make_fake_reps.py drift
+   python make_fake_reps.py lifts && python demos/bench_jcurve.py --save
+   cd ..
+   node webapp/test/parity.mjs
+   ```
+   Every line must say PASS (ROM within 1 mm, MCV within 0.005 m/s, same flags). Each
+   file is also checked cut off partway, which is what the live app sees mid-set. On
+   Windows the venv Python is `analysis\.venv\Scripts\python`; set `PYTHON` to it if
+   `python` isn't the venv one.
+2. **One sample format for every source** (decision D4):
+   `{ t, ax, ay, az, gx, gy, gz }`. `t` in seconds from the source's own clock (sensor
+   or device timestamp, never arrival time), acceleration in m/s² *including gravity*,
+   gyro in deg/s. The algorithm and UI never know which source they're getting. A new
+   source (native sensors, Bluetooth) only touches `webapp/sources.js` plus picking it in
+   `app.js`.
+3. **The lift matters.** `LIFTS` in `reps.py` / `reps.js` says which heights repeat
+   (lockouts always; bottoms for bench and deadlift; the stills before and after a
+   barbell set). Saved files are named `bar-<lift>-YYYY-MM-DD-HHMM.csv` and Python reads
+   the lift from the name.
+4. **Keep every raw recording** in `analysis/data/` (P2). Fake files (`fake_*.csv`) are
+   gitignored and regenerated with the commands above.
+5. When something changes how the algorithm behaves or why, update `docs/algorithm.md`
+   and add a dated entry to `docs/decisions.md`. Tick roadmap steps when done.
+
+## Hardware gotchas (for later)
+
+- XIAO nRF52840 battery: never drive P0.14 HIGH while charging (can damage P0.31).
+  Charge current 50 mA default, 100 mA with P0.13 LOW.
+- Sample timestamps come from the device, not from when data arrived over BLE.

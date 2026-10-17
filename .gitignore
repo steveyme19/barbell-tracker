@@ -18,3 +18,6 @@ Thumbs.db
 
 # Files the Claude app drops into the folder
 Claude outputs/
+
+# Android app (Capacitor)
+node_modules/

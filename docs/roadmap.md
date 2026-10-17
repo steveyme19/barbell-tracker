@@ -46,6 +46,15 @@ explain why it works. Per-rep processing is specified in
 - [ ] **0.6 (optional) Fake squats.** Tape the phone to a PVC pipe or an empty bar
       and squat. First taste of real bar motion before hardware shows up.
 
+## Android app (alongside phases 1 to 4)
+
+Capacitor wrapper around the web app (D12). Steps A0 to A4 in
+[android.md](android.md): setup, app shell, native sensors, files and screen, then
+Bluetooth to the XIAO (same time as 4.1).
+
+- [ ] **A0** setup · [ ] **A1** shell runs on the phone · [ ] **A2** native sensors
+  200+ Hz · [ ] **A3** save/share CSV, screen on · [ ] **A4** BLE
+
 ## Phase 1: Hardware prototype (XIAO nRF52840 Sense)
 
 - [ ] **1.1 Hello board.** Blink + Serial print. Pick the board package (decision O4).
