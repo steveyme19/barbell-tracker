@@ -168,7 +168,7 @@ Bluetooth to the XIAO (same time as 4.1).
       sample format as the other two. Nothing downstream changes. Rerun the parity test.
 - [ ] **4.2 Set view.** Per-rep MCV, velocity loss %, bar path plot, alert (vibrate +
       sound) past a velocity-loss threshold. Show quality flags.
-- [ ] **4.3 Load-velocity profile.** Log load + MCV (or MPV, decision O2) per set, fit a
+- [ ] **4.3 Load-velocity profile.** *(2026-10-17, D22: in the app from logged weights; check on real sets.)* Log load + MCV (or MPV, decision O2) per set, fit a
       line, extrapolate to a minimum velocity threshold for e1RM.
 - [ ] **4.4 Enclosure v1** in Fusion 360 for the mount spot picked in 3.7. XIAO + LiPo +
       magnet seat that fixes which way the device faces along the bar.

@@ -6,6 +6,7 @@ import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } fr
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { askPersist, putSession, listSessions, putSetSamples, getSetSamples } from "./store.js";
+import { fitProfile } from "./lv.js";
 import { drawPlot } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
@@ -118,6 +119,7 @@ function onSet(set) {
   session.sets.push(set);
   buzz([100, 80, 100]);                                  // a set finished
   addSetCard(set);
+  for (const s of session.sets) if (s !== set) fillSetCard(s);   // a new point for their profiles
   if (session.autosave) saveSet(set).then(saveSummary).catch((err) => showError(`Couldn't save: ${err.message}`));
   if (session.persist) {
     putSetSamples(session.id, set.index, set.samples, set.tAbs).then(persistSession)
@@ -296,9 +298,13 @@ async function viewSession(rec) {
 
 const fmtWhen = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
+let historyCache = [];          // stored sessions, for the load-velocity profile
+
 async function renderHistory() {
   let all = [];
   try { all = (await listSessions()).filter((s) => s.sets.length); } catch { /* no IndexedDB */ }
+  historyCache = all;
+  for (const s of session?.sets ?? []) fillSetCard(s);   // profiles may have more data now
   const list = $("historyList");
   list.innerHTML = all.length ? "" : '<p class="history-empty">No saved sessions yet.</p>';
   for (const rec of all) {
@@ -420,7 +426,11 @@ function addSetCard(set) {
   set.card = card;
   card.querySelector(".set-exercise").addEventListener("change", (e) => changeSetExercise(set, e.target.value));
   card.querySelector(".set-load").value = set.load;
-  card.querySelector(".set-load").addEventListener("change", (e) => { set.load = e.target.value; saveSummaryLater(); });
+  card.querySelector(".set-load").addEventListener("change", (e) => {
+    set.load = e.target.value;
+    for (const s of session.sets) fillSetCard(s);        // the profile changed
+    saveSummaryLater();
+  });
   card.querySelector(".set-rpe").addEventListener("change", (e) => { set.rpe = e.target.value; saveSummaryLater(); });
   card.querySelector(".set-save").addEventListener("click", () => shareSet(set));
   card.querySelector(".set-more").addEventListener("toggle", (e) => { if (e.target.open) drawSetPlot(set); });
@@ -441,6 +451,7 @@ function fillSetCard(set) {
     [set.nReps, "reps"], [set.bestMcv.toFixed(2), "best MCV"],
     [`${Math.round(set.velLoss * 100)}%`, "vel. loss", overTarget(set.velLoss)], [formatRpe(set.rpeEst), "RPE est."],
   ].map(([v, l, over]) => `<div><span${over ? ' class="over" title="over your velocity-loss target"' : ""}>${v}</span><label>${l}</label></div>`).join("");
+  c.querySelector(".set-lv").innerHTML = lvLine(set);
   const tbody = c.querySelector("tbody");
   tbody.innerHTML = "";
   set.reps.forEach((r, k) => {
@@ -504,6 +515,43 @@ function saveSummaryLater() {
   summaryTimer = setTimeout(() => saveSummary().catch((err) => showError(`Couldn't save: ${err.message}`)), 800);
 }
 
+// ---------- load-velocity profile (roadmap 4.3) ----------
+// Points: best-rep MCV vs weight for sets with the same exercise name, last LV_DAYS of
+// history plus this session. Unnamed sets can't be matched, so they're left out.
+
+const LV_DAYS = 60;
+const sameName = (a, b) => a && b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+function lvPoints(name, skip = null) {
+  const pts = [];
+  const since = Date.now() - LV_DAYS * 864e5;
+  for (const rec of historyCache) {
+    if (rec.id === session?.id || rec.startedAtMs < since) continue;
+    for (const s of rec.sets) if (sameName(s.exercise, name) && Number(s.load) > 0) pts.push([Number(s.load), s.bestMcv]);
+  }
+  for (const s of session?.sets ?? []) {
+    if (s !== skip && sameName(s.exercise, name) && Number(s.load) > 0) pts.push([Number(s.load), s.bestMcv]);
+  }
+  return pts;
+}
+
+/** e1RM and "usual speed at this weight" for a set card, as HTML (empty if no profile). */
+function lvLine(set) {
+  if (!set.exercise || !(Number(set.load) > 0)) return "";
+  const all = fitProfile(lvPoints(set.exercise), set.lift);
+  const others = fitProfile(lvPoints(set.exercise, set), set.lift);     // baseline without this set
+  const parts = [];
+  if (all?.e1rm) parts.push(`e1RM ≈ <b>${Math.round(all.e1rm)} lb</b>`);
+  if (others) {
+    const usual = others.a + others.b * Number(set.load);
+    const d = set.bestMcv - usual;
+    parts.push(`usual at ${set.load} lb: ${usual.toFixed(2)} m/s (this set ${d >= 0 ? "+" : ""}${d.toFixed(2)})`);
+  }
+  if (!parts.length) return "";
+  const p = all ?? others;
+  return `<span title="${p.n} sets at ${p.loads} weights, R² ${p.r2.toFixed(2)}">${parts.join(" · ")}</span>`;
+}
+
 // ---------- the big card ----------
 
 function render() {
@@ -555,7 +603,9 @@ function render() {
     $("heroBig").textContent = formatTime(Math.max(0, now - restFrom));
     stats([[shown.nReps, "reps"], [shown.bestMcv.toFixed(2), "best MCV"],
       [`${Math.round(shown.velLoss * 100)}%`, "vel. loss"], [formatRpe(shown.rpeEst), "RPE est."]]);
-    $("heroSub").textContent = tracker.inSegment && !liveReps.length ? "Movement… (not a set yet)" : "";
+    const e1 = shown.exercise && fitProfile(lvPoints(shown.exercise), shown.lift)?.e1rm;
+    $("heroSub").textContent = tracker?.inSegment && !liveReps.length ? "Movement… (not a set yet)"
+      : e1 ? `${shown.exercise}: e1RM ≈ ${Math.round(e1)} lb` : "";
   } else if (state === "ready") {
     $("heroLabel").textContent = "Recording";
     $("heroBig").textContent = "Ready. Do your first set.";

@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseRecording } from "../fileio.js";
 import { analyze, magnitude, liftFromName, SETTINGS } from "../reps.js";
 import { SessionTracker, formatTime } from "../sets.js";
+import { fitProfile } from "../lv.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PYTHON = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
@@ -136,6 +137,25 @@ for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
   });
   if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
   else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}`);
+}
+
+// ---------- load-velocity profile (analysis/lv.py vs webapp/lv.js) ----------
+const lvCases = [
+  ["squat", [[135, 0.82], [185, 0.66], [225, 0.51], [185, 0.64]]],
+  ["bench", [[95, 0.78], [135, 0.55], [155, 0.44]]],
+  ["machine", [[100, 0.6], [140, 0.45]]],           // no 1RM velocity: profile only
+  ["squat", [[135, 0.8], [135, 0.78]]],             // one load: no fit
+  ["deadlift", [[135, 0.9], [145, 0.89]]],          // nearly flat: e1RM too far, not reported
+];
+for (const [lift, pts] of lvCases) {
+  const js = fitProfile(pts, lift);
+  const py = JSON.parse(execFileSync(PYTHON, [path.join(ROOT, "analysis", "lv.py"), lift, JSON.stringify(pts), "--json"],
+    { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
+  const near = (x, y) => (x === null && y === null) || (x !== null && y !== null && Math.abs(x - y) < 1e-9);
+  const ok = (js === null && py === null) ||
+    (js && py && near(js.a, py.a) && near(js.b, py.b) && near(js.r2, py.r2) && near(js.e1rm, py.e1rm) && js.n === py.n);
+  if (!ok) { failures++; console.log(`FAIL lv ${lift} ${JSON.stringify(pts)}\n  JS ${JSON.stringify(js)}\n  Py ${JSON.stringify(py)}`); }
+  else console.log(`PASS lv ${lift}: ${js ? `e1RM ${js.e1rm ? js.e1rm.toFixed(0) : "--"}, R2 ${js.r2.toFixed(2)}` : "no fit"}`);
 }
 
 process.exit(failures ? 1 : 0);

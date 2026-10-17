@@ -201,6 +201,17 @@ Unknown free weights get a new `free` profile (lockouts and end stills only). No
 or under 1 s of motion: the name decides, as before. All recordings give the same reps
 as D20. Untested on a mounted bar; revisit with the first bar sessions (2.1).
 
+**D22 (2026-10-17): Load-velocity profile from best-rep MCV; e1RM only for squat, bench and deadlift.**
+*Why:* roadmap 4.3. One point per set, (weight, best-rep MCV): the fastest rep is the
+least fatigued, the usual way to build a profile. MCV, not MPV (settles O2 for now): it's
+what the app computes and what the 1RM velocities in analytics.md section 5 are. Straight
+line by least squares over the same exercise name in the last 60 days plus today, needs 2+
+weights. e1RM = where the line reaches v1RM (squat 0.23, bench 0.10, deadlift 0.14 m/s);
+machines and unknown free weights have no published v1RM, so they get the profile only
+("usual speed at this weight", fitted without the set being compared). No e1RM past 2x
+the heaviest weight used: that far out a 0.02 m/s error moves it by tens of pounds.
+Reference `analysis/lv.py`, port `webapp/lv.js`, parity-tested.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

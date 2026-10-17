@@ -52,6 +52,7 @@ Tools (at the bottom): replay a recording (a long file shows up as sets; real ti
 | `app.js` | UI wiring: source → session tracker → algorithm → UI |
 | `sets.js` | session mode: finds sets + rest live, ported from `analysis/sets.py`; RPE estimate v0 |
 | `native.js` | Android-app-only extras: save/share files, keep the screen on |
+| `lv.js` | load-velocity profile + e1RM (D22), ported from `analysis/lv.py` |
 | `store.js` | session history in IndexedDB: a small record per session + each set's raw samples (history list, resume after the app was killed) |
 | `sources.js` | `PhoneSource` (DeviceMotion), `ReplaySource` (recordings). `BleSource` comes in phase 4. |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
