@@ -1,6 +1,10 @@
 package io.github.steveyme19.bartracker;
 
 import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -18,6 +22,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import androidx.core.content.ContextCompat;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -25,7 +31,8 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Phone accelerometer + gyro at the fastest rate the phone allows (docs/android.md A2),
- * plus keepScreenOn, saveText and deleteText (A3, session mode).
+ * plus keepScreenOn, saveText and deleteText (A3, session mode), and record / vibrate for
+ * screen-off sessions (RecordingService).
  *
  * Emits "samples" events, each a batch of about 50 ms:
  *   { t: [...], ax: [...], ay: [...], az: [...], gx: [...], gy: [...], gz: [...] }
@@ -93,6 +100,47 @@ public class BarSensorsPlugin extends Plugin implements SensorEventListener {
     }
 
     /** Keep the screen on during a set (A3). { on: true } sets the window flag, false clears it. */
+    /** { on: true } starts RecordingService (session keeps running with the screen off), false stops it. */
+    @PluginMethod
+    public void record(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", true));
+        Context ctx = getContext();
+        Intent svc = new Intent(ctx, RecordingService.class);
+        // Android 13+: the "Recording session" notice needs this (asked once; recording works either way)
+        if (on && Build.VERSION.SDK_INT >= 33 && getActivity() != null
+                && ContextCompat.checkSelfPermission(ctx, "android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            getActivity().requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 7);
+        }
+        try {
+            if (on) ContextCompat.startForegroundService(ctx, svc);
+            else ctx.stopService(svc);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Couldn't " + (on ? "start" : "stop") + " background recording: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Vibrate a pattern { pattern: [on, off, on, ...] } in ms. Native, because the WebView's
+     * navigator.vibrate is unreliable while the page is hidden (screen off).
+     */
+    @PluginMethod
+    public void vibrate(PluginCall call) {
+        Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
+        JSArray arr = call.getArray("pattern", new JSArray());
+        try {
+            long[] timings = new long[arr.length() + 1];               // starts with a 0 ms delay
+            for (int i = 0; i < arr.length(); i++) timings[i + 1] = arr.getLong(i);
+            if (v != null && v.hasVibrator() && arr.length() > 0) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createWaveform(timings, -1));
+                else v.vibrate(timings, -1);
+            }
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Couldn't vibrate: " + e.getMessage());
+        }
+    }
+
     @PluginMethod
     public void keepScreenOn(PluginCall call) {
         boolean on = Boolean.TRUE.equals(call.getBoolean("on", true));

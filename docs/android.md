@@ -157,6 +157,21 @@ can check it on the phone.
   session.csv written; changing a set's lift re-saved it under the new name and deleted
   the old file.
 
+## Recording with the screen off (2026-10-17)
+
+- `RecordingService.java`: a foreground service (type `health`, needs
+  HIGH_SAMPLING_RATE_SENSORS, which we declare) plus a partial wake lock (4 h cap), with a
+  "Recording session" notification (POST_NOTIFICATIONS asked once on Android 13+). Started
+  by Start session, stopped by End session (`BarSensors.record`).
+- Android only lets an app start it while the app is in front. Over USB with the phone
+  locked it's refused (`mAllowStartForeground false`); the session then still runs, with a
+  message to keep the screen on.
+- JS timers stop when the screen is off, sensor batches don't: while hidden, the live
+  analysis runs from the data (every 0.5 s of samples), so the set-start and velocity-loss
+  buzzes still happen. Buzzes are native (`BarSensors.vibrate`); a background app's
+  vibration is ignored by Android, the service should count as foreground. **Still to test
+  with the phone unlocked:** start, lock, lift, unlock.
+
 ## A4. Bluetooth to the XIAO (roadmap 4.1)
 
 - `@capacitor-community/bluetooth-le` for `BleSource` in the app, Web Bluetooth in the

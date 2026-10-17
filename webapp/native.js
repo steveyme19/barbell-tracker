@@ -10,6 +10,16 @@ export function isNativeApp() {
 
 const plugins = () => window.Capacitor.Plugins;
 
+/** Keep recording with the screen off (foreground service + wake lock), or stop. */
+export async function recordInBackground(on) {
+  await plugins().BarSensors.record({ on });
+}
+
+/** Vibrate [on, off, on, ...] ms, natively (works with the screen off). */
+export async function vibrateNative(pattern) {
+  await plugins().BarSensors.vibrate({ pattern: Array.isArray(pattern) ? pattern : [pattern] });
+}
+
 /** Keep the screen on (FLAG_KEEP_SCREEN_ON on the app window), or let it sleep again. */
 export async function keepScreenOn(on) {
   await plugins().BarSensors.keepScreenOn({ on });

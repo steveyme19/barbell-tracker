@@ -1,7 +1,7 @@
 // UI wiring: source -> session tracker (sets.js) -> rep algorithm -> UI (decision D4).
 // Session mode: start once, lift, and the tracker finds each set and the rest between.
 import { PhoneSource, NativeSensorSource, ReplaySource } from "./sources.js";
-import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles } from "./native.js";
+import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles, recordInBackground, vibrateNative } from "./native.js";
 import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { parseRecording, toCSV } from "./fileio.js";
@@ -44,6 +44,7 @@ let seg = null;               // { exercise, weight, lift } as they were when th
 let buzzed = false;       // vibrated for the set in progress yet?
 let vlTarget = 20;        // velocity-loss stop target, % (0 = off). Sticky.
 let vlAlerted = false;    // buzzed for the target in this set yet?
+let lastHiddenRun = -Infinity;   // data time of the last live analysis while the screen was off
 let analyzeTimer = null;
 let tickTimer = null;
 let wakeLock = null;
@@ -59,6 +60,12 @@ function onSample(s) {
   recent.push(s);
   if (recent.length > 50 && s.t - recent[0].t > LIVE_SECONDS + 1) {
     recent = recent.filter((x) => s.t - x.t <= LIVE_SECONDS);
+  }
+  // Screen off: timers stop, sensor batches don't. Run the live analysis from the data so
+  // the set-start and velocity-loss buzzes still happen in your pocket.
+  if (document.hidden && running && s.t - lastHiddenRun >= ANALYZE_EVERY_MS / 1000) {
+    lastHiddenRun = s.t;
+    runLive();
   }
   if (!drawQueued) {
     drawQueued = true;
@@ -190,6 +197,9 @@ async function startSession(from = null) {
     return;
   }
   begin();
+  // Screen-off recording. Android only allows starting it while the app is in front (you
+  // just tapped Start, so it is). If it's refused, the session still runs with the screen on.
+  if (native) recordInBackground(true).catch((err) => showError(`Screen-off recording didn't start, keep the screen on this session. (${err.message})`));
   setTimeout(() => {
     if (running && nSamples === 0) showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
   }, 2000);
@@ -238,7 +248,10 @@ async function endSession() {
   $("fileInput").disabled = false;
   wakeLock?.release().catch(() => {});
   wakeLock = null;
-  if (native) keepScreenOn(false).catch(() => {});
+  if (native) {
+    keepScreenOn(false).catch(() => {});
+    recordInBackground(false).catch(() => {});
+  }
   if (session.autosave && session.sets.length) await saveSummary().catch(() => {});
   session.ended = true;
   if (session.persist) await persistSession();
@@ -351,6 +364,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function buzz(pattern) {
+  if (native) { vibrateNative(pattern).catch(() => {}); return; }   // works with the screen off
   try { navigator.vibrate?.(pattern); } catch { /* no vibration */ }
 }
 

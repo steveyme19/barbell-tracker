@@ -24,6 +24,12 @@
 
         </activity>
 
+        <!-- Keeps a session recording with the screen off (RecordingService.java). -->
+        <service
+            android:name=".RecordingService"
+            android:exported="false"
+            android:foregroundServiceType="health" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -42,4 +48,10 @@
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <!-- A short buzz when a set starts and ends (session mode). No prompt. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Screen-off recording: a foreground service (type health) and a partial wake lock. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 13+: shows the "Recording session" notification (asked once). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
