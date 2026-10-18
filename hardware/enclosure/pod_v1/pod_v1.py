@@ -80,6 +80,17 @@ PARAMS = [
     ("usb_h", "3.2 mm", "USB-C receptacle height"),
     ("usb_over", "0.6 mm", "how far the USB-C sticks out past the board edge"),
     ("imu_s", "2.5 mm", "IMU chip size (square)"),
+    # battery door: a plug that fills the end slot flush (that face stays flat)
+    ("plug_fit", "0.15 mm", "battery door clearance per side (press fit; more if it's too tight)"),
+    # power switch: SS12D00-type mini slide switch in the battery + lead, lever out the far end
+    ("sw_l", "8.6 mm", "MEASURE: switch body length (along the lever travel)"),
+    ("sw_d", "3.6 mm", "MEASURE: switch body depth"),
+    ("sw_h", "3.5 mm", "MEASURE: switch body height"),
+    ("sw_lever", "4 mm", "MEASURE: lever length out of the body"),
+    ("sw_slot_w", "4.5 mm", "lever slot width (lever + travel)"),
+    ("sw_slot_h", "2 mm", "lever slot height"),
+    ("sw_recess", "1 mm", "recess round the lever on the outside, so the lever doesn't stick out"),
+    ("sw_wall", "0.8 mm", "cradle walls round the switch"),
 ]
 
 # Derived: computed from the ones above. Don't edit these, edit their inputs.
@@ -102,6 +113,9 @@ DERIVED = [
     ("rst_wx", "end_wall + fit + rst_x", "reset button in the case"),
     ("rst_wy", "board_y0 + fit + rst_y", "reset button in the case"),
     ("far_sx", "case_l - wall - boss / 2", "far lid screws"),
+    ("usb_top", "usb_bot + usb_slot_h", "top of the USB-C plug clearance"),
+    ("sw_face", "case_l - sw_recess / 2 - sw_lever", "switch body face (lever tip ends inside the recess)"),
+    ("sw_z", "z_board + sw_h / 2", "lever height"),
 ]
 
 # The 4 lid screws: (x, y)
@@ -353,6 +367,23 @@ def build_case(b, comp):
     b.rect(sk, "-1 mm", "board_cy - usb_slot_w / 2", "end_wall + 1 mm", "usb_slot_w")   # stops at the inner face
     b.extrude(comp, sk, "z_rim - usb_bot + 1 mm", CUT, body, name="USB-C slot")
 
+    # Power switch cradle at the far end, between the bosses: a block with a pocket the
+    # switch drops into from the top, a lever slot out through the end wall (open at the
+    # top, the lid closes it), and a recess outside so the lever tip stays inside the face.
+    sk = b.sketch(comp, "z_board", "Switch cradle")
+    b.rect(sk, "sw_face - sw_d - sw_wall", "board_cy - sw_l / 2 - sw_wall",
+           "case_l - wall - (sw_face - sw_d - sw_wall)", "sw_l + 2 * sw_wall")
+    b.extrude(comp, sk, "sw_h", JOIN, body, name="Switch cradle")
+    sk = b.sketch(comp, "z_board", "Switch pocket")
+    b.rect(sk, "sw_face - sw_d", "board_cy - sw_l / 2", "sw_d", "sw_l")
+    b.extrude(comp, sk, "sw_h + 1 mm", CUT, body, name="Switch pocket")
+    sk = b.sketch(comp, "sw_z - sw_slot_h / 2", "Lever slot")
+    b.rect(sk, "sw_face - 0.01 mm", "board_cy - sw_slot_w / 2", "case_l + 1 mm - (sw_face - 0.01 mm)", "sw_slot_w")
+    b.extrude(comp, sk, "z_rim - (sw_z - sw_slot_h / 2) + 1 mm", CUT, body, name="Lever slot")
+    sk = b.sketch(comp, "sw_z - sw_slot_h / 2 - 1.5 mm", "Lever recess")
+    b.rect(sk, "case_l - sw_recess", "board_cy - sw_slot_w / 2 - 1.5 mm", "sw_recess + 1 mm", "sw_slot_w + 3 mm")
+    b.extrude(comp, sk, "sw_slot_h + 3 mm", CUT, body, name="Lever recess")
+
     # 2 x M3 inserts from below, iface_spacing apart, centered under the IMU
     sk = b.sketch(comp, "0", "M3 inserts")
     b.circle(sk, "imu_wx - iface_spacing / 2", "imu_wy", "m3_insert_d")
@@ -385,6 +416,13 @@ def build_lid(b, comp):
     b.rect(sk, "led_wx - led_win_l / 2", "led_wy - led_win_w / 2", "led_win_l", "led_win_w")
     b.extrude(comp, sk, "lid_t - led_skin", CUT, body, name="LED window")
 
+    # The USB-C plug's overmold reaches above the rim: a pocket under the lid at the USB
+    # end, open on the end face, so a cable fits with the lid on. The lid top stays solid.
+    if b.ev("usb_top - z_rim") > 0:
+        sk = b.sketch(comp, "z_rim", "USB-C plug pocket")
+        b.rect(sk, "-1 mm", "board_cy - usb_slot_w / 2", "end_wall + 1 mm", "usb_slot_w")
+        b.extrude(comp, sk, "usb_top - z_rim", CUT, body, name="USB-C plug pocket")
+
     sk = b.sketch(comp, "z_rim", "Reset pinhole")
     b.circle(sk, "rst_wx", "rst_wy", "rst_d")
     b.extrude(comp, sk, "lid_t + 1 mm", CUT, body, name="Reset pinhole")
@@ -413,6 +451,16 @@ def build_parts(b, root, I):
     b.extrude(batt, sk, "batt_t", NEW, name="Cell").bodies.item(0).name = "Cell"
 
 
+def build_door(b, root, I):
+    """Battery door: a plug that fills the end slot flush with the outside face, so the
+    battery can't slide out and the face stays flat. Press fit (plug_fit per side)."""
+    door = root.occurrences.addNewComponent(I).component
+    door.name = "Battery door"
+    sk = b.sketch(door, "z_floor + plug_fit", "Door")
+    b.rect(sk, "case_l - wall", "wall + plug_fit", "wall", "cav_w - 2 * plug_fit")
+    b.extrude(door, sk, "z_bat - z_floor - 2 * plug_fit", NEW, name="Door").bodies.item(0).name = "Door"
+
+
 def run(context):
     ui = None
     try:
@@ -433,6 +481,7 @@ def run(context):
         lid_occ.component.name = "Pod lid"
         build_lid(b, lid_occ.component)
         build_parts(b, root, I)
+        build_door(b, root, I)
 
         mm = lambda e: b.ev(e) * 10
         ui.messageBox(

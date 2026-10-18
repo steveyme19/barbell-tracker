@@ -171,5 +171,19 @@ Changes from the sketch above, and why:
   Inspect > Interference can catch a real size that won't fit. Exploded view made in the
   Animation workspace (Auto Explode one level, scale ~2, lid lifted 6 cm):
   ![exploded](enclosure/pod_v1_exploded.jpg)
+- **Battery door (2026-10-18):** a separate press-fit plug (`Battery door`, `plug_fit` 0.15 mm
+  per side) fills the end slot flush, so the cell can't slide out and that face stays flat.
+- **Power switch:** cradle for an SS12D00-type mini slide switch at the far end, between the
+  board and the far screw bosses; it drops in from the top, the lever goes out through a slot
+  in the end wall into a 1 mm recess, so the tip stays inside the face (`sw_*` parameters,
+  MEASURE the switch). Battery + runs up the wire hole to the switch and back down to BAT+.
+- **USB-C plug vs lid:** a 6.5 mm overmold reaches 1 mm above the rim, so the lid has a
+  hidden pocket underneath at the USB end, open on the end face (0.8 mm of lid left over it).
+- Checked in Fusion: builds clean, Inspect > Interference with all 5 parts: none, and changing
+  `batt_l` 33 -> 40 mm rebuilds with no errors.
+- **Still unknown until the parts and a test print:** every MEASURE size (XIAO, LiPo, IMU/LED/
+  reset spots, inserts, switch), whether the 21 mm tray bridge prints clean, whether the LEDs
+  show through `led_skin` (set it to 0 for a hole if the filament is opaque), J-hook clearance
+  at 24.5 mm tall. Axis arrows wait for the IMU orientation to be confirmed. Adapters next.
 - Not modeled yet: embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
