@@ -169,7 +169,8 @@ Changes from the sketch above, and why:
 - **Stand-ins and exploded view (2026-10-18):** the script also adds `XIAO (stand-in)`
   (board, USB-C block, IMU marker) and `LiPo (stand-in)`, each its own component, so
   Inspect > Interference can catch a real size that won't fit. Exploded view made in the
-  Animation workspace (Auto Explode one level, scale ~2, lid lifted 6 cm):
+  Animation workspace (Auto Explode one level, lid lifted 6 cm, board 2.5 cm; redone with the
+  battery door and switch cradle):
   ![exploded](enclosure/pod_v1_exploded.jpg)
 - **Battery door (2026-10-18):** a separate press-fit plug (`Battery door`, `plug_fit` 0.15 mm
   per side) fills the end slot flush, so the cell can't slide out and that face stays flat.
