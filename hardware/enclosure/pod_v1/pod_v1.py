@@ -69,6 +69,10 @@ PARAMS = [
     ("rst_x", "3.5 mm", "MEASURE: reset button center from the USB-end corner, along"),
     ("rst_y", "4 mm", "MEASURE: reset button center, across"),
     ("rst_d", "1.5 mm", "reset pinhole"),
+    # looks: rounded edges, but every face stays flat (the pod is the calibration cube)
+    ("corner_r", "2 mm", "fillet on the 4 vertical corners, case and lid (keep <= wall)"),
+    ("bottom_ch", "0.6 mm", "chamfer round the bottom edge (a chamfer prints floor-down, a fillet wouldn't)"),
+    ("lid_r", "0.8 mm", "fillet round the lid's top edge (keep < lid_t)"),
 ]
 
 # Derived: computed from the ones above. Don't edit these, edit their inputs.
@@ -223,6 +227,48 @@ class Builder:
         self.dim(sk, f"diameter = {d}", lambda: sk.sketchDimensions.addDiameterDimension(c, self.pt(sk, X + D, Y + D)), d)
         self.locate(sk, c.centerSketchPoint, cx, cy)
 
+    # ---- edge finishing (fillets / chamfers). Edges are picked by where they are. ----
+
+    @staticmethod
+    def edges(body, pick):
+        col = adsk.core.ObjectCollection.create()
+        for e in body.edges:
+            if e.startVertex is None or e.endVertex is None:
+                continue
+            if pick(e.startVertex.geometry, e.endVertex.geometry):
+                col.add(e)
+        return col
+
+    def vertical_edges(self, body):
+        return self.edges(body, lambda a, b: abs(a.x - b.x) < 1e-6 and abs(a.y - b.y) < 1e-6)
+
+    def edges_at_z(self, body, z):
+        Z = self.ev(z)
+        return self.edges(body, lambda a, b: abs(a.z - Z) < 1e-6 and abs(b.z - Z) < 1e-6)
+
+    def fillet(self, comp, edges, r, name):
+        fl = comp.features.filletFeatures
+        inp = fl.createInput()
+        try:                                   # current API
+            inp.edgeSetInputs.addConstantRadiusEdgeSet(edges, self.V(r), True)
+        except AttributeError:                 # older Fusion
+            inp.addConstantRadiusEdgeSet(edges, self.V(r), True)
+        f = fl.add(inp)
+        f.name = name
+        return f
+
+    def chamfer(self, comp, edges, d, name):
+        ch = comp.features.chamferFeatures
+        try:                                   # current API
+            inp = ch.createInput2()
+            inp.chamferEdgeSets.addEqualDistanceChamferEdgeSet(edges, self.V(d), True)
+        except AttributeError:                 # older Fusion
+            inp = ch.createInput(edges, True)
+            inp.setToEqualDistance(self.V(d))
+        f = ch.add(inp)
+        f.name = name
+        return f
+
     def extrude(self, comp, sk, dist, op, body=None, down=False, name=""):
         """Extrude every profile in the sketch by dist (expression), up or down."""
         profs = adsk.core.ObjectCollection.create()
@@ -252,6 +298,9 @@ def build_case(b, comp):
     b.rect(sk, "0", "0", "case_l", "case_w")
     body = b.extrude(comp, sk, "z_rim", NEW, name="Case block").bodies.item(0)
     body.name = "Case"
+    # Round the corners and break the bottom edge first, while the block is a plain box
+    b.fillet(comp, b.vertical_edges(body), "corner_r", "Corner fillets")
+    b.chamfer(comp, b.edges_at_z(body, "0"), "bottom_ch", "Bottom chamfer")
 
     sk = b.sketch(comp, "z_floor", "Cavity")
     b.rect(sk, "end_wall", "wall", "cav_l", "cav_w")
@@ -316,6 +365,8 @@ def build_lid(b, comp):
     b.rect(sk, "0", "0", "case_l", "case_w")
     body = b.extrude(comp, sk, "lid_t", NEW, name="Lid plate").bodies.item(0)
     body.name = "Lid"
+    b.fillet(comp, b.vertical_edges(body), "corner_r", "Lid corner fillets")     # same as the case
+    b.fillet(comp, b.edges_at_z(body, "z_rim + lid_t"), "lid_r", "Lid top fillet")
 
     sk = b.sketch(comp, "z_rim", "Lid screw holes")
     for x, y in SCREWS:

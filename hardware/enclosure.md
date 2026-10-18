@@ -157,5 +157,8 @@ Changes from the sketch above, and why:
   the USB-end corner, no failed features). Fusion infers a level/plumb constraint when two
   holes share a coordinate, so the script skips those 3 redundant dimensions and lists them;
   the holes still follow the parameters.
-- Not modeled yet: edge chamfers, embossed X/Y/Z arrows, the JST socket (it fits in the
+- **Edges (2026-10-18):** R2 fillets on the 4 vertical corners of case and lid (`corner_r`),
+  0.6 mm chamfer round the bottom (`bottom_ch`, prints floor-down where a fillet wouldn't),
+  0.8 mm fillet round the lid top (`lid_r`). Every face stays flat for calibration.
+- Not modeled yet: embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
