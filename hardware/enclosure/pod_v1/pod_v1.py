@@ -113,6 +113,21 @@ class Builder:
         self.design = design
         self.units = design.unitsManager
         self.planes = {}                         # one construction plane per (component, height)
+        self.skipped = []                        # dimensions Fusion already had fixed (see dim())
+
+    def dim(self, sk, what, make, expr):
+        """Add a driving dimension and set its expression. If Fusion says the sketch is
+        already over-constrained, that degree of freedom is fixed by a constraint Fusion
+        inferred (e.g. two hole centres at the same height snapped level), so skip it."""
+        try:
+            d = make()
+        except RuntimeError as e:
+            if "OVER_CONSTRAINTS" not in str(e):
+                raise
+            self.skipped.append(f"{sk.name}: {what}")
+            return None
+        d.parameter.expression = expr
+        return d
 
     def ev(self, expr):
         """Expression -> internal units (cm), for placing geometry before it's dimensioned."""
@@ -164,11 +179,11 @@ class Builder:
             sk.geometricConstraints.addCoincident(point, sk.originPoint)
             return
         if abs(X) > 1e-9:
-            d = dims.addDistanceDimension(sk.originPoint, point, self.orient("x"), self.pt(sk, X / 2, Y - 0.4))
-            d.parameter.expression = self.mag(x)
+            self.dim(sk, f"x = {x}", lambda: dims.addDistanceDimension(
+                sk.originPoint, point, self.orient("x"), self.pt(sk, X / 2, Y - 0.4)), self.mag(x))
         if abs(Y) > 1e-9:
-            d = dims.addDistanceDimension(sk.originPoint, point, self.orient("y"), self.pt(sk, X - 0.4, Y / 2))
-            d.parameter.expression = self.mag(y)
+            self.dim(sk, f"y = {y}", lambda: dims.addDistanceDimension(
+                sk.originPoint, point, self.orient("y"), self.pt(sk, X - 0.4, Y / 2)), self.mag(y))
 
     def rect(self, sk, x0, y0, w, h):
         """Rectangle from corner (x0, y0), size w x h. All expressions, all dimensioned."""
@@ -196,17 +211,16 @@ class Builder:
                        or {near(ln.endSketchPoint, X0, Y0), near(ln.startSketchPoint, X0, Y0 + H)} == {True})
         A = adsk.fusion.DimensionOrientations.AlignedDimensionOrientation
         dims = sk.sketchDimensions
-        d = dims.addDistanceDimension(along_x.startSketchPoint, along_x.endSketchPoint, A, self.pt(sk, X0 + W / 2, Y0 - 0.3))
-        d.parameter.expression = w
-        d = dims.addDistanceDimension(along_y.startSketchPoint, along_y.endSketchPoint, A, self.pt(sk, X0 - 0.3, Y0 + H / 2))
-        d.parameter.expression = h
+        self.dim(sk, f"width = {w}", lambda: dims.addDistanceDimension(
+            along_x.startSketchPoint, along_x.endSketchPoint, A, self.pt(sk, X0 + W / 2, Y0 - 0.3)), w)
+        self.dim(sk, f"height = {h}", lambda: dims.addDistanceDimension(
+            along_y.startSketchPoint, along_y.endSketchPoint, A, self.pt(sk, X0 - 0.3, Y0 + H / 2)), h)
         self.locate(sk, corner, x0, y0)
 
     def circle(self, sk, cx, cy, d):
         X, Y, D = self.ev(cx), self.ev(cy), self.ev(d)
         c = sk.sketchCurves.sketchCircles.addByCenterRadius(self.pt(sk, X, Y), D / 2)
-        dim = sk.sketchDimensions.addDiameterDimension(c, self.pt(sk, X + D, Y + D))
-        dim.parameter.expression = d
+        self.dim(sk, f"diameter = {d}", lambda: sk.sketchDimensions.addDiameterDimension(c, self.pt(sk, X + D, Y + D)), d)
         self.locate(sk, c.centerSketchPoint, cx, cy)
 
     def extrude(self, comp, sk, dist, op, body=None, down=False, name=""):
@@ -344,7 +358,8 @@ def run(context):
             "Pod v1 built.\n\n"
             f"Outside: {mm('case_l'):.1f} x {mm('case_w'):.1f} x {mm('z_rim + lid_t'):.1f} mm (with lid)\n"
             f"IMU center: x {mm('imu_wx'):.1f}, y {mm('imu_wy'):.1f} mm from the case's USB-end corner\n\n"
-            "Change sizes in Modify > Change Parameters. Lines marked MEASURE are guesses.",
+            "Change sizes in Modify > Change Parameters. Lines marked MEASURE are guesses."
+            + (("\n\nDimensions Fusion had already fixed (skipped):\n" + "\n".join(b.skipped)) if b.skipped else ""),
             "Bar Tracker pod")
     except Exception:
         if ui:

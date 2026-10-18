@@ -153,5 +153,9 @@ Changes from the sketch above, and why:
 - `imu_x/y`, `led_x/y`, `rst_x/y` are placeholders (marked MEASURE): measure from the
   board's USB-end corner, component side up, USB-C pointing left, from the bottom-left
   corner (x to the right, y up).
+- **Run in Fusion 2026-10-18:** builds clean (40.8 x 25.3 x 22.5 mm, IMU at 15.9, 12.7 mm from
+  the USB-end corner, no failed features). Fusion infers a level/plumb constraint when two
+  holes share a coordinate, so the script skips those 3 redundant dimensions and lists them;
+  the holes still follow the parameters.
 - Not modeled yet: edge chamfers, embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
