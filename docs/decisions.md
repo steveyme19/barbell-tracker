@@ -222,6 +222,10 @@ planted errors (recovered to 0.01 %). It's applied to every live sample before a
 else, so live numbers, saved sets and Python agree. That bends P2 (raw files): each
 session folder gets the `calibration.json` it used, so raw = calibrated x scale + bias.
 Gyro scale needs a known full turn, not this.
+First run on the Pixel 9 Pro XL (2026-10-17, in its case): scale -0.07 / -0.14 / -0.04 %, offsets
+under 0.04 m/s^2, fit error 0.029 m/s^2. The corrections are the size of the fit error (case
+and edges not perfectly flat): this phone is factory-calibrated well, so scale isn't what
+limits its accuracy (drift and rep boundaries are). It matters for the XIAO (roadmap 1.3).
 
 ## Proposed (say yes or no)
 
