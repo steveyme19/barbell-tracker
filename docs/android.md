@@ -169,8 +169,13 @@ can check it on the phone.
 - JS timers stop when the screen is off, sensor batches don't: while hidden, the live
   analysis runs from the data (every 0.5 s of samples), so the set-start and velocity-loss
   buzzes still happen. Buzzes are native (`BarSensors.vibrate`); a background app's
-  vibration is ignored by Android, the service should count as foreground. **Still to test
-  with the phone unlocked:** start, lock, lift, unlock.
+  vibration is ignored by Android, the service should count as foreground.
+- Verified 2026-10-17 on the Pixel over USB: started from the app in front (allowed,
+  PROC_STATE_TOP), screen turned off, sensor time kept advancing (13.8 s -> 34.0 s in 20 s
+  dark), service foreground type health with its notification, wake lock held; End
+  session removed both. The buzz played its pattern but was `ignored_for_settings`: the
+  phone had **Use vibration & haptics** off (Settings > Sound & vibration), which drops
+  every app's vibration. Turn it on for the set and velocity-loss buzzes.
 
 ## A4. Bluetooth to the XIAO (roadmap 4.1)
 
