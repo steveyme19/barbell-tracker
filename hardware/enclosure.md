@@ -160,6 +160,12 @@ Changes from the sketch above, and why:
 - **Edges (2026-10-18):** R2 fillets on the 4 vertical corners of case and lid (`corner_r`),
   0.6 mm chamfer round the bottom (`bottom_ch`, prints floor-down where a fillet wouldn't),
   0.8 mm fillet round the lid top (`lid_r`). Every face stays flat for calibration.
+- **Battery wires (2026-10-18):** `batt_gap` = 2 mm between the battery and the tray. Before it
+  there was 0.4 mm over the cell: no room for foam tape, and no way for the wires (out of
+  the cell's far end) to reach the BAT pads under the board. Now foam + 2 x 28 AWG run
+  over the cell to the window under the board, and the solder joints hang into it.
+  Pod 40.8 x 25.3 x 24.5 mm with the lid. Inspect > Interference with the stand-ins: none.
+  Measure where the BAT pads really are before soldering.
 - **Stand-ins and exploded view (2026-10-18):** the script also adds `XIAO (stand-in)`
   (board, USB-C block, IMU marker) and `LiPo (stand-in)`, each its own component, so
   Inspect > Interference can catch a real size that won't fit. Exploded view made in the

@@ -52,6 +52,7 @@ PARAMS = [
     ("m2_insert_h", "4 mm", "M2 insert hole depth from the rim"),
     ("m2_clear", "2.4 mm", "M2 clearance hole in the lid"),
     ("ledge_t", "1.2 mm", "tray (XIAO ledge) thickness over the battery"),
+    ("batt_gap", "2 mm", "space between battery and tray: foam tape, and the 2 battery wires running to the pads under the board"),
     ("ledge_w", "1.2 mm", "how far the ledge reaches under the board edge"),
     ("fence_w", "2 mm", "fence behind the board's far end"),
     ("boss", "6 mm", "square lid-screw bosses in the far corners"),
@@ -88,7 +89,7 @@ DERIVED = [
     ("case_l", "end_wall + cav_l + wall", "outside length"),
     ("case_w", "cav_w + 2 * wall", "outside width"),
     ("z_floor", "floor_t + iface_extra", "top of the floor"),
-    ("z_bat", "z_floor + batt_t + fit", "top of the battery pocket"),
+    ("z_bat", "z_floor + batt_t + fit + batt_gap", "top of the battery pocket (incl. the wire / foam gap)"),
     ("z_board", "z_bat + ledge_t", "underside of the XIAO"),
     ("z_rim", "z_board + xiao_t + xiao_top + fit", "case height (lid sits here)"),
     ("board_y0", "(case_w - xiao_w - 2 * fit) / 2", "XIAO pocket, near side"),
@@ -345,7 +346,7 @@ def build_case(b, comp):
     # Battery slot through the far end wall (the battery slides in under the tray)
     sk = b.sketch(comp, "z_floor", "Battery slot")
     b.rect(sk, "case_l - wall - 0.5 mm", "wall", "wall + 1.5 mm", "cav_w")
-    b.extrude(comp, sk, "batt_t + fit", CUT, body, name="Battery slot")
+    b.extrude(comp, sk, "z_bat - z_floor", CUT, body, name="Battery slot")      # full pocket height
 
     # USB-C slot through the near end wall, open at the top (the lid closes it)
     sk = b.sketch(comp, "usb_bot", "USB-C slot")
