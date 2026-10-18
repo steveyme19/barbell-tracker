@@ -56,7 +56,7 @@ Bluetooth to the XIAO (same time as 4.1).
   automatically, set cards with weight / RPE, RPE estimate v0, auto-save per set +
   `session.csv`. Built and tested on fake + joined real data; **first real workout
   still to do**.
-- [x] **A0** setup · [ ] **A1** shell runs on the phone · [x] **A2** native sensors
+- [x] **A0** setup · [x] **A1** shell runs on the phone · [x] **A2** native sensors
   200+ Hz · [x] **A3** save/share CSV, screen on · [ ] **A4** BLE
 
 ## Phase 1: Hardware prototype (XIAO nRF52840 Sense)
