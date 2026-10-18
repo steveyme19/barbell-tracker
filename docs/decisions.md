@@ -227,6 +227,16 @@ under 0.04 m/s^2, fit error 0.029 m/s^2. The corrections are the size of the fit
 and edges not perfectly flat): this phone is factory-calibrated well, so scale isn't what
 limits its accuracy (drift and rep boundaries are). It matters for the XIAO (roadmap 1.3).
 
+**D24 (2026-10-18): XIAO firmware uses the "Seeed nRF52 Boards" package (non-mbed). Closes O4.**
+*Why:* BLE later (A4, roadmap 4.1) is easiest with the Adafruit Bluefruit library that
+comes with it, and it's the low-power one. The IMU works on it too: its Sense variant
+defines `TARGET_SEEED_XIAO_NRF52840_SENSE`, so the Seeed LSM6DS3 library (2.0.7) talks to
+the IMU's own bus (Wire1) and powers it up (pin 15). Sketches need
+`#include <Adafruit_TinyUSB.h>` for USB serial. First sketch `firmware/imu_serial`:
++-8 g, +-1000 deg/s, 208 Hz on the IMU's own clock (polls the data-ready bits, one
+burst read per sample), device timestamps from `micros()`; `analysis/log_serial.py`
+saves it as a normal recording.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
@@ -267,9 +277,7 @@ validate both in phase 3, pick in 3.7. Candidates:
 Check the bars at your gym before 2.1: are the end caps magnetic, and does anything
 stick out past the sleeve end when racked?
 
-**O4: Arduino board package for the XIAO nRF52840.**
-Seeed ships two (mbed-enabled and non-mbed). Their BLE libraries and examples differ.
-Pick one in 1.1 and stick with it.
+**O4: Arduino board package for the XIAO nRF52840.** Closed by D24: non-mbed.
 
 **O5: IMU sample rate and ranges.**
 Starting guess: ~200 Hz, accel ±8 g, gyro ±1000 dps. Confirm in 1.3, recheck the gyro

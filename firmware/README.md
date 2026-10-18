@@ -1,8 +1,11 @@
 # Firmware
 
-Nothing here yet. Starts at roadmap phase 1, once the board shows up.
+Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boards**
+(non-mbed, D24), board "Seeed XIAO nRF52840 Sense", library "Seeed Arduino LSM6DS3".
 
-Target: Seeed XIAO nRF52840 Sense, Arduino IDE.
+| sketch | what |
+|---|---|
+| `imu_serial/` | IMU over USB at 208 Hz: `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s). Record it with `python analysis/log_serial.py COMx` |
 
 ## Ground rules (from the roadmap)
 

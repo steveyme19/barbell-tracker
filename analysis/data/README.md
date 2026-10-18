@@ -16,6 +16,8 @@ change many times. Raw data lets you re-run old sessions with the new version.
 - Session-mode sets: `bar-<profile>-YYYY-MM-DD-HHMM-setNN-<exercise>.csv`.
   `bar-machine-2026-10-17-1334-set01-lat-raise.csv` is a cable lateral raise with the
   phone lying on the weight stack (D20: the smooth lowering looked still).
+- XIAO over USB (`log_serial.py`): `bar-xiao-YYYY-MM-DD-HHMM[-name].csv`, 208 Hz, time
+  from the XIAO's clock. No lift in the name, so it counts as a phone-style test.
 - Later bar sessions: `YYYY-MM-DD_<lift>_<load>_<notes>.csv`,
   e.g. `2026-11-03_squat_225_set2.csv`
 
