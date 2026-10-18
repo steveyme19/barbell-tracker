@@ -172,15 +172,20 @@ Changes from the sketch above, and why:
   Animation workspace (Auto Explode one level, lid lifted 6 cm, board 2.5 cm; redone with the
   battery door and switch cradle):
   ![exploded](enclosure/pod_v1_exploded.jpg)
-- **Battery door (2026-10-18):** a separate press-fit plug (`Battery door`, `plug_fit` 0.15 mm
-  per side) fills the end slot flush, so the cell can't slide out and that face stays flat.
+- **Battery retention (2026-10-18, replaces the loose door):** the case's far end is open full
+  height and the **lid has an end wall** that closes it, so the 4 lid screws hold the battery
+  in (`plug_fit` clearance round it). The switch lever goes through a slot in that wall, open
+  at the bottom so it slides down over the lever, with the recess round the lever on it.
+- **USB-C relief:** the end wall is 5 mm (for the lid screws), too thick for most plugs'
+  overmolds. Outside the slot there's now a 13 mm wide relief leaving 1.5 mm of wall where
+  the plug passes (overmolds up to 13 x 7.4 mm), continued into the lid's underside.
 - **Power switch:** cradle for an SS12D00-type mini slide switch at the far end, between the
   board and the far screw bosses; it drops in from the top, the lever goes out through a slot
   in the end wall into a 1 mm recess, so the tip stays inside the face (`sw_*` parameters,
   MEASURE the switch). Battery + runs up the wire hole to the switch and back down to BAT+.
 - **USB-C plug vs lid:** a 6.5 mm overmold reaches 1 mm above the rim, so the lid has a
   hidden pocket underneath at the USB end, open on the end face (0.8 mm of lid left over it).
-- Checked in Fusion: builds clean, Inspect > Interference with all 5 parts: none, and changing
+- Checked in Fusion: builds clean, Inspect > Interference with all parts: none, and changing
   `batt_l` 33 -> 40 mm rebuilds with no errors.
 - **Still unknown until the parts and a test print:** every MEASURE size (XIAO, LiPo, IMU/LED/
   reset spots, inserts, switch), whether the 21 mm tray bridge prints clean, whether the LEDs
