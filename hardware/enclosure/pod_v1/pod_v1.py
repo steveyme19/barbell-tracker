@@ -73,6 +73,12 @@ PARAMS = [
     ("corner_r", "2 mm", "fillet on the 4 vertical corners, case and lid (keep <= wall)"),
     ("bottom_ch", "0.6 mm", "chamfer round the bottom edge (a chamfer prints floor-down, a fillet wouldn't)"),
     ("lid_r", "0.8 mm", "fillet round the lid's top edge (keep < lid_t)"),
+    # stand-in parts (for the exploded view and Inspect > Interference)
+    ("usb_l", "7.5 mm", "USB-C receptacle length on the board"),
+    ("usb_w", "9 mm", "USB-C receptacle width"),
+    ("usb_h", "3.2 mm", "USB-C receptacle height"),
+    ("usb_over", "0.6 mm", "how far the USB-C sticks out past the board edge"),
+    ("imu_s", "2.5 mm", "IMU chip size (square)"),
 ]
 
 # Derived: computed from the ones above. Don't edit these, edit their inputs.
@@ -384,6 +390,28 @@ def build_lid(b, comp):
     return body
 
 
+def build_parts(b, root, I):
+    """Stand-ins for the electronics, each its own component, placed where they sit in the
+    case. For the exploded view, and Inspect > Interference shows if a real size won't fit."""
+    xiao = root.occurrences.addNewComponent(I).component
+    xiao.name = "XIAO (stand-in)"
+    sk = b.sketch(xiao, "z_board", "Board")
+    b.rect(sk, "end_wall + fit", "board_y0 + fit", "xiao_l", "xiao_w")
+    b.extrude(xiao, sk, "xiao_t", NEW, name="Board").bodies.item(0).name = "Board"
+    sk = b.sketch(xiao, "z_board + xiao_t", "USB-C")
+    b.rect(sk, "end_wall + fit - usb_over", "board_cy - usb_w / 2", "usb_l", "usb_w")
+    b.extrude(xiao, sk, "usb_h", NEW, name="USB-C").bodies.item(0).name = "USB-C"
+    sk = b.sketch(xiao, "z_board + xiao_t", "IMU")
+    b.rect(sk, "imu_wx - imu_s / 2", "imu_wy - imu_s / 2", "imu_s", "imu_s")
+    b.extrude(xiao, sk, "1 mm", NEW, name="IMU").bodies.item(0).name = "IMU"
+
+    batt = root.occurrences.addNewComponent(I).component
+    batt.name = "LiPo (stand-in)"
+    sk = b.sketch(batt, "z_floor", "Cell")
+    b.rect(sk, "end_wall + fit", "wall + fit", "batt_l", "batt_w")
+    b.extrude(batt, sk, "batt_t", NEW, name="Cell").bodies.item(0).name = "Cell"
+
+
 def run(context):
     ui = None
     try:
@@ -403,6 +431,7 @@ def run(context):
         lid_occ = root.occurrences.addNewComponent(I)
         lid_occ.component.name = "Pod lid"
         build_lid(b, lid_occ.component)
+        build_parts(b, root, I)
 
         mm = lambda e: b.ev(e) * 10
         ui.messageBox(

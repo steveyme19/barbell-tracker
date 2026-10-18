@@ -160,5 +160,10 @@ Changes from the sketch above, and why:
 - **Edges (2026-10-18):** R2 fillets on the 4 vertical corners of case and lid (`corner_r`),
   0.6 mm chamfer round the bottom (`bottom_ch`, prints floor-down where a fillet wouldn't),
   0.8 mm fillet round the lid top (`lid_r`). Every face stays flat for calibration.
+- **Stand-ins and exploded view (2026-10-18):** the script also adds `XIAO (stand-in)`
+  (board, USB-C block, IMU marker) and `LiPo (stand-in)`, each its own component, so
+  Inspect > Interference can catch a real size that won't fit. Exploded view made in the
+  Animation workspace (Auto Explode one level, scale ~2, lid lifted 6 cm):
+  ![exploded](enclosure/pod_v1_exploded.jpg)
 - Not modeled yet: embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
