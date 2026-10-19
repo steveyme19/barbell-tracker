@@ -248,3 +248,4 @@ What changed in the model:
 - The plug's overmold now stops 0.6 mm short of the socket mouth (it sticks out 1.3).
 - Adapter M3 inserts moved to x = 13.9 and 33.9 (under the provisional IMU at 23.9).
 - Offline check (all parameter expressions + 38 fit checks): all pass.
+- Rebuilt in Fusion 2026-10-19 (Quentin ran it): builds fine. Inspect > Interference with the stand-ins not rerun yet.
