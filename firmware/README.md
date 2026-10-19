@@ -5,7 +5,7 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 
 | sketch | what |
 |---|---|
-| `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx` |
+| `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py` |
 
 ## Flashing from the terminal
 
