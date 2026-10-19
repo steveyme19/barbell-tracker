@@ -21,3 +21,4 @@ Claude outputs/
 
 # Android app (Capacitor)
 node_modules/
+hardware/enclosure/stl/*_raw.stl

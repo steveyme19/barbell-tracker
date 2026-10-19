@@ -1,0 +1,10 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "script",
+  "author": "Bar Tracker",
+  "description": {
+    "": "Bar Tracker: export the pod case + lid as STL into hardware/enclosure/stl"
+  },
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
