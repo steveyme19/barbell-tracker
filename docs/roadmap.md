@@ -61,9 +61,12 @@ Bluetooth to the XIAO (same time as 4.1).
 
 ## Phase 1: Hardware prototype (XIAO nRF52840 Sense)
 
-- [ ] **1.1 Hello board.** Blink + Serial print. Pick the board package (decision O4).
-- [ ] **1.2 IMU over USB.** Read accel + gyro at a fixed rate, print over serial, log
+- [x] **1.1 Hello board.** Blink + Serial print. Pick the board package (decision O4).
+      Done 2026-10-18: non-mbed core (D24), all 3 boards flash and are Senses.
+- [x] **1.2 IMU over USB.** Read accel + gyro at a fixed rate, print over serial, log
       to CSV in Python. No BLE yet. One new thing at a time.
+      Done 2026-10-18: `firmware/imu_serial` + `analysis/log_serial.py`, ~210 Hz, 0 gaps,
+      crystal timestamps (D25). |a| at rest reads 10.10 to 10.12 (3% high): that's 1.3.
 - [ ] **1.3 Characterize the IMU.** (Print the pod first: it's the calibration cube,
       [hardware/enclosure.md](../hardware/enclosure.md).) Set sample rate and ranges (O5). Measure noise and
       bias at rest. Do a 6-position calibration (each face down, each axis should read

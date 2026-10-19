@@ -43,6 +43,24 @@ printing anything that has to fit.
   put a mini slide switch in the battery + lead (then it can't charge while switched
   off). Deep sleep with wake-on-motion is the phase 4 answer (hardware/README.md).
 
+### XIAO axes (measured 2026-10-18, for the lid arrows)
+
+Gravity on each face of a bare XIAO Sense running `imu_serial` (files
+`analysis/data/bar-xiao-2026-10-18-*-axis-*.csv`):
+
+| board pose | axis pointing up |
+|---|---|
+| USB-C end up / down | -x / +x |
+| D0-D6 pin edge up | -y |
+| 5V/GND/3V3 pin edge up | +y |
+| chip side up / down | +z / -z |
+
+So **+x runs from the USB-C end toward the far end** (the pod's long axis, same way as
+x in `pod_v1.py`), **+y points at the 5V/GND/3V3 edge**, **+z comes out of the chip
+side** (out of the lid). Arrows on the lid: X along the length away from the USB-C slot,
+Y toward the 5V/GND/3V3 side, Z as a dot (out of the lid). Recheck once the board sits
+in the printed pod.
+
 ## Adapter A: sleeve end, on the bar axis
 
 - **Puck:** Ø50 × 7 mm disc, 2 or 3 pot magnets (Ø16, countersunk M3) recessed flush in

@@ -235,7 +235,25 @@ the IMU's own bus (Wire1) and powers it up (pin 15). Sketches need
 `#include <Adafruit_TinyUSB.h>` for USB serial. First sketch `firmware/imu_serial`:
 +-8 g, +-1000 deg/s, 208 Hz on the IMU's own clock (polls the data-ready bits, one
 burst read per sample), device timestamps from `micros()`; `analysis/log_serial.py`
-saves it as a normal recording.
+saves it as a normal recording. (Timestamps changed to RTC2 the same day, D25.)
+
+**D25 (2026-10-18): XIAO timestamps come from RTC2 on the 32.768 kHz crystal.**
+*Why:* velocity is the integral of acceleration over time, so a clock that's x% off
+makes MCV x% off (and ROM about 2x% off). Tried three clocks on board 1:
+- `micros()`: on this core it's the 1024 Hz RTOS tick (`delay.h`), so every dt came out
+  as 3.906 or 4.883 ms. Right on average, ~0.5 ms jitter per sample.
+- The IMU's own timestamp counter (TIMER_HR, "25 us"): smooth, but it said 206.0 Hz
+  while the crystal and the PC both said 211.8 Hz. It runs ~2.8% slow (untrimmed RC
+  oscillator), which would put MCV ~2.8% high.
+- RTC2 at prescaler 0 (RTC0 is the SoftDevice's, RTC1 FreeRTOS's, RTC2 is free; the
+  variant runs the LF clock on the crystal, `USE_LFXO`): 30.5 us steps, ~20 ppm.
+  211.81 Hz against ~211.9 Hz by the PC clock, dt std 0.034 ms.
+The sketch also waits for data-ready in a tight loop inside `loop()`, so each sample is
+stamped within one status read (~0.1 ms) of being ready. The IMU's sample rate itself
+differs per board (211.8, 209.3, 210.4 Hz on boards 1 to 3, all "208"), which is fine
+because every sample carries its own time (D4); nothing should assume 208 Hz.
+Recordings made before this: `-1950-desk` (micros, quantized) and `-1954-timing` (IMU
+counter, 2.8% slow).
 
 ## Proposed (say yes or no)
 
