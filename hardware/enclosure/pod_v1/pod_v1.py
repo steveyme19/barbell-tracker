@@ -21,18 +21,19 @@ import adsk.core
 import adsk.fusion
 
 # ---- user parameters: (name, value, comment) ----
-# First guesses from the CAD table in hardware/enclosure.md. Measure, then edit them in
-# Fusion (Modify > Change Parameters), not here.
+# Parts measured with calipers 2026-10-19 (hardware/enclosure.md); MEASURE = still a guess.
+# To tweak one later, edit it in Fusion (Modify > Change Parameters) or here and rerun.
 PARAMS = [
     ("xiao_l", "21 mm", "XIAO board length (USB-C end to far end)"),
-    ("xiao_w", "17.5 mm", "XIAO board width"),
-    ("xiao_t", "1.2 mm", "XIAO board thickness"),
-    ("xiao_top", "3.5 mm", "tallest part above the board (USB-C)"),
-    ("imu_x", "10.5 mm", "MEASURE: IMU center from the board's USB-end corner, along the length"),
-    ("imu_y", "8.75 mm", "MEASURE: IMU center from the same corner, across the width"),
-    ("batt_l", "33 mm", "LiPo length incl. protection board"),
-    ("batt_w", "20.5 mm", "LiPo width"),
-    ("batt_t", "8.3 mm", "LiPo thickness"),
+    ("xiao_w", "17.8 mm", "XIAO board width"),
+    ("xiao_t", "1.0 mm", "XIAO board thickness"),
+    ("xiao_top", "3.3 mm", "tallest part above the board (USB-C; radio can is 1.8)"),
+    ("imu_x", "18.5 mm", "PROVISIONAL: IMU center from the board's USB-C end (may be the mic)"),
+    ("imu_y", "13.8 mm", "PROVISIONAL: IMU center from the D0-D6 edge (the low-y side)"),
+    ("batt_l", "30.5 mm", "LiPo length incl. protection board (PL 602030, 400 mAh)"),
+    ("batt_w", "19.7 mm", "LiPo width"),
+    ("batt_t", "7.6 mm", "LiPo thickness at the protection board (cell ~6.0)"),
+    ("batt_wire_l", "2.5 mm", "room past the protection-board end for the wires to bend up (not measured)"),
     ("wall", "2 mm", "side walls and the far end wall"),
     ("floor_t", "2 mm", "floor (the doc's `floor`; renamed, floor() is a Fusion function). iface_extra is added"),
     ("lid_t", "2 mm", "lid thickness"),
@@ -55,11 +56,11 @@ PARAMS = [
     ("batt_gap", "2 mm", "space between battery and tray: foam tape, and the 2 battery wires running to the pads under the board"),
     ("ledge_w", "1.2 mm", "how far the ledge reaches under the board edge"),
     ("fence_w", "2 mm", "fence behind the board's far end"),
-    ("boss", "6 mm", "square lid-screw bosses in the far corners"),
+    ("boss", "5.8 mm", "square lid-screw bosses in the far corners (5.8 so the switch pocket fits between)"),
     ("screw_inset", "3 mm", "USB-end lid screws, from the side faces"),
-    ("usb_slot_w", "12.5 mm", "USB-C slot width (fits a plug's overmold)"),
-    ("usb_slot_h", "7 mm", "USB-C slot height"),
-    ("usb_z_off", "1.6 mm", "USB-C center above the board's top face"),
+    ("usb_slot_w", "11.5 mm", "USB-C slot width (measured overmold 11.0)"),
+    ("usb_slot_h", "6.6 mm", "USB-C slot height (measured overmold 6.0)"),
+    ("usb_z_off", "1.7 mm", "USB-C center above the board's top face (top 3.3, 3.2 tall)"),
     ("wire_l", "4 mm", "battery wire hole in the tray"),
     ("wire_w", "5 mm", "battery wire hole in the tray"),
     ("led_x", "3.5 mm", "MEASURE: LEDs center from the board's USB-end corner, along"),
@@ -78,12 +79,12 @@ PARAMS = [
     ("usb_l", "7.5 mm", "USB-C receptacle length on the board"),
     ("usb_w", "9 mm", "USB-C receptacle width"),
     ("usb_h", "3.2 mm", "USB-C receptacle height"),
-    ("usb_over", "0.6 mm", "how far the USB-C sticks out past the board edge"),
+    ("usb_over", "1.3 mm", "how far the USB-C sticks out past the board edge"),
     ("imu_s", "2.5 mm", "IMU chip size (square)"),
     # battery door: a plug that fills the end slot flush (that face stays flat)
     ("plug_fit", "0.15 mm", "clearance per side round the lid's end wall (it closes the battery end)"),
     # USB-C: a relief round the slot outside, so a plug's overmold reaches the socket
-    ("usb_relief_w", "13 mm", "relief width round the USB-C slot (fits overmolds up to this wide)"),
+    ("usb_relief_w", "12 mm", "relief width round the USB-C slot (measured overmold 11.0 + 0.5 per side)"),
     ("usb_wall_min", "1.5 mm", "end wall left where the plug passes, inside the relief"),
     # power switch: SS12D00-type mini slide switch in the battery + lead, lever out the far end
     ("sw_l", "8.6 mm", "MEASURE: switch body length (along the lever travel)"),
@@ -98,7 +99,7 @@ PARAMS = [
 
 # Derived: computed from the ones above. Don't edit these, edit their inputs.
 DERIVED = [
-    ("cav_l", "batt_l + 2 * fit", "cavity length"),
+    ("cav_l", "batt_l + batt_wire_l + 2 * fit", "cavity length"),
     ("cav_w", "batt_w + 2 * fit", "cavity width"),
     ("case_l", "end_wall + cav_l + wall", "outside length"),
     ("case_w", "cav_w + 2 * wall", "outside width"),

@@ -32,7 +32,7 @@ Plans change, and phase 4 depends on what phase 3 finds.
 | 2.54 mm male headers, breadboard, jumper wires | 1.6 | est. a few $ | Only needed once you wire something external (the laser). Solder headers onto one XIAO then. |
 | 3D-printed pod (case + lid) | 1.3 | filament | Holds the XIAO and LiPo. Its flat, square faces make it the calibration cube for the 6-position calibration and the full-turn gyro test. See [enclosure.md](enclosure.md). |
 | M2 + M3 heat-set inserts and screws | 1.3 | est. ~$10 for a kit | lid (M2) and the adapter interface (M3) |
-| 3.7 V LiPo, ~400 mAh, **with protection circuit** | 1.5 | $9.15 each at Jameco (Adafruit #3898, sold in pairs) | JST-PH connector. Protection circuit cuts off at 3.0 V and blocks shorts. A spare is handy. |
+| 3.7 V LiPo, ~400 mAh, **with protection circuit** | 1.5 | $9.15 each at Jameco (Adafruit #3898, sold in pairs) | JST-PH connector. Protection circuit cuts off at 3.0 V and blocks shorts. A spare is handy. The one on hand (2026-10-19) is a PL 602030, 30.5 x 19.7 x 7.6 mm measured, not the #3898 (enclosure.md). |
 | JST-PH 2-pin socket with pigtail wires | 1.5 | est. a few $ | The XIAO has battery solder pads, not a connector. Solder a socket on so the battery unplugs. |
 | *Optional:* TF-Luna lidar | 1.6 | $30.99 (Waveshare) | UART or I2C, 3.3 V logic (works with the XIAO directly). Needs a **3.7 to 5.2 V supply**, so power it from the XIAO's 5 V pin while on USB for the bench test. |
 

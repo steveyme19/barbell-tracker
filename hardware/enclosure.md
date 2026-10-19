@@ -129,12 +129,12 @@ For phase 3, stick the printed AprilTag on the pod's flat lid. No extra part.
 
 Start parametric so measured numbers drop straight in. Suggested user parameters:
 
-| name | first guess | what |
+| name | value (measured 2026-10-19 unless noted) | what |
 |---|---|---|
-| `xiao_l`, `xiao_w`, `xiao_t` | 21, 17.5, 1.2 mm | XIAO board |
-| `xiao_top` | 3.5 mm | tallest part above the board |
-| `imu_x`, `imu_y` | measure | IMU center from the board's USB-end corner |
-| `batt_l`, `batt_w`, `batt_t` | 33, 20.5, 8.3 mm | LiPo with its protection board |
+| `xiao_l`, `xiao_w`, `xiao_t` | 21.0, 17.8, 1.0 mm | XIAO board |
+| `xiao_top` | 3.3 mm | tallest part above the board (USB-C) |
+| `imu_x`, `imu_y` | 18.5, 13.8 mm, **provisional** | IMU center from the USB-C end and the D0-D6 edge |
+| `batt_l`, `batt_w`, `batt_t` | 30.5, 19.7, 7.6 mm | LiPo with its protection board |
 | `wall`, `floor`, `lid_t` | 2, 2, 2 mm | |
 | `fit` | 0.4 mm | clearance per side around parts |
 | `m3_insert_d`, `m2_insert_d` | from the insert spec | hole sizes |
@@ -211,3 +211,40 @@ Changes from the sketch above, and why:
   at 24.5 mm tall. Axis arrows wait for the IMU orientation to be confirmed. Adapters next.
 - Not modeled yet: embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
+
+### Measured parts (2026-10-19, calipers in inches, converted)
+
+- **LiPo:** PL 602030, 3.7 V, 400 mAh (nominal 6.0 x 20 x 30 mm). Measured 30.5 long incl.
+  the protection board, 19.7 wide, 7.6 thick over the protection board (cell ~6.0). Wires
+  leave the protection-board end near one corner. Not the Adafruit #3898 the BOM lists.
+- **XIAO nRF52840 Sense:** 21.0 x 17.8 mm, board 1.0 thick. From the board's bottom face:
+  radio can top 2.8, USB-C top 4.3 (so `xiao_top` 3.3). USB-C sticks out 1.3 past the
+  board edge. USB-C up and parts facing you: D0-D6 on the left edge, 5V/GND/3V3/D10-D7 on
+  the right. In the CAD (x away from USB-C, z up) the D0-D6 edge is the low-y side, and it
+  matches the IMU axes above (+y toward the 5V edge).
+- **USB-C cable overmold:** 11.0 wide x 6.0 thick.
+- **IMU position, PROVISIONAL:** the small dark part near the far corner on the 5V/GND/3V3
+  side is centered 18.5 from the USB-C end and 13.8 from the D0-D6 edge (4.0 from the 5V
+  edge). It has a round port hole, so it may be the **microphone**, not the IMU (the
+  LSM6DS3TR-C is a plain 2.5 x 3 mm LGA with no hole). The adapter M3 inserts are centered
+  under `imu_x`, so **confirm the IMU position before printing any adapter** (Seeed's
+  board drawing, or a tap test: tap right over each chip and watch which one the gyro
+  says is the rotation center). The pod itself doesn't depend on it except for where the
+  two M3 inserts sit.
+- Still guesses: LED and reset positions (`led_*`, `rst_*`), the switch (`sw_*`, none bought
+  yet), how far the battery wires stick out (`batt_wire_l` 2.5).
+
+What changed in the model:
+
+- `cav_l` now has `batt_wire_l` = 2.5 mm past the battery's protection-board end: before,
+  the cavity was exactly battery + fit, and the 33 mm guess only left wire room by luck.
+  With 30.5 + 2.5 the length stays 40.8 mm.
+- Width 25.3 -> **24.5 mm** (battery 19.7), height 24.5 -> **23.4 mm** (thinner battery and
+  board, lower USB-C). Outside: **40.8 x 24.5 x 23.4 mm** with the lid.
+- Narrower case squeezed the far end, so: `boss` 6 -> 5.8 mm (switch pocket fits between),
+  `usb_relief_w` 13 -> 12 mm (11.0 plug + 0.5 a side; keeps 1.65 mm of wall to the M2
+  inserts), `usb_slot_w` 12.5 -> 11.5, `usb_slot_h` 7 -> 6.6 (6.0 plug; 0.7 mm of lid left
+  over the USB pocket). Relief is 6.8 mm tall, centered on the socket.
+- The plug's overmold now stops 0.6 mm short of the socket mouth (it sticks out 1.3).
+- Adapter M3 inserts moved to x = 13.9 and 33.9 (under the provisional IMU at 23.9).
+- Offline check (all parameter expressions + 38 fit checks): all pass.
