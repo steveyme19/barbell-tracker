@@ -133,7 +133,7 @@ Start parametric so measured numbers drop straight in. Suggested user parameters
 |---|---|---|
 | `xiao_l`, `xiao_w`, `xiao_t` | 21.0, 17.8, 1.0 mm | XIAO board |
 | `xiao_top` | 3.3 mm | tallest part above the board (USB-C) |
-| `imu_x`, `imu_y` | 18.5, 13.8 mm, **provisional** | IMU center from the USB-C end and the D0-D6 edge |
+| `imu_x`, `imu_y` | 8.89, 4.32 mm (Seeed KiCad) | IMU center from the USB-C edge and the D0-D6 edge |
 | `batt_l`, `batt_w`, `batt_t` | 30.5, 19.7, 7.6 mm | LiPo with its protection board |
 | `wall`, `floor`, `lid_t` | 2, 2, 2 mm | |
 | `fit` | 0.4 mm | clearance per side around parts |
@@ -250,3 +250,28 @@ What changed in the model:
 - Offline check (all parameter expressions + 38 fit checks): all pass.
 - Rebuilt in Fusion 2026-10-19 (Quentin ran it): builds fine. Inspect > Interference with the stand-ins not rerun yet.
 - **Print files (2026-10-19):** `hardware/enclosure/stl/pod_case.stl` + `pod_lid.stl`, already print-side down (case floor on the bed, lid flipped flat top down). Redo after a model change: run the Fusion script `pod_export` (Scripts and Add-Ins), then `python hardware/enclosure/stl_orient.py` (mm, closed-mesh check). Case 40.8 x 24.5 x 21.4, lid 40.8 x 24.5 x 17.75 (plate + end wall). The tray inside the case spans the battery pocket: short overhangs from the walls plus a ~20 mm bridge, usually fine without supports; if the slicer flags it, support just that.
+
+### Board positions from Seeed's KiCad file (2026-10-19)
+
+From Seeed's XIAO nRF52840 Sense KiCad project (wiki Resources, `Seeed-Studio-XIAO-nRF52840V1.1-KiCad-Project-260105.zip`;
+board 20.955 x 17.780). Distances from the USB-C board edge / the D0-D6 edge, in mm:
+
+| part | from USB-C edge | from D0-D6 edge | side |
+|---|---|---|---|
+| **IMU** (U3, LSM6DS3TR-C) | 8.89 | 4.32 | top |
+| microphone (MIC1) | 19.43 | 13.46 | top |
+| reset button (K1) | 1.91 | 3.17 | top |
+| RGB LED / charge LED | 2.79 / 0.64 | 14.60 | top |
+| **BAT+ pad** (BAT0) | 10.16 | 4.44 | bottom |
+| **BAT- pad** (GND0) | 8.26 | 4.44 | bottom |
+| SWD pads (SWDIO, SWCLK, RESET, GND) | 1.9 to 4.5 | 7.6 to 10.2 | bottom |
+| NFC pads | 19.69 | 12.7 / 14.6 | bottom |
+
+- The "IMU" measured with calipers (18.5 / 13.8) was the **microphone**: it matches MIC1 and
+  has the sound port. The real IMU is near the USB-C end, so the adapter M3 inserts moved to
+  x = 4.3 and 24.3 in the case (IMU at x = 14.3). `imu_*`, `rst_*`, `led_*` now use these.
+- **Battery wires:** the BAT pads are under the board, almost under the IMU, over the tray's
+  window. So the wires leave the battery's protection-board end (far end), turn up in the
+  `batt_wire_l` gap, run forward over the cell in the 2 mm `batt_gap`, and come up through
+  the window to the pads. They don't need the tray's wire hole: that was only for routing
+  battery + through the switch.
