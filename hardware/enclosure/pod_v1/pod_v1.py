@@ -52,20 +52,21 @@ PARAMS = [
     ("m3_head_d", "6.5 mm", "counterbore for an M3 socket head, so it sits below the magnets"),
     ("m3_head_h", "3.2 mm", "counterbore depth"),
     ("mag_fit", "0.4 mm", "magnet pocket clearance on the diameter"),
-    # magnet centers from the puck center (= the IMU), 3 at 120 deg on a 15 mm radius, placed
+    # magnet centers from the puck center (= the IMU), 3 at 120 deg on a 15.1 mm radius, placed
     # clear of the screw counterbores (>= 2 mm of plastic everywhere)
-    ("mag1_x", "5.13 mm", "magnet 1 from the puck center"),
-    ("mag1_y", "14.10 mm", ""),
-    ("mag2_x", "-14.77 mm", "magnet 2"),
-    ("mag2_y", "-2.60 mm", ""),
-    ("mag3_x", "9.64 mm", "magnet 3"),
-    ("mag3_y", "-11.49 mm", ""),
+    ("mag1_x", "4.21 mm", "magnet 1 from the puck center"),
+    ("mag1_y", "14.50 mm", ""),
+    ("mag2_x", "-14.66 mm", "magnet 2"),
+    ("mag2_y", "-3.60 mm", ""),
+    ("mag3_x", "10.45 mm", "magnet 3"),
+    ("mag3_y", "-10.90 mm", ""),
     # extras the model needs
-    ("end_wall", "5 mm", "USB-C end wall: thick enough for 2 lid screws beside the board"),
+    ("end_wall", "6 mm", "USB-C end wall: 2 lid screws beside the board (6 so their countersinks clear the lid's rounded edge)"),
     ("iface_extra", "3.5 mm", "extra floor so the M3 insert hole leaves 1 mm under the battery"),
     ("m3_insert_h", "4 mm", "M3 insert length (hole depth = this + 0.5)"),
     ("m2_insert_h", "4 mm", "M2 insert hole depth from the rim"),
     ("m2_clear", "2.4 mm", "M2 clearance hole in the lid"),
+    ("m2_csk", "0.8 mm", "countersink for M2 flat-head lid screws (ISO 7046, head <= 3.8): 45 deg, top dia 4.0, lid face stays flat"),
     ("ledge_t", "1.2 mm", "tray (XIAO ledge) thickness over the battery"),
     ("batt_gap", "2 mm", "space between battery and tray: foam tape, and the 2 battery wires running to the pads under the board"),
     ("ledge_w", "1.2 mm", "how far the ledge reaches under the board edge"),
@@ -414,6 +415,18 @@ def build_lid(b, comp):
     for x, y in SCREWS:
         b.circle(sk, x, y, "m2_clear")
     b.extrude(comp, sk, "lid_t + 1 mm", CUT, body, name="Lid screw holes")
+    # Countersinks for flat-head screws: the lid top is a calibration face, heads must not stick
+    # out. A 45 deg chamfer on the top edge of each hole.
+    top, r = b.ev("z_rim + lid_t"), b.ev("m2_clear") / 2
+    rims = adsk.core.ObjectCollection.create()
+    for e in body.edges:
+        g = e.geometry
+        if g.objectType == adsk.core.Circle3D.classType() and abs(g.center.z - top) < 1e-6 and abs(g.radius - r) < 1e-6:
+            rims.add(e)
+    try:
+        b.chamfer(comp, rims, "m2_csk", "Lid screw countersinks")
+    except Exception as e:                       # don't lose the whole build over it
+        b.skipped.append(f"Lid screw countersinks failed ({rims.count} edges): {e}")
 
     # LED thin spot: cut from underneath, leaves led_skin of lid over the LEDs
     sk = b.sketch(comp, "z_rim", "LED window")

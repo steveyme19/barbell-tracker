@@ -302,3 +302,5 @@ board 20.955 x 17.780). Distances from the USB-C board edge / the D0-D6 edge, in
   keep the puck's bar face clean and flat. Don't torque magnet screws past ~2 Nm (they crack).
 - **Hardware:** 3 more M3 heat-set inserts (magnets), 3 x M3 x 8 countersunk (magnets),
   2 x M3 x 10 socket head (pod to puck).
+
+- **Countersunk lid screws (2026-10-19):** the lid holes get a 45 deg countersink (`m2_csk` 0.8, 4.0 mm across) for **M2 x 6 flat-head (ISO 7046) screws**, so the lid top stays a flat calibration face (pan heads stuck up ~1.3 mm). To keep the USB-end countersinks off the lid's 0.8 mm rounded edge, `end_wall` 5 -> 6 mm: pod now **41.8 x 24.5 x 23.4 mm**; the puck's magnets were re-placed for the shifted hole pattern (>= 1.68 mm walls). The script skips the countersink (and says so) if Fusion can't make it. 44/44 offline checks pass. How the lid holds: each screw passes through the lid and threads into a brass heat-set insert in the case (2 in the USB-end wall, 2 in the far bosses); the head clamps the lid down, and the lid's end wall keeps the battery in.
