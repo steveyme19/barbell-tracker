@@ -2,7 +2,7 @@
 
     python hardware/enclosure/stl_orient.py
 
-Reads stl/pod_case_raw.stl + stl/pod_lid_raw.stl (from the Fusion script pod_export),
+Reads stl/pod_case_raw.stl, pod_lid_raw.stl, puck_a_raw.stl (from the Fusion script pod_export),
 writes stl/pod_case.stl (floor on the bed, as modeled) and stl/pod_lid.stl (flipped so
 the flat top is on the bed). Also checks size, units and that each mesh is closed.
 """
@@ -42,8 +42,14 @@ def closed(tris):
     return sum(1 for k in edges.values() if k != 2)
 
 
-for name, flip in [("case", False), ("lid", True)]:
-    tris = read(STL / f"pod_{name}_raw.stl")
+# (file stem, flip): the lid and the puck print upside down (flat top / pod side on the bed,
+# so the puck's magnet pockets open upward and need no bridging)
+for name, flip in [("pod_case", False), ("pod_lid", True), ("puck_a", True)]:
+    raw = STL / f"{name}_raw.stl"
+    if not raw.exists():
+        print(f"{raw.name}: not exported, skipped")
+        continue
+    tris = read(raw)
     size = np.ptp(tris.reshape(-1, 3), axis=0)
     if size.max() < 10:          # Fusion wrote cm: make it mm (slicers assume mm)
         tris *= 10
@@ -52,7 +58,7 @@ for name, flip in [("case", False), ("lid", True)]:
         tris[..., 2] *= -1
     pts = tris.reshape(-1, 3)
     tris -= [pts[:, 0].min(), pts[:, 1].min(), pts[:, 2].min()]
-    write(STL / f"pod_{name}.stl", tris)
+    write(STL / f"{name}.stl", tris)
     size = np.ptp(tris.reshape(-1, 3), axis=0)
-    print(f"pod_{name}.stl: {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} mm, {len(tris)} triangles, "
+    print(f"{name}.stl: {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} mm, {len(tris)} triangles, "
           f"open edges {closed(tris)}")

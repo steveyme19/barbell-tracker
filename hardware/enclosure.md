@@ -63,6 +63,7 @@ in the printed pod.
 
 ## Adapter A: sleeve end, on the bar axis
 
+- **Built (2026-10-19, `Adapter A puck` in pod_v1, see the end of this file).** Original idea:
 - **Puck:** Ø50 × 7 mm disc, 2 or 3 pot magnets (Ø16, countersunk M3) recessed flush in
   the side that touches the bar, pod screwed to the outside face with the **IMU on the
   bar axis**. On the axis there's no lever arm (algorithm.md §3).
@@ -277,3 +278,27 @@ board 20.955 x 17.780). Distances from the USB-C board edge / the D0-D6 edge, in
   battery + through the switch.
 
 - **No switch (2026-10-19):** removed the switch cradle, its lever slot and recess (case and lid), the `sw_*` parameters, and the tray's wire hole (it was half covered by the cradle, and the wires don't need it: they reach the BAT pads through the window under the board). `boss` back to 6 mm. To turn the pod off, unplug the battery (lid off). A switch can come back in a v2 if that gets annoying. Offline checks: 31/31 pass. **Rerun pod_v1, then pod_export + stl_orient.py**: the STLs in `stl/` are from before this and before the IMU move.
+
+### Symmetric mount holes + Adapter A puck (2026-10-19)
+
+- The pod's two M3 floor inserts are now **centered on the pod** (x 10.4 and 30.4, y 12.25),
+  not under the IMU. The IMU sits 6.11 mm toward the USB-C end and 4.58 mm toward the D0-D6
+  side of the pod's center; each adapter offsets its own holes by that, so the IMU still
+  lands where the adapter wants it.
+- **Puck** (component `Adapter A puck`, body `Puck`): Ø50 (`sleeve_d`) x 10 mm, **centered on
+  the IMU**, so on a sleeve end the IMU is on the bar's axis. Bar side: 3 pockets for Ø16 x
+  4.5 pot magnets on a 15 mm radius (`mag1..3_x/y`, placed clear of the screw holes), each
+  with an M3 heat-set insert under it for the magnet's countersunk screw. Two counterbored
+  M3 holes (head 3.2 mm below the bar face) for the screws up into the pod's inserts.
+  Walls: 1.8 mm outside the magnets, 1.6 mm magnet to counterbore (geometric limit with this
+  hole spacing), 1 mm skin over the inserts. Print it pod-side down (`puck_a.stl` is already
+  flipped): pockets open upward, no bridges.
+- **Magnets:** 3 x Ø16 mm countersunk neodymium pot magnet, 4.5 mm tall, M3 countersink,
+  e.g. supermagnete CSN-ES-16 (about 6.9 kg pull, about 1.4 kg sideways) or Eclipse 16 mm
+  M3 (6 to 7.5 kg). Sideways ("displacement") force is ~20% of pull, and that's the one
+  that matters on a sleeve end (rack bumps shove the puck along the face): 3 magnets give
+  ~4 kg sideways on clean flat steel for a ~60 g pod + puck. A 0.5 mm gap (paint, raised
+  logo, rubber) costs a lot of that, so test the bar end with a fridge magnet first and
+  keep the puck's bar face clean and flat. Don't torque magnet screws past ~2 Nm (they crack).
+- **Hardware:** 3 more M3 heat-set inserts (magnets), 3 x M3 x 8 countersunk (magnets),
+  2 x M3 x 10 socket head (pod to puck).

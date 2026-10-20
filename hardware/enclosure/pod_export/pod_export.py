@@ -1,9 +1,9 @@
 """
-Export the pod's Case and Lid bodies (from pod_v1) as STL files for printing.
+Export the Case, Lid and Puck bodies (from pod_v1) as STL files for printing.
 
 Open the pod design (e.g. v5), then Utilities > Add-Ins > Scripts and Add-Ins >
-pod_export > Run. Writes hardware/enclosure/stl/pod_case_raw.stl and pod_lid_raw.stl.
-Then `python hardware/enclosure/stl_orient.py` lays them print-side down as pod_case.stl + pod_lid.stl.
+pod_export > Run. Writes hardware/enclosure/stl/pod_case_raw.stl, pod_lid_raw.stl and puck_a_raw.stl.
+Then `python hardware/enclosure/stl_orient.py` lays them print-side down (pod_case.stl, pod_lid.stl, puck_a.stl).
 """
 
 import os
@@ -14,7 +14,7 @@ import adsk.fusion
 
 # Absolute, so it also works when copied into Fusion's own Scripts folder.
 OUT = r"C:\Users\quent\barbell-velocity-tracker\hardware\enclosure\stl"
-WANT = {"Case": "pod_case_raw.stl", "Lid": "pod_lid_raw.stl"}
+WANT = {"Case": "pod_case_raw.stl", "Lid": "pod_lid_raw.stl", "Puck": "puck_a_raw.stl"}
 
 
 def run(context):

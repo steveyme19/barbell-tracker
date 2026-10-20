@@ -40,12 +40,26 @@ PARAMS = [
     ("fit", "0.4 mm", "clearance per side around parts"),
     ("m3_insert_d", "4.0 mm", "M3 heat-set insert hole (check the insert's spec)"),
     ("m2_insert_d", "3.2 mm", "M2 heat-set insert hole (check the insert's spec; ~1.6 for self-tapping)"),
-    ("iface_spacing", "20 mm", "the two M3 adapter inserts, centered under the IMU"),
+    ("iface_spacing", "20 mm", "the two M3 adapter inserts, centered on the pod's floor"),
     # adapters (not modeled yet, here so they're ready)
     ("sleeve_d", "50 mm", "bar sleeve diameter (adapter A)"),
     ("shaft_d", "28.5 mm", "bar shaft diameter (adapter B)"),
     ("magnet_d", "16 mm", "pot magnet diameter (adapter A)"),
     ("magnet_h", "4.5 mm", "pot magnet height (adapter A)"),
+    # Adapter A puck: sticks to the flat steel end of the bar sleeve with 3 pot magnets;
+    # the pod screws onto it so the IMU sits on the bar's axis (puck center = IMU).
+    ("m3_clear", "3.4 mm", "M3 clearance hole (pod screws through the puck)"),
+    ("m3_head_d", "6.5 mm", "counterbore for an M3 socket head, so it sits below the magnets"),
+    ("m3_head_h", "3.2 mm", "counterbore depth"),
+    ("mag_fit", "0.4 mm", "magnet pocket clearance on the diameter"),
+    # magnet centers from the puck center (= the IMU), 3 at 120 deg on a 15 mm radius, placed
+    # clear of the screw counterbores (>= 2 mm of plastic everywhere)
+    ("mag1_x", "5.13 mm", "magnet 1 from the puck center"),
+    ("mag1_y", "14.10 mm", ""),
+    ("mag2_x", "-14.77 mm", "magnet 2"),
+    ("mag2_y", "-2.60 mm", ""),
+    ("mag3_x", "9.64 mm", "magnet 3"),
+    ("mag3_y", "-11.49 mm", ""),
     # extras the model needs
     ("end_wall", "5 mm", "USB-C end wall: thick enough for 2 lid screws beside the board"),
     ("iface_extra", "3.5 mm", "extra floor so the M3 insert hole leaves 1 mm under the battery"),
@@ -110,6 +124,10 @@ DERIVED = [
     ("usb_z", "z_board + xiao_t + usb_z_off", "USB-C socket center height"),
     ("usb_rel_top", "z_rim + lid_t - 0.6 mm", "relief top: 0.6 mm of lid left over it"),
     ("usb_rel_bot", "2 * usb_z - usb_rel_top", "relief bottom, centered on the socket"),
+    ("iface_x", "case_l / 2", "adapter M3 inserts: centered on the pod (symmetric)"),
+    ("iface_y", "case_w / 2", "adapter M3 inserts: centered on the pod"),
+    ("puck_d", "sleeve_d", "puck diameter = the bar sleeve"),
+    ("puck_t", "magnet_h + m3_insert_h + 1.5 mm", "puck thickness: magnet pocket + insert hole + 1 mm skin"),
 ]
 
 # The 4 lid screws: (x, y)
@@ -363,10 +381,11 @@ def build_case(b, comp):
     b.rect(sk, "-1 mm", "board_cy - usb_relief_w / 2", "end_wall - usb_wall_min + 1 mm", "usb_relief_w")
     b.extrude(comp, sk, "z_rim - usb_rel_bot + 1 mm", CUT, body, name="USB-C relief")
 
-    # 2 x M3 inserts from below, iface_spacing apart, centered under the IMU
+    # 2 x M3 inserts from below, iface_spacing apart, centered on the pod. Adapters put the
+    # IMU where they want it by offsetting their own holes (the IMU is off the pod's center).
     sk = b.sketch(comp, "0", "M3 inserts")
-    b.circle(sk, "imu_wx - iface_spacing / 2", "imu_wy", "m3_insert_d")
-    b.circle(sk, "imu_wx + iface_spacing / 2", "imu_wy", "m3_insert_d")
+    b.circle(sk, "iface_x - iface_spacing / 2", "iface_y", "m3_insert_d")
+    b.circle(sk, "iface_x + iface_spacing / 2", "iface_y", "m3_insert_d")
     b.extrude(comp, sk, "m3_insert_h + 0.5 mm", CUT, body, name="M3 inserts")
 
     # 4 x M2 lid inserts, down from the rim
@@ -418,6 +437,37 @@ def build_lid(b, comp):
     return body
 
 
+def build_puck(b, comp):
+    """Adapter A: a disc under the pod (z < 0), centered on the IMU so the IMU sits on the
+    bar's axis. Bar side (z = -puck_t): 3 pot-magnet pockets with an M3 insert under each
+    (the magnet's countersunk screw goes into it) and 2 counterbored holes for the M3
+    screws that go up into the pod's floor inserts."""
+    bot = "-puck_t"
+    sk = b.sketch(comp, bot, "Puck disc")
+    b.circle(sk, "imu_wx", "imu_wy", "puck_d")
+    body = b.extrude(comp, sk, "puck_t", NEW, name="Puck disc").bodies.item(0)
+    body.name = "Puck"
+
+    sk = b.sketch(comp, bot, "Pod screw holes")
+    b.circle(sk, "iface_x - iface_spacing / 2", "iface_y", "m3_clear")
+    b.circle(sk, "iface_x + iface_spacing / 2", "iface_y", "m3_clear")
+    b.extrude(comp, sk, "puck_t", CUT, body, name="Pod screw holes")
+    sk = b.sketch(comp, bot, "Screw counterbores")
+    b.circle(sk, "iface_x - iface_spacing / 2", "iface_y", "m3_head_d")
+    b.circle(sk, "iface_x + iface_spacing / 2", "iface_y", "m3_head_d")
+    b.extrude(comp, sk, "m3_head_h", CUT, body, name="Screw counterbores")
+
+    sk = b.sketch(comp, bot, "Magnet pockets")
+    for k in "123":
+        b.circle(sk, f"imu_wx + mag{k}_x", f"imu_wy + mag{k}_y", "magnet_d + mag_fit")
+    b.extrude(comp, sk, "magnet_h", CUT, body, name="Magnet pockets")
+    sk = b.sketch(comp, bot + " + magnet_h", "Magnet screw inserts")
+    for k in "123":
+        b.circle(sk, f"imu_wx + mag{k}_x", f"imu_wy + mag{k}_y", "m3_insert_d")
+    b.extrude(comp, sk, "m3_insert_h + 0.5 mm", CUT, body, name="Magnet screw inserts")
+    return body
+
+
 def build_parts(b, root, I):
     """Stand-ins for the electronics, each its own component, placed where they sit in the
     case. For the exploded view, and Inspect > Interference shows if a real size won't fit."""
@@ -460,6 +510,9 @@ def run(context):
         lid_occ.component.name = "Pod lid"
         build_lid(b, lid_occ.component)
         build_parts(b, root, I)
+        puck_occ = root.occurrences.addNewComponent(I)
+        puck_occ.component.name = "Adapter A puck"
+        build_puck(b, puck_occ.component)
 
         mm = lambda e: b.ev(e) * 10
         ui.messageBox(

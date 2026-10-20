@@ -46,7 +46,7 @@ Battery life estimate: the XIAO streaming IMU data probably draws something like
 | item | step | price | notes |
 |---|---|---|---|
 | Hook-and-loop straps + zip ties | 2.1 | est. a few $ | temporary mount on the shaft |
-| Neodymium pot (cup) magnets, Ø16 countersunk M3, 3 or 4 | 2.1 | est. a few $ each | sleeve-end adapter (O3). Pot magnets hold far harder than plain disc magnets of the same size. Only on a steel end face. |
+| Neodymium pot (cup) magnets, Ø16 x 4.5 countersunk M3, **3** (e.g. supermagnete CSN-ES-16), plus 3 M3 x 8 countersunk screws, 3 M3 inserts, 2 M3 x 10 socket head | 2.1 | est. a few $ each | sleeve-end adapter (O3), puck in pod_v1 (enclosure.md). Pot magnets hold far harder than plain disc magnets of the same size. Only on a steel end face. |
 | 3D-printed bar adapters: sleeve-end puck, shaft saddle | 2.1 | filament | Screw to the pod. Shaft saddle uses the strap or a small hose clamp, plus a TPU or rubber pad. **Nothing loose on a loaded bar.** See [enclosure.md](enclosure.md). |
 | *Optional (2.8):* Pololu 5 V step-up regulator U1V11F5 | 2.8 | $7.95 (Pololu) | Runs the TF-Luna from the LiPo: 0.5 to 5.5 V in, 12 × 15 mm. Its SHDN pin can switch the laser off between sets. |
 
