@@ -911,10 +911,48 @@ def sc_stop_timeout_late():
     b = Bench("stop-timeout-late-reply", seed=13)
     b.run(3000); b.connect(); b.run(8000)
     b.jam_until = b.now + 6000            # a congested link: everything waits ~6 s
-    b.run(300); b.stop(); b.run(9000); b.finish()
+    b.run(300); b.stop(); b.run(4000)
+    r = b.stream.stop_timed_out()         # the app calls it again: must say "already over"
+    b.log.append(("call", None, f"stop_timed_out={int(r)}"))
+    b.run(5000); b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
     return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
                "stats": {"stopped": 1}, "faults": ["stop timed out"]}
+
+
+def sc_stop_start_lost():
+    b = Bench("stop-start-then-link-lost", seed=31)
+    b.run(3000); b.connect(); b.run(5000)
+    b.disconnect(); b.run(15000)
+    b.connect(); b.run(300)               # catching up: the STATUS head is far ahead
+    b.stop(); b.run(5)
+    b.command()                           # Start right after Stop: the stop wait is cancelled
+    b.run(600)
+    b.disconnect()                        # the link dies mid catch-up; the session ends
+    true_end = b.pod.head
+    nxt = b.stream.ep.next_idx
+    b.finish()                            # a lost-tail, not a stop-tail
+    p = b.pods[0]; ep = b.stream.epochs[0]
+    kinds = lambda: None if all(g["kind"] != "stop-tail" for g in b.stream.gaps) else "finish called it a stop-tail"
+    return b, {"ranges": [(ep, first_cmd(p), end_known(b, ep))], "true_loss": true_end - nxt,
+               "gaps": {"lost-tail": lambda got: len(got) == 1 and got[0] > 0},
+               "stats": {"stale": lambda v: v >= 0, "stale_stops": lambda v: v <= 1, "reconnects": 1},
+               "extra": {"kind": kinds}}
+
+
+def sc_window_then_wake():
+    b = Bench("link-degrades-then-wake", seed=32)
+    b.run(3000); b.connect(); b.run(15000)
+    b.lat = (60.0, 20.0)                  # the link gets slow: the last 32 STATUS all arrive late
+    b.run(40000)
+    b.pod_sleep(1); b.run(3000)
+    b.lat = (7.5, 30.0)
+    b.wake(boot_id=0x9032); b.run(2000)
+    b.connect(); b.run(5000); b.stop(); b.run(3000); b.finish()
+    p1, p2 = b.pods
+    e1, e2 = b.stream.epochs
+    return b, {"ranges": [(e1, first_cmd(p1), p1.drain_heads[-1][1]), (e2, 0, last_drain(p2))],
+               "stats": {"epochs": 2, "stopped": 2}}
 
 
 def sc_stop_timeout_finish():
@@ -1087,7 +1125,8 @@ def sc_round_tie():
 SCENARIOS = [sc_clean, sc_scale, sc_reconnect_rewind, sc_overflow, sc_lap, sc_pkt_hole, sc_tick_wrap,
              sc_sleep_wake, sc_sleep_cut, sc_imu_restart, sc_wake_pickup, sc_stale, sc_status_race,
              sc_pod_mtu, sc_mtu_small_stop, sc_stop_exact_tail, sc_stop_then_start,
-             sc_stop_then_start_late, sc_stop_timeout_late, sc_stop_timeout_finish, sc_lost_tail,
+             sc_stop_then_start_late, sc_stop_timeout_late, sc_stop_start_lost, sc_window_then_wake,
+             sc_stop_timeout_finish, sc_lost_tail,
              sc_lost_tail_catchup,
              sc_same_boot_id, sc_boot_mismatch, sc_other_pod, sc_held_data, sc_clock_step,
              sc_after_close, sc_round_tie]

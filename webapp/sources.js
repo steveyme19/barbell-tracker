@@ -1,8 +1,10 @@
 // Data sources. Every source calls onSample({ t, ax, ay, az, gx, gy, gz })
 // with t in seconds, acceleration in m/s^2 (including gravity), rotation in deg/s.
 // The algorithm and UI never know which source they're getting (decision D4).
-// Phase 4 adds a BleSource (Web Bluetooth) with the same shape. NativeSensorSource is
-// the Android app's phone sensor (docs/android.md A2).
+// NativeSensorSource is the Android app's phone sensor (docs/android.md A2). The pod's
+// Bluetooth stream (PodLink, docs/ble.md) is decoded by PodStream at the bottom of this file,
+// a line-for-line port of analysis/podlink.py checked by webapp/test/pod.mjs; the Web Bluetooth
+// and app sources that feed it come in docs/ble-plan.md steps 6 and 12.
 
 /** Live phone sensor via DeviceMotion. Chrome typically delivers ~60 Hz. */
 export class PhoneSource {
@@ -114,5 +116,430 @@ export class ReplaySource {
   emit(i) {
     const r = this.rec;
     this.onSample({ t: r.t[i], ax: r.ax[i], ay: r.ay[i], az: r.az[i], gx: r.gx[i], gy: r.gy[i], gz: r.gz[i] });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// PodLink v1: the pod's Bluetooth stream (docs/ble.md). A line-for-line port of
+// analysis/podlink.py (the reference, decision P1); webapp/test/pod.mjs checks it against the
+// Python test vectors (analysis/make_fake_pod.py). Pure code, no DOM: Node imports it too.
+// The Web Bluetooth and app sources that feed it come in steps 6 and 12 of docs/ble-plan.md.
+
+export const POD = {
+  SERVICE: "9ba40001-6de5-429c-b225-8134b9953e9d",
+  DATA: "9ba40002-6de5-429c-b225-8134b9953e9d",
+  CTRL: "9ba40003-6de5-429c-b225-8134b9953e9d",
+  STATUS: "9ba40004-6de5-429c-b225-8134b9953e9d",
+  INFO: "9ba40005-6de5-429c-b225-8134b9953e9d",
+  CAL: "9ba40006-6de5-429c-b225-8134b9953e9d",
+  T_DATA: 0x01, T_STATUS: 0x10, T_INFO: 0x20, T_CAL: 0x30,
+  F_RESYNC: 0x01, F_OVERFLOW: 0x02, F_IMU_RESTART: 0x04, F_FINAL: 0x08,
+  S_USB: 0x01, S_CHARGING: 0x02, S_BATT_LOW: 0x04, S_STREAMING: 0x08,
+  S_GOING_TO_SLEEP: 0x10, S_STREAM_STOPPED: 0x20, S_MTU_TOO_SMALL: 0x40, S_BOOT_MISMATCH: 0x80,
+  OP_STREAM_FROM: 0x01, OP_STREAM_LIVE: 0x02, OP_STOP: 0x03, OP_SLEEP: 0x10,
+  ACCEL_LSB: 0.061 * 4 / 1000 * 9.80665,   // m/s^2 per count at +-8 g
+  GYRO_LSB: 4.375 * 8 / 1000,              // deg/s per count at +-1000 deg/s
+  TICK_HZ: 32768,
+  LIVE_BACK: 600,                          // STREAM_LIVE lead-in for a fresh session (~2.8 s)
+};
+const SLEEP_REASONS = { 0: "none", 1: "idle", 2: "lid-down", 3: "low battery", 4: "command", 5: "IMU lost" };
+
+/** The u32 difference x as a signed 32-bit number (Python: int32). */
+const int32 = (x) => x | 0;
+
+/** DataView (or bytes) -> frame object, or null if malformed (docs/ble.md 7, Input checks). */
+export function decodeFrame(dv) {
+  if (!(dv instanceof DataView)) dv = new DataView(dv.buffer ?? dv, dv.byteOffset ?? 0, dv.byteLength);
+  if (dv.byteLength < 1) return null;
+  const type = dv.getUint8(0);
+  const len = dv.byteLength;
+  if (type === POD.T_DATA) {
+    if (len < 14 + 14 || (len - 14) % 14) return null;
+    const n = dv.getUint8(1);
+    if (n < 1 || n > 16 || len !== 14 + 14 * n) return null;
+    const samples = [];
+    for (let k = 0; k < n; k++) {
+      const o = 14 + 14 * k;
+      samples.push([dv.getUint16(o, true), dv.getInt16(o + 2, true), dv.getInt16(o + 4, true),
+        dv.getInt16(o + 6, true), dv.getInt16(o + 8, true), dv.getInt16(o + 10, true), dv.getInt16(o + 12, true)]);
+    }
+    return { type, n, pkt_seq: dv.getUint16(2, true), first_idx: dv.getUint32(4, true),
+      t0: dv.getUint32(8, true), flags: dv.getUint8(12), cmd_seq: dv.getUint8(13), samples };
+  }
+  if (type === POD.T_STATUS) {
+    if (len !== 20) return null;
+    return { type, flags: dv.getUint8(1), battery_mv: dv.getUint16(2, true), ticks_now: dv.getUint32(4, true),
+      head: dv.getUint32(8, true), lost_overflow: dv.getUint16(12, true), missed_drdy: dv.getUint16(14, true),
+      sleep_reason: dv.getUint8(16), n_per_packet: dv.getUint8(17), interval: dv.getUint16(18, true) };
+  }
+  if (type === POD.T_INFO) {
+    if (len !== 32) return null;
+    return { type, proto: dv.getUint8(1), fw_build: dv.getUint16(2, true), boot_id: dv.getUint32(4, true),
+      serial: dv.getUint32(8, true), accel_lsb: dv.getFloat32(12, true), gyro_lsb: dv.getFloat32(16, true),
+      odr: dv.getUint16(20, true), ring_n: dv.getUint16(22, true), wake: dv.getUint8(24), tick_hz: dv.getUint16(26, true) };
+  }
+  if (type === POD.T_CAL) return len === 64 ? { type } : null;
+  return null;
+}
+
+/** Everything that belongs to one boot of the pod (docs/ble.md 7, Epochs). */
+class PodEpoch {
+  constructor(info, isReboot) {
+    this.boot_id = info.boot_id;
+    this.odr = info.odr || 208;
+    this.ring_n = info.ring_n;
+    const ok = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+    this.accel_lsb = ok(info.accel_lsb) ? info.accel_lsb : POD.ACCEL_LSB;
+    this.gyro_lsb = ok(info.gyro_lsb) ? info.gyro_lsb : POD.GYRO_LSB;
+    this.is_reboot = isReboot;          // not the session's first epoch: resume from index 0
+    this.ref32 = null; this.ref64 = null; // tick unwrap reference, set by the first STATUS
+    this.win = [];                      // wallBase candidates from the last 32 STATUS
+    this.wall_base = null;
+    this.t_offset = null;               // set when this epoch emits its first sample
+    this.first_t = null;                // t of that first sample
+    this.next_idx = null;
+    this.last_idx = null;               // index / ticks64 / t of the last kept sample
+    this.last_ticks64 = null;
+    this.last_t = null;
+    this.pkt_prev = null;
+    this.held = [];                     // DATA before the first STATUS
+    this.open = false;                  // a stream is open (docs/ble.md 7, Streams)
+    this.status = null;                 // the latest STATUS (decoded) and its ticks64
+    this.status_t64 = null;
+    this.open_seq = null;               // cmd_seq of the command that opened the stream
+    this.snap = null;                   // state at the last reconnect INFO (boot_mismatch undo)
+  }
+
+  ticks64(ticks) { return this.ref64 + int32(ticks - this.ref32); }
+}
+
+/**
+ * The phone's decoder for the pod's stream. Feed every frame of any type, in arrival order,
+ * with its arrival time in ms: stream.frame(dataView, arrivalMs). Samples come out in index
+ * order through onSample({ t, ax, ay, az, gx, gy, gz }); onEvent(kind, info) reports epochs,
+ * gaps, faults, stops, sleep and requests (need-command, need-info).
+ */
+export class PodStream {
+  constructor(onSample, onEvent = () => {}) {
+    this.onSample = onSample;
+    this.onEvent = onEvent;
+    this.serial = null;                 // the session's pod
+    this.ignoring = false;              // until the next good INFO
+    this.need_info = false;             // boot_mismatch: re-read INFO before any command
+    this.epochs = [];
+    this.ep = null;                     // the newest epoch
+    this.emitter = null;                // the most recent epoch that emitted a sample
+    this.last_t = null;                 // last emitted t, over all epochs
+    this.cmd_seq = 0;
+    this.cmd = null;                    // the current STREAM command
+    this.stop = null;                   // a pending STOP: { head, timed_out }
+    this.gaps = [];
+    this.faults = [];
+    this.stats = { samples: 0, bad: 0, pre_info: 0, ignored: 0, stale: 0, stale_stops: 0,
+      after_close: 0, dupes: 0, t_backwards: 0, pkt_seq_gaps: 0, pkt_seq_lost: 0, reconnects: 0,
+      epochs: 0, clock_clamped: 0, stopped: 0 };
+  }
+
+  // ---- helpers ----
+  _fault(what) {
+    this.faults.push(what);
+    this.onEvent("fault", what);
+  }
+
+  _gap(ep, kind, n, idx, t0, t1, lowerBound = false) {
+    const g = { kind, n, idx, t0, t1, boot_id: ep.boot_id };
+    if (lowerBound) g.lower_bound = true;
+    this.gaps.push(g);
+    this.onEvent("gap", g);
+    if (kind === "unexplained") this._fault("unexplained gap");
+  }
+
+  _tOf(ep, t64) {
+    return ep.t_offset === null ? null : ep.t_offset + t64 / POD.TICK_HZ;
+  }
+
+  _t0Left(ep, t1) {
+    if (ep.last_t !== null) return ep.last_t;
+    return this.last_t !== null ? this.last_t : t1;
+  }
+
+  _newEpoch(info, isReboot) {
+    const old = this.ep;
+    if (old !== null && old.open) {
+      // the pod slept or reset while disconnected: count what we know, a lower bound
+      this._close(old, old.status ? old.status.head : old.next_idx, old.status_t64, "lost-tail", true);
+    }
+    const ep = new PodEpoch(info, isReboot);
+    this.epochs.push(ep);
+    this.ep = ep;
+    this.stop = null;
+    this.stats.epochs += 1;
+    this.onEvent("epoch", { boot_id: ep.boot_id, reboot: isReboot });
+    return ep;
+  }
+
+  _close(ep, head, t64, kind, lowerBound = false) {
+    if (ep.open && ep.next_idx !== null && head !== null && head > ep.next_idx) {
+      let t0, t1;
+      if (ep.last_t === null) {
+        t0 = t1 = null;
+      } else {
+        t0 = ep.last_t;
+        t1 = t64 !== null ? this._tOf(ep, t64) : null;
+      }
+      this._gap(ep, kind, head - ep.next_idx, ep.next_idx, t0, t1, lowerBound);
+    }
+    if (head !== null && (ep.next_idx === null || head > ep.next_idx)) ep.next_idx = head;
+    ep.open = false;
+  }
+
+  // ---- the one entry point ----
+  frame(dv, arrivalMs) {
+    const f = decodeFrame(dv);
+    if (f === null) { this.stats.bad += 1; return; }
+    if (f.type === POD.T_CAL) return;   // ignored in v1
+    if (f.type === POD.T_INFO) return this._info(f);
+    if (this.ep === null) { this.stats.pre_info += 1; return; }
+    if (this.ignoring) { this.stats.ignored += 1; return; }
+    if (f.type === POD.T_STATUS) return this._status(f, arrivalMs);
+    const ep = this.ep;
+    if (ep.ref32 === null) { ep.held.push(f); return; }   // DATA before the first STATUS: hold it
+    this._data(ep, f);
+  }
+
+  _info(f) {
+    if (f.proto !== 1 || f.boot_id === 0) {
+      this.ignoring = true;             // its STATUS and DATA would be just as suspect
+      this._fault("bad INFO (proto or boot_id)");
+      return;
+    }
+    if (this.serial === null) this.serial = f.serial;
+    if (f.serial !== this.serial) {
+      this.ignoring = true;
+      this._fault("another pod");
+      return;
+    }
+    this.ignoring = false;
+    this.need_info = false;
+    const ep = this.ep;
+    if (ep !== null && f.boot_id === ep.boot_id) {
+      // same boot: the epoch continues. Keep what a boot_mismatch would have to roll back.
+      this.stats.reconnects += 1;
+      ep.snap = [ep.status, ep.status_t64, ep.ref32, ep.ref64, ep.win.slice(), ep.wall_base];
+      return;
+    }
+    this._newEpoch(f, ep !== null);
+  }
+
+  _status(f, arrivalMs) {
+    let ep = this.ep;
+    if (f.flags & POD.S_BOOT_MISMATCH) {
+      // STREAM_FROM had the wrong boot_id: our last INFO was stale. Undo everything since it
+      // and ignore the link until INFO is read again.
+      this._fault("boot mismatch");
+      if (ep.snap !== null) {
+        let win;
+        [ep.status, ep.status_t64, ep.ref32, ep.ref64, win, ep.wall_base] = ep.snap;
+        ep.win = win.slice(-32);
+      }
+      this.ignoring = this.need_info = true;
+      this.onEvent("need-info", null);
+      return;
+    }
+    if (ep.ref32 !== null) {
+      const t64 = ep.ticks64(f.ticks_now);
+      const rebooted = ((ep.next_idx !== null && f.head < ep.next_idx) ||
+                        (ep.last_ticks64 !== null && t64 < ep.last_ticks64 - 2 * POD.TICK_HZ));
+      if (rebooted) {
+        // the pod rebooted but kept its boot_id: a new epoch, starting with this STATUS
+        this._fault("reboot without a new boot_id");
+        const info = { boot_id: ep.boot_id, odr: ep.odr, ring_n: ep.ring_n,
+          accel_lsb: ep.accel_lsb, gyro_lsb: ep.gyro_lsb };
+        ep = this._newEpoch(info, true);
+        this.onEvent("need-command", null);
+      }
+    }
+    if (ep.ref32 === null) {
+      ep.ref32 = ep.ref64 = f.ticks_now;
+    } else {
+      ep.ref64 += int32(f.ticks_now - ep.ref32);
+      ep.ref32 = f.ticks_now;
+    }
+    const t64 = ep.ref64;
+    ep.win.push(arrivalMs - t64 / 32.768);
+    if (ep.win.length > 32) ep.win.shift();
+    ep.wall_base = Math.min(...ep.win);
+    ep.status = f; ep.status_t64 = t64;
+
+    if (f.flags & POD.S_GOING_TO_SLEEP) {
+      // the ring dies with the sleep: whatever didn't arrive is lost
+      this._close(ep, f.head, t64, "sleep-tail");
+      this.stop = null;
+      this.stats.stopped += 1;
+      this.onEvent("stopped", "sleep");
+      this.onEvent("sleep", SLEEP_REASONS[f.sleep_reason] ?? "?");
+    } else if (f.flags & POD.S_STREAM_STOPPED) {
+      const cmd = this.cmd;
+      if (cmd !== null && !cmd.started && ep.open && ep.open_seq !== cmd.seq) {
+        // the end of a stream the phone already replaced: the new STREAM_FROM fetches it again
+        this.stats.stale_stops += 1;
+      } else {
+        this._close(ep, f.head, t64, "stop-tail");
+        this.stop = null;
+        this.stats.stopped += 1;
+        this.onEvent("stopped", "stop");
+      }
+    }
+    if (f.flags & POD.S_MTU_TOO_SMALL) this.onEvent("mtu-too-small", null);
+
+    const held = ep.held;
+    ep.held = [];
+    for (const d of held) this._data(ep, d);
+  }
+
+  _data(ep, f) {
+    const cmd = this.cmd;
+    if (cmd === null || f.cmd_seq !== cmd.seq) { this.stats.stale += 1; return; }
+    const firstFrame = !cmd.started;
+    if (firstFrame) {
+      cmd.started = true;
+      ep.snap = null;                   // this boot answered: nothing left to roll back
+      const hadIdx = ep.next_idx !== null;
+      cmd.resync_skip = cmd.op === POD.OP_STREAM_LIVE && hadIdx;
+      if (cmd.op === POD.OP_STREAM_FROM) ep.next_idx = cmd.from;
+      else if (!hadIdx) ep.next_idx = f.first_idx;
+      ep.open = true; ep.open_seq = cmd.seq;
+    } else if (!ep.open) {
+      // frames of a stream that already closed: everything below its head was counted
+      this.stats.after_close += 1;
+      return;
+    }
+
+    // pkt_seq continuity (per epoch, mod 2^16)
+    if ((f.flags & POD.F_RESYNC) || ep.pkt_prev === null) {
+      ep.pkt_prev = f.pkt_seq;
+    } else {
+      if (f.pkt_seq !== ((ep.pkt_prev + 1) & 0xFFFF)) {
+        this.stats.pkt_seq_gaps += 1;
+        this.stats.pkt_seq_lost += (f.pkt_seq - ep.pkt_prev - 1) & 0xFFFF;
+      }
+      ep.pkt_prev = f.pkt_seq;
+    }
+
+    const hole = 1.5 * POD.TICK_HZ / ep.odr;
+    for (let k = 0; k < f.samples.length; k++) {
+      const [dt, gx, gy, gz, ax, ay, az] = f.samples[k];
+      const idx = f.first_idx + k;
+      if (idx < ep.next_idx) { this.stats.dupes += 1; continue; }
+      const t64 = ep.ticks64((f.t0 + dt) >>> 0);
+      if (ep.t_offset === null) {
+        this._setOffset(ep, t64);
+        ep.first_t = ep.t_offset + t64 / POD.TICK_HZ;
+      }
+      const t = ep.t_offset + t64 / POD.TICK_HZ;
+      if (this.last_t !== null && t <= this.last_t) {
+        // time went backwards inside a boot: a pod bug. Count it, never emit it.
+        this.stats.t_backwards += 1;
+        if (this.stats.t_backwards === 1) this._fault("time went backwards");
+        ep.next_idx = idx + 1;
+        continue;
+      }
+      if (idx > ep.next_idx) {
+        let kind;
+        if (f.flags & POD.F_OVERFLOW) kind = "overflow";
+        else if (firstFrame && k === 0 && (f.flags & POD.F_RESYNC) && cmd.resync_skip) kind = "resync";
+        else kind = "unexplained";
+        this._gap(ep, kind, idx - ep.next_idx, ep.next_idx, this._t0Left(ep, t), t);
+      } else if (ep.last_idx !== null && idx === ep.last_idx + 1 && t64 - ep.last_ticks64 > hole) {
+        const kind = k === 0 && (f.flags & POD.F_IMU_RESTART) ? "imu-restart" : "imu";
+        const dtk = t64 - ep.last_ticks64;
+        // floor(x + 0.5): .5 rounds up, the same as podlink.py
+        this._gap(ep, kind, Math.floor(dtk * ep.odr / POD.TICK_HZ + 0.5) - 1, idx, ep.last_t, t);
+      }
+      const s = { t, ax: ax * ep.accel_lsb, ay: ay * ep.accel_lsb, az: az * ep.accel_lsb,
+        gx: gx * ep.gyro_lsb, gy: gy * ep.gyro_lsb, gz: gz * ep.gyro_lsb };
+      ep.next_idx = idx + 1;
+      ep.last_idx = idx; ep.last_ticks64 = t64; ep.last_t = t;
+      this.last_t = t;
+      this.emitter = ep;
+      this.stats.samples += 1;
+      this.onSample(s);
+    }
+  }
+
+  _setOffset(ep, t64) {
+    const prev = this.emitter;
+    if (prev === null) {
+      ep.t_offset = -t64 / POD.TICK_HZ;              // t = 0 at the very first sample
+      return;
+    }
+    ep.t_offset = prev.t_offset + (ep.wall_base - prev.wall_base) / 1000;
+    if (ep.t_offset + t64 / POD.TICK_HZ <= this.last_t + 0.001) {
+      ep.t_offset = this.last_t + 0.001 - t64 / POD.TICK_HZ;
+      this.stats.clock_clamped += 1;
+      this.onEvent("clock-clamped", null);
+    }
+  }
+
+  // ---- what the phone writes ----
+  /** The STREAM command to write now (Uint8Array), or null while the phone must not stream. */
+  command() {
+    if (this.ignoring || this.need_info) return null;
+    const ep = this.ep;
+    this.stop = null;                   // a STREAM command cancels a pending STOP wait
+    this.cmd_seq = (this.cmd_seq + 1) & 0xFF;
+    if (ep !== null && (ep.next_idx !== null || ep.is_reboot)) {
+      const from = ep.next_idx !== null ? ep.next_idx : 0;
+      this.cmd = { op: POD.OP_STREAM_FROM, seq: this.cmd_seq, from, started: false };
+      const b = new Uint8Array(10);
+      const dv = new DataView(b.buffer);
+      dv.setUint8(0, POD.OP_STREAM_FROM); dv.setUint8(1, this.cmd_seq);
+      dv.setUint32(2, ep.boot_id, true); dv.setUint32(6, from, true);
+      return b;
+    }
+    this.cmd = { op: POD.OP_STREAM_LIVE, seq: this.cmd_seq, back: POD.LIVE_BACK, started: false };
+    return new Uint8Array([POD.OP_STREAM_LIVE, this.cmd_seq, POD.LIVE_BACK & 0xFF, POD.LIVE_BACK >> 8]);
+  }
+
+  /** STOP. Starts the stop wait: resolve on the "stopped" event. */
+  stopCommand() {
+    const st = this.ep ? this.ep.status : null;
+    this.stop = { head: st ? st.head : null, timed_out: false };
+    return new Uint8Array([POD.OP_STOP]);
+  }
+
+  /** How long to wait for the stream_stopped STATUS (docs/ble.md 7, Stop), ms. */
+  stopWaitMs() {
+    const ep = this.ep;
+    const st = ep ? ep.status : null;
+    if (st === null || st.n_per_packet < 4 || ep.next_idx === null) return 2500.0;
+    const behind = Math.max(0, st.head - ep.next_idx) + 1.2 * ep.odr;
+    return 2500.0 + behind / (60 * st.n_per_packet) * 1000;
+  }
+
+  /** No stream_stopped in time: fault, the stream stays open. False if the wait was over. */
+  stopTimedOut() {
+    if (this.stop === null || this.stop.timed_out) return false;
+    this.stop.timed_out = true;
+    this._fault("stop timed out");
+    return true;
+  }
+
+  /** The session is over: a stream still open gets a lower-bound tail to the last head heard. */
+  finish() {
+    const ep = this.ep;
+    if (ep !== null && ep.open) {
+      const kind = this.stop !== null ? "stop-tail" : "lost-tail";
+      this._close(ep, ep.status ? ep.status.head : null, ep.status_t64, kind, true);
+    }
+    this.stop = null;
+  }
+
+  /** Arrival-clock ms of sample time t (the latest wallBase of the epoch t came from). */
+  wallAt(t) {
+    const eps = this.epochs.filter((e) => e.first_t !== null);
+    let ep = eps[0];
+    for (let i = eps.length - 1; i >= 0; i--) if (eps[i].first_t <= t) { ep = eps[i]; break; }
+    return ep.wall_base + (t - ep.t_offset) * 1000;
   }
 }

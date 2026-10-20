@@ -33,13 +33,19 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
    python make_fake_reps.py && python make_fake_reps.py nopause && python make_fake_reps.py drift
    python make_fake_reps.py lifts && python demos/bench_jcurve.py --save
    python make_fake_session.py && python make_fake_session.py joined
+   python make_fake_pod.py
    cd ..
    node webapp/test/parity.mjs
+   node webapp/test/pod.mjs
    ```
    Every line must say PASS (ROM within 1 mm, MCV within 0.005 m/s, same flags). Each
    file is also checked cut off partway, which is what the live app sees mid-set. On
    Windows the venv Python is `analysis\.venv\Scripts\python`; set `PYTHON` to it if
-   `python` isn't the venv one.
+   `python` isn't the venv one, as an **absolute** path (parity.mjs runs Python from
+   another folder, so a relative one fails with ENOENT). The pod's Bluetooth decoder
+   follows the same rule: `analysis/podlink.py` first, then `PodStream` in
+   `webapp/sources.js`; `make_fake_pod.py` (31 scenarios) writes the vectors and `pod.mjs`
+   requires the JS to match them bit for bit. The protocol itself: `docs/ble.md`.
 2. **One sample format for every source** (decision D4):
    `{ t, ax, ay, az, gx, gy, gz }`. `t` in seconds from the source's own clock (sensor
    or device timestamp, never arrival time), acceleration in m/s² *including gravity*,

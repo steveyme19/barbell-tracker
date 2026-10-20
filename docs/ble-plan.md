@@ -13,6 +13,12 @@
   bugs must each fail a scenario). Changes against the plan below: the stop design (a timeout
   keeps the stream open; `finish()` records the lower-bound tail), `command()` refuses while
   ignoring, the rebase bound is the STATUS latency spread (+12 / +20 ms measured), not 1 ms.
+- **Step 3 done** (2026-10-20): `POD`, `decodeFrame` and `PodStream` in `webapp/sources.js`, a
+  line-for-line port; `webapp/test/pod.mjs` replays all 31 scenarios' vectors and requires the
+  same samples (bit for bit), gaps, counters, faults, events, command bytes and stop timings.
+  31/31 on the first run; parity.mjs still all PASS. JS mutation test: 28/30 planted bugs
+  caught, the other 2 provably equivalent (no input can tell them apart); 3 scenarios were
+  added to the bench to catch bugs that only the Python-side checks saw before.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
