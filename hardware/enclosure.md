@@ -275,3 +275,5 @@ board 20.955 x 17.780). Distances from the USB-C board edge / the D0-D6 edge, in
   `batt_wire_l` gap, run forward over the cell in the 2 mm `batt_gap`, and come up through
   the window to the pads. They don't need the tray's wire hole: that was only for routing
   battery + through the switch.
+
+- **No switch (2026-10-19):** removed the switch cradle, its lever slot and recess (case and lid), the `sw_*` parameters, and the tray's wire hole (it was half covered by the cradle, and the wires don't need it: they reach the BAT pads through the window under the board). `boss` back to 6 mm. To turn the pod off, unplug the battery (lid off). A switch can come back in a v2 if that gets annoying. Offline checks: 31/31 pass. **Rerun pod_v1, then pod_export + stl_orient.py**: the STLs in `stl/` are from before this and before the IMU move.
