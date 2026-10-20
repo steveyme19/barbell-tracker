@@ -10,8 +10,9 @@ Why it's built this way: D27 in `docs/decisions.md`. Build order and tests:
 32-bit sample index and its own crystal timestamp when it's read, and waits in a RAM ring
 (38 s). After every connect or reconnect the phone says where to resume. A dropout shorter
 than the ring loses nothing; a longer one loses an exact, counted number of samples, which is
-never filled in. (One exception: if the pod sleeps or resets while disconnected, the phone can
-only count the loss up to the last head it saw, a lower bound; section 7.)
+never filled in. (Exceptions, marked as lower bounds: the pod sleeps or resets while
+disconnected, or a STOP is never answered; the phone can only count up to the last head it
+heard; section 7.)
 
 Audited 2026-10-19 (3 auditors + skeptics, then a coverage check and a fresh-eyes implementer
 pass); every confirmed finding is folded in.
@@ -102,7 +103,8 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
   consecutive pair of samples.
 - The pod never lets a dt pass 60000 ticks (1.83 s): it ends the frame early instead.
 - **A frame is built once** and, if notify() finds no free slot, resent byte-identical (same
-  pkt_seq, same samples) until it's accepted. The same goes for STATUS.
+  pkt_seq, same samples) until it's accepted. The same goes for STATUS. A STREAM command
+  discards a built-but-unsent DATA frame (it belonged to the old stream).
 - Flags:
   - **RESYNC**: the first frame sent after a STREAM command. pkt_seq continuity restarts here.
     Stays pending until a frame carrying it is accepted by notify().
@@ -117,7 +119,8 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
     restart still in the ring (index >= lo; restarts are >= 1 s apart, so at most ~40) and always
     starts a frame there, also when resending the ring after an outage, so a resent backlog
     carries the flag again.
-  - **FINAL**: the last DATA frame of a STOP or a sleep drain, if one is sent. No empty frame is
+  - **FINAL**: the last DATA frame of a STOP or a sleep drain, if one is sent, and only on a
+    frame built after the drain started (best effort). No empty frame is
     ever sent to carry it: with nothing pending, or a sleep drain cut short, there is no FINAL
     frame. The STATUS that follows (stream_stopped or going_to_sleep, with head) is the end
     marker. **Decoders never wait for FINAL.**
@@ -196,7 +199,10 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
 
 - **Sizing.** `mtu_eff = min(ATT MTU, 247)`, `n_max = min(16, (mtu_eff - 3 - 14) / 14)`,
   recomputed for every frame from the current MTU. MTU 247 -> 16 samples (238 B, 13.2 frames/s
-  at 211 Hz, 3.1 kB/s); MTU 185 -> 12; MTU 73 -> 4; MTU 23 -> 0. The clamp to 247 is needed
+  at 211 Hz, 3.1 kB/s); MTU 185 -> 12; MTU 73 -> 4; MTU 23 -> 0. Keeping up needs
+  211 / n_max frames/s: 13 at n_max 16, but 53 at n_max 4, which a slow link (40-80 ms per
+  notification) can't do; the ring then laps the cursor over and over, every lost sample
+  counted as overflow (test bench, stop-capped-tail). Real phones give MTU 247. The clamp to 247 is needed
   because after a pod-initiated exchange Bluefruit stores the peer's server_rx_mtu (e.g. 517,
   BLEConnection.cpp:353) while the real ATT MTU is 247.
 - **MTU too small.** While `n_max < 4` (MTU below 73) the pod sends no DATA and sets STATUS
@@ -246,39 +252,55 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   phone sees it at once instead of after the 4 s timeout), waiting at most 500 ms for the
   disconnect to complete; then the D26 sleep. Samples between the last sent frame and the final
   head are the phone's `sleep-tail` gap.
+- During the prologue the pod ignores CTRL writes. A disconnect during the sleep drain skips
+  the STATUS and goes straight to sleep.
 - **Wake** is a reboot (new boot_id, index 0). The ring fills from the first sample, so
   `STREAM_FROM(new boot, 0)` delivers the pickup that woke it.
 
 ## 7. Phone side (the PodStream contract)
 
-`podlink.py` and the JS PodStream implement exactly this; for the same frames in the same order
-they emit the same samples, gaps and stats.
+`analysis/podlink.py` is the reference (P1) and the JS PodStream ports it line for line. For the
+same input (frames, commands, STOP and timer calls, in the same order) they give the same
+samples, gaps, stats, faults, events and command bytes; `analysis/make_fake_pod.py` writes the
+vectors that prove it.
 
-- **Connection order, every connect and reconnect:** read INFO, read STATUS, enable STATUS
-  notifications, enable DATA notifications, then write the STREAM command. Feed every frame of
-  any type (reads included), in arrival order, with its arrival time in ms (browser
-  `Date.now()`, app `SystemClock.elapsedRealtime()`), into one decoder.
+- **Connection order, every connect and reconnect:** read INFO, read STATUS (await each read),
+  enable STATUS notifications, enable DATA notifications, then write the STREAM command if
+  `command()` returns one. Feed every frame of any type (reads included), in arrival order,
+  with its arrival time in ms (browser `Date.now()`, app `SystemClock.elapsedRealtime()`), into
+  one decoder. The order matters: a STATUS read arriving after DATA would carry an old head and
+  look like a reboot (below).
 - **Input checks.** A frame with an unknown type, or the wrong length for its type (DATA not
-  14 + 14n with n = 1..16, STATUS not 20, INFO not 32), is dropped and counted (`bad`). CAL is
-  ignored in v1. INFO with proto != 1 or boot_id 0 is a fault and is ignored. Reserved bytes
-  and unused flag bits are ignored. Scale: INFO's accel_lsb / gyro_lsb, or the section 1
-  constants when INFO's value is not finite or <= 0.
+  14 + 14n with n = 1..16, STATUS not 20, INFO not 32, CAL not 64), is dropped and counted
+  (`bad`). CAL is ignored in v1. Reserved bytes and unused flag bits are ignored. Scale:
+  INFO's accel_lsb / gyro_lsb, or the section 1 constants when INFO's value is not finite or
+  <= 0.
+- **Ignoring.** The decoder ignores (and counts, `ignored`) every STATUS and DATA, and
+  `command()` returns None, from any of these until the next good INFO (proto 1, boot_id != 0,
+  the session's serial): an INFO with a different serial (fault `another pod`), an INFO with
+  proto != 1 or boot_id 0 (fault `bad INFO (proto or boot_id)`), a boot_mismatch STATUS (below).
+  The first good INFO sets the session's serial.
 - **Epochs**, one per boot_id. STATUS and DATA carry no boot_id: they belong to the epoch of
-  the last INFO fed in, and frames before the first INFO are dropped and counted. INFO with the
-  boot_id of the newest epoch = a reconnect (the epoch continues); a new boot_id starts a new
-  epoch. INFO with a different serial than the session's is a fault (another pod): the decoder
-  ignores every frame until an INFO with the session's serial, and the phone sends that pod no
-  STREAM.
+  the last INFO fed in; frames before the first INFO are dropped and counted (`pre_info`). INFO
+  with the boot_id of the newest epoch = a reconnect (`reconnects` + 1; the epoch continues); a
+  new boot_id starts a new epoch.
 - **Defensive reboot check.** Within one epoch, a STATUS whose head is below nextIdx, or whose
   ticks64(ticks_now) is more than 2 x 32768 ticks below the epoch's last sample, means the pod
   rebooted without a new boot_id (the pod sends STATUS and DATA in build order, so a real head
-  is never below what was already delivered). That STATUS starts a new epoch and is its first
-  STATUS; raise a fault and send `STREAM_FROM(boot_id, 0)`. A boot_mismatch STATUS is exempt.
+  is never below what was already delivered). That STATUS starts a new epoch (same boot_id, a
+  reboot) and is its first STATUS; fault `reboot without a new boot_id`, event `need-command`
+  (the app answers with `command()`, unless it's about to write one anyway in the connection
+  order).
+- **boot_mismatch.** A STATUS with boot_mismatch means the last INFO was stale, so everything
+  since it came from another boot: restore the epoch's latest STATUS, tick reference and clock
+  window to what they were at that INFO (a reconnect INFO keeps a snapshot until the first DATA
+  of the next command), keep nextIdx, raise fault `boot mismatch` and event `need-info`, and
+  ignore the link until INFO is read again.
 - **Ticks.** Per epoch, the first STATUS sets `ref32 = ticks_now`, `ref64 = ticks_now`. Each
   later STATUS moves it: `ref64 += int32(ticks_now - ref32)`, then `ref32 = ticks_now` (int32 of
   the u32 difference: `(x | 0)` in JS). Every sample tick and every ticks_now is unwrapped as
   `ticks64 = ref64 + int32(ticks - ref32)`. DATA arriving before its epoch's first STATUS is
-  held, in order, until it arrives (the connection order reads STATUS first, so it's momentary).
+  held, in order, until it arrives.
 - **Clock.** Each epoch keeps its own window of its last 32 STATUS frames (empty when the epoch
   starts), and `wallBase = min(arrival_ms - ticks64(ticks_now) / 32.768)` over that window (the
   lowest-latency frame wins). Every sample: `t = tOffset + ticks64 / 32768`. tOffset is set
@@ -287,54 +309,82 @@ they emit the same samples, gaps and stats.
   - a later epoch: `tOffset = prev.tOffset + (wallBase - prev.wallBase) / 1000`, where prev is
     the most recent epoch that emitted a sample, with its latest wallBase. If that puts the
     epoch's first sample at or before `lastT + 0.001`, set tOffset so it lands exactly at
-    `lastT + 0.001` and raise a clock-clamped event.
+    `lastT + 0.001`, count `clock_clamped` and raise event `clock-clamped`.
+  - Expect the new epoch to land ~10-20 ms late: right after a reconnect its window holds only
+    2-3 STATUS frames, so its lowest latency is higher than the old epoch's (32 frames). The
+    test bench measures +12 and +20 ms with a 7.5-37.5 ms link. It only shifts time across a
+    wake (the rest timer), never samples within a boot.
   - `wallAt(t) = wallBase + (t - tOffset) x 1000` with the latest wallBase of the epoch the
     sample came from.
-- **Streams.** The PodStream builds each STREAM command itself (`command()`), with the next
-  cmd_seq, and remembers it as the current command. A stream is **open** from the first DATA
-  frame carrying the current cmd_seq until a STATUS with stream_stopped or going_to_sleep.
+- **Streams.** `command()` builds each STREAM command with the next cmd_seq (the first one is
+  1) and makes it the current command; it also cancels a pending STOP wait. A stream is
+  **open** from the first DATA frame carrying the current cmd_seq until a STATUS with
+  stream_stopped or going_to_sleep closes it.
   - DATA with any other cmd_seq is stale (a stream the phone already replaced): dropped and
-    counted, no gap, pkt_seq untouched.
+    counted (`stale`), no gap, pkt_seq untouched.
   - The first frame of the current cmd_seq sets the start. After `STREAM_FROM(boot, X)`: nextIdx
     = X. After `STREAM_LIVE`: nextIdx = that frame's first_idx if the epoch has no nextIdx yet
-    (no gap); otherwise it keeps its nextIdx (a jump forward is a `resync` gap, see below).
+    (no gap); otherwise it keeps its nextIdx (a jump forward is a `resync` gap, below).
   - Within an open stream, samples whose index is below nextIdx are duplicates: dropped per
-    sample, the rest of the frame kept. Each kept sample sets nextIdx = its index + 1.
-  - A STATUS with boot_mismatch: raise a fault, keep nextIdx, read INFO again before sending
-    another command.
-- **Gaps are never filled.** A gap record is `{kind, n, idx, t0, t1}`.
+    sample (`dupes`), the rest of the frame kept. Each kept sample sets nextIdx = its index + 1.
+  - DATA of the current cmd_seq after its stream closed is dropped and counted (`after_close`),
+    without a pkt_seq check: everything below the close's head was already counted as a tail,
+    so these can only be samples given up on (a pod bug if it ever happens).
+  - A sample whose t is not above the last emitted t is a pod bug: dropped, counted
+    (`t_backwards`), fault `time went backwards` (once); nextIdx still moves past it.
+- **Gaps are never filled.** A gap record is `{kind, n, idx, t0, t1}` (plus `lower_bound: true`
+  where marked below).
   - A forward index jump (first kept sample's index > nextIdx) is a gap with n = the jump and
     idx = nextIdx (the first missing index): kind `overflow` if the frame has OVERFLOW (it wins
     over resync); `resync` if it's the RESYNC frame of a STREAM_LIVE in an epoch that already
-    had a nextIdx (a deliberate skip); otherwise `unexplained` (a protocol bug: tests require 0).
-  - A time hole with no index jump is any consecutive pair of kept samples, inside a frame or
-    across frames, more than `1.5 x 32768 / odr_nominal` ticks apart (236 ticks at 208: one
-    missed data-ready is a hole). Kind `imu-restart` if the later sample is sample 0 of an
-    IMU_RESTART frame, otherwise `imu`. n = round(dt x odr_nominal / 32768) - 1 (an estimate;
-    dt in ticks), idx = the later sample's index.
+    had a nextIdx (a deliberate skip); otherwise `unexplained`, which also raises fault
+    `unexplained gap` (a protocol bug: every scenario requires 0 except the one that injects a
+    lost frame).
+  - A time hole with no index jump is a pair of kept samples with consecutive indices (idx =
+    the previous kept index + 1), inside a frame or across frames, more than
+    `1.5 x 32768 / odr_nominal` ticks apart (236 ticks at 208: one missed data-ready is a hole).
+    Kind `imu-restart` if the later sample is sample 0 of an IMU_RESTART frame, otherwise `imu`.
+    n = floor(dt x odr_nominal / 32768 + 0.5) - 1 (an estimate; dt in ticks; .5 rounds up, like
+    JS `Math.round`), idx = the later sample's index.
   - t0 and t1 are the t of the kept samples on either side. With no earlier kept sample in the
     epoch, t0 = the previous emitting epoch's last t, or t1 if there is none.
-  - **Closing.** A STATUS with stream_stopped or going_to_sleep closes an open stream: if
-    `head - nextIdx > 0`, that's a `stop-tail` / `sleep-tail` gap (idx = nextIdx, n = the
-    difference, t0 = the last kept sample's t, t1 = the t of that STATUS's ticks_now, unwrapped
-    and mapped like a sample); then nextIdx = head. On a closed stream these STATUS frames
-    record nothing. If the epoch never emitted a sample, the tail gap has t0 = t1 = null.
+  - **Closing.** A STATUS with going_to_sleep always closes the open stream (the ring dies with
+    the sleep): if `head - nextIdx > 0`, a `sleep-tail` gap. A STATUS with stream_stopped closes
+    it with a `stop-tail` gap the same way, except when it belongs to a stream the phone already
+    replaced: if the current command hasn't started and the open stream was opened by an older
+    cmd_seq, it's dropped and counted (`stale_stops`) and changes nothing (the new STREAM_FROM
+    fetches those samples again). A tail gap has idx = nextIdx, n = head - nextIdx, t0 = the
+    last kept sample's t, t1 = the t of that STATUS's ticks_now (unwrapped and mapped like a
+    sample); if the epoch never emitted, t0 = t1 = null. Then nextIdx = head. Every closing
+    STATUS counts `stopped` and raises event `stopped` (`stop` / `sleep`); going_to_sleep also
+    raises `sleep` with the reason.
   - **Lost tail.** A new epoch starting while the old epoch's stream is open (the pod slept or
     reset while disconnected) records a `lost-tail` gap in the old epoch from nextIdx to its
-    latest STATUS head, marked as a lower bound (t1 = the t of that STATUS's ticks_now).
-- **pkt_seq**: kept per epoch, starting undefined. For every non-stale DATA frame (fully
-  duplicated ones included): a RESYNC frame or an undefined prev just sets prev. Otherwise
-  pkt_seq must equal `(prev + 1) & 0xFFFF`; if not, count one pktSeqGap and add
-  `(pkt_seq - prev - 1) & 0xFFFF` to pktSeqLost. Then prev = pkt_seq.
-- **What to send:** a fresh session `STREAM_LIVE(600)`; after a reconnect
+    latest STATUS head, `lower_bound: true` (the phone can't know how far the pod got).
+- **pkt_seq**: kept per epoch, starting undefined. For every non-stale DATA frame of an open
+  stream (fully duplicated ones included): a RESYNC frame or an undefined prev just sets prev.
+  Otherwise pkt_seq must equal `(prev + 1) & 0xFFFF`; if not, count one `pkt_seq_gaps` and add
+  `(pkt_seq - prev - 1) & 0xFFFF` to `pkt_seq_lost`. Then prev = pkt_seq.
+- **What to send** (`command()`): a fresh session `STREAM_LIVE(600)`; after a reconnect
   `STREAM_FROM(boot_id, nextIdx)`, or `STREAM_LIVE(600)` again if the epoch has no nextIdx yet
   (the link dropped before the first frame); after a reboot `STREAM_FROM(new boot_id, 0)`.
-- **Stop:** create the stopped wait just before writing STOP. It resolves on the next STATUS
-  with stream_stopped or going_to_sleep, and fails on a disconnect. Wait
-  `2.5 s + (head - nextIdx) / (60 x n_per_packet) s`, with head and n_per_packet from the latest
-  STATUS (1 s longer than the pod's own cap; with n_per_packet < 4 the pod answers at once,
-  so the wait is 2.5 s). On timeout: record a `stop-tail` gap from nextIdx
-  to the latest STATUS head, close the stream, raise a fault.
+  Returns None while ignoring (above).
+- **Stop.** `stop_command()` returns the STOP bytes and starts the stop wait. The wait ends on
+  the next closing STATUS (event `stopped`) or when a STREAM command cancels it. Wait
+  `2.5 s + (max(0, head - nextIdx) + 1.2 x odr_nominal) / (60 x n_per_packet) s`, with head and
+  n_per_packet from the latest STATUS (the pod's cap plus 1 s, with the head up to 1 s stale);
+  2.5 s when n_per_packet < 4 (the pod answers at once) or nextIdx is unset. On timeout
+  (`stop_timed_out()`): fault `stop timed out`, and the stream **stays open**, so a late
+  stream_stopped still closes it exactly. `finish()` (the app ends the session or tears the link
+  down) closes a still-open stream with a tail up to the latest STATUS head, `lower_bound:
+  true`: kind `stop-tail` if a STOP was pending, else `lost-tail`.
+- **Counters** (all start at 0): samples, bad, pre_info, ignored, stale, stale_stops,
+  after_close, dupes, t_backwards, pkt_seq_gaps, pkt_seq_lost, reconnects, epochs,
+  clock_clamped, stopped. **Faults** (strings, in order): another pod, bad INFO (proto or
+  boot_id), boot mismatch, reboot without a new boot_id, unexplained gap, time went backwards,
+  stop timed out. **Events**: epoch, gap, fault, stopped, sleep, need-command, need-info,
+  mtu-too-small, clock-clamped. The app, not the decoder, turns a mtu_too_small still set 3 s
+  after connect into a user-facing fault (the decoder has no connect time).
 - **Output:** D4 samples `{t, ax, ay, az, gx, gy, gz}` in index order. t is in seconds on the
   device clock, t = 0 at the first sample the PodStream emits (for STREAM_LIVE(600) the oldest
   lead-in sample, about 2.8 s before Start, not the Start press).

@@ -2,6 +2,18 @@
 
 **Status:** this is a read-only design. Nothing was built, flashed or run. The two judges picked different winners. This plan uses **PodLink v1** for the protocol and firmware architecture (judge 1's pick) and builds it in the **MVP-first order** (judge 2's pick), so real pod samples reach the app at step 6. It applies every must_fix item from both judges and the grafts listed for them.
 
+## Progress
+
+- **Step 1 done** (2c8a779): docs/ble.md, D27, android.md A4.
+- **Step 2 done** (2026-10-20): `analysis/podlink.py` (reference decoder) and
+  `analysis/make_fake_pod.py` (pod simulator, link, 29 scenarios, exact index accounting against
+  the simulator's truth, replay from the log, vectors `data/fake_pod_*.csv`). Checked by an
+  independent decoder written from the spec alone (matched 16/17 scenarios bit for bit; the
+  difference was a spec gap, fixed), a 34-finding review, and a mutation test (planted decoder
+  bugs must each fail a scenario). Changes against the plan below: the stop design (a timeout
+  keeps the stream open; `finish()` records the lower-bound tail), `command()` refuses while
+  ignoring, the rebase bound is the STATUS latency spread (+12 / +20 ms measured), not 1 ms.
+
 ## 0. Corrections from the spec audit (2026-10-19)
 
 `docs/ble.md` is the spec and wins wherever this plan differs. The audit (3 auditors plus
