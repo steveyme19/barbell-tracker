@@ -269,6 +269,30 @@ counter, 2.8% slow).
 - *Wake threshold 2* (62.5 mg on the slope filter), from real pickup data, not the datasheet
   alone. Details and bench results: firmware/README.md.
 
+**D27 (2026-10-19): the pod talks BLE with PodLink v1 (spec: docs/ble.md).**
+*What:* a custom GATT service (DATA, CTRL, STATUS, INFO, CAL stub), raw int16 samples with a
+32-bit sample index and crystal ticks, 16 samples per notification at MTU 247. The pod keeps a
+38 s ring; after every (re)connect the phone asks to resume from an index, so short dropouts
+lose nothing and longer ones lose an exact, counted number of samples.
+*Why:*
+- Roadmap 1.4 asks to prove no samples are dropped, and reps.js would quietly integrate across a
+  hole, so loss has to be counted and flagged at the source, not guessed from timing.
+- Raw counts + device ticks keep D4/D25 exact: BLE data equals the USB CSV, nothing assumes 208 Hz.
+- Phone side: one decoder (`PodStream` in sources.js, `podlink.py` as the reference, P1). The app
+  gets its own plain-Java Capacitor plugin, a dumb pipe that never parses frames. The community
+  plugin (`@capacitor-community/bluetooth-le`, named in android.md A4 before) is out: Kotlin, needs
+  a bundler (P3), one event per notification, reconnects from JS.
+- Link: 1M PHY, +4 dBm, 30-50 ms interval, 4 s timeout (range in a gym full of steel over speed).
+  The pod never blocks on the radio; sampling never waits for BLE.
+- Amends D26: from a STREAM command until STOP (a dropout keeps it), idle sleep after 30 min
+  (not 10) and no lid-down gesture; sleep first drains what it can in 1.5 s, tells the phone why
+  and where the stream ended, and disconnects.
+- Each STREAM command carries a cmd_seq that every DATA frame echoes, so the phone never has to
+  guess which frames answer which command.
+*Calls made with Quentin:* the 30 min hold; `pip install bleak` for the laptop receiver; app on
+Android 12+ only; no pairing in v1; pod data uncalibrated (~3% high) until roadmap 1.3.
+Build order and tests: docs/ble-plan.md.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

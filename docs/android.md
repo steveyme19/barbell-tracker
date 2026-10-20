@@ -177,10 +177,22 @@ can check it on the phone.
   phone had **Use vibration & haptics** off (Settings > Sound & vibration), which drops
   every app's vibration. Turn it on for the set and velocity-loss buzzes.
 
-## A4. Bluetooth to the XIAO (roadmap 4.1)
+## A4. Bluetooth to the XIAO (roadmap 1.4 / 4.1)
 
-- `@capacitor-community/bluetooth-le` for `BleSource` in the app, Web Bluetooth in the
-  browser. Same sample format, timestamps from the device (roadmap phase 1 rules).
+Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
+
+- **Browser** (desktop Chrome, Android Chrome): Web Bluetooth, `PodWebSource` in sources.js.
+  A "Connect pod" tap picks the pod (Web Bluetooth needs a user gesture). Reconnects only
+  while the page is visible.
+- **App**: our own plain-Java Capacitor plugin `PodLinkPlugin` (no new dependency, Java 25 safe)
+  and `PodNativeSource` in sources.js. Java is a dumb pipe: it connects, subscribes and hands
+  raw frames to JS in batches (base64, every 50 ms); it never parses them. The one decoder is
+  the `PodStream` in sources.js. Reconnects with `autoConnect` work with the screen off while
+  RecordingService keeps the process alive (to be checked, step 12 of the plan).
+- **Not** `@capacitor-community/bluetooth-le` (named here before): Kotlin, needs a bundler
+  (P3), one event per notification, reconnects from JS.
+- Permissions: Android 12+ only (`BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`),
+  `bluetooth_le` feature not required. Same D4 sample format, device timestamps.
 
 ## Later
 
