@@ -84,8 +84,7 @@ P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a r
   (~6 mA more than needed): moving data-ready to an interrupt is part of the BLE rework.
 - **P0.14 at boot (patched 2026-10-19):** Seeed's `initVariant()` drove it HIGH on every boot
   and wake until `setup()` set it LOW, a few ms (P0.31 up to ~3.6 V through 1 MOhm, < 1 uA).
-  The installed core is patched to drive it LOW: `%LOCALAPPDATA%\Arduino15\packages\Seeeduino\hardware
-rf52.1.13ariants\Seeed_XIAO_nRF52840_Senseariant.cpp`
+  The installed core is patched to drive it LOW: `%LOCALAPPDATA%\Arduino15\packages\Seeeduino\hardware\nrf52\1.1.13\variants\Seeed_XIAO_nRF52840_Sense\variant.cpp`
   (original kept as `variant.cpp.orig`). `flash.py` refuses to build if a core update reverts
   it; redo the one-line change after updating the core. Checked: the guard accepts the patched
   core and refuses Seeed's original.
