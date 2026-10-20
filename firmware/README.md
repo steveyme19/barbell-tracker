@@ -5,6 +5,7 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 
 | sketch | what |
 |---|---|
+| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management: auto-sleep after 10 min still (wake on motion via the IMU's wake-up interrupt), lid-down for 3 s = sleep now, low-battery cutoff at 3.30 V (sleeps with the IMU off until USB or reset), 100 mA charging, battery/charging status lines every ~30 s. BLE comes next (roadmap 1.4). |
 | `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py` |
 
 ## Flashing from the terminal
@@ -39,3 +40,21 @@ them: the 6-position calibration (roadmap 1.3) fixes it. Axis directions:
 - Every sample gets a device timestamp. Every BLE packet gets a sequence counter.
 - Sample timing comes from a timer, the IMU data-ready signal, or the IMU FIFO.
   Never `delay()`.
+
+## Board facts (Seeed wiki + Seeed's KiCad project for the Sense, 2026-10-19)
+
+| what | pin | notes |
+|---|---|---|
+| battery read enable | P0.14 (`VBAT_ENABLE`, D14) | **keep LOW**. HIGH or floating lets P0.31 rise past its 3.6 V limit |
+| battery voltage | P0.31 (`PIN_VBAT`, D32) | divider VBAT -1M- P0.31 -510k- P0.14: VBAT = V(P0.31) x 1510/510 = x 2.961. ~340 kOhm source: use `analogSampleTime(40)` (default 3 us reads low). LOW P0.14 costs ~2.8 uA |
+| charge current | P0.13 (`PIN_CHARGING_CURRENT`, D22) | floating (INPUT) = 50 mA, OUTPUT LOW = 100 mA (R12 2.7k to the BQ25101 ISET). The wiki's "low current" example drives it HIGH; the text says floating, `pod` follows the text |
+| charging status | P0.17 (D23) | LOW while charging (also lights the red CHG LED) |
+| IMU power | P1.08 (`PIN_LSM6DS3TR_C_POWER`, D15) | the I2C pull-ups hang off it too |
+| IMU interrupt 1 | P0.11 (`PIN_LSM6DS3TR_C_INT1`, D18) | wake-up / tap / data-ready; INT2 isn't connected |
+| RGB LED | red P0.26 (D11), green P0.30 (D13), blue P0.06 (D12) | active LOW |
+| QSPI flash (P25Q16H, 2 MB) | SCK P0.21, CS P0.25, IO0-3 P0.20/24/22/23 | send 0xB9 (deep power-down) before System OFF, as Seeed's sleep example does |
+| bootloader / stuck upload | | reset once; if that fails double-tap reset; then replug |
+
+Standby: Seeed quotes < 5 uA. GPIO states hold through System OFF, which is why P0.14 LOW,
+P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a reset
+(`setup()` runs again); `NRF_POWER->RESETREAS` says why (OFF = GPIO/motion, VBUS = USB).
