@@ -10,6 +10,10 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 
 ## Flashing from the terminal
 
+**Use `python firmware/flash.py [sketch] [port]`** (default `pod`, port found by USB ID). It first
+checks the installed core still drives P0.14 LOW at boot (the patch below) and refuses to build
+if a core update undid it, then compiles and uploads. The raw arduino-cli command still works:
+
 arduino-cli ships inside Arduino IDE 2
 (`%LOCALAPPDATA%\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe`):
 
@@ -78,6 +82,10 @@ P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a r
 - Not measured yet (no battery wired, no meter): sleep current, battery reading accuracy, the
   low-battery cutoff on a real cell. Awake, the tight data-ready poll keeps the CPU busy
   (~6 mA more than needed): moving data-ready to an interrupt is part of the BLE rework.
-- **P0.14 at boot:** Seeed's `initVariant()` (variant.cpp:62-63) drives it HIGH on every boot
-  and wake until `setup()` sets it LOW, a few ms. P0.31 then sits at most ~3.6 V through 1 MOhm
-  (< 1 uA). Only patching the installed core avoids it.
+- **P0.14 at boot (patched 2026-10-19):** Seeed's `initVariant()` drove it HIGH on every boot
+  and wake until `setup()` set it LOW, a few ms (P0.31 up to ~3.6 V through 1 MOhm, < 1 uA).
+  The installed core is patched to drive it LOW: `%LOCALAPPDATA%\Arduino15\packages\Seeeduino\hardware
+rf52.1.13ariants\Seeed_XIAO_nRF52840_Senseariant.cpp`
+  (original kept as `variant.cpp.orig`). `flash.py` refuses to build if a core update reverts
+  it; redo the one-line change after updating the core. Checked: the guard accepts the patched
+  core and refuses Seeed's original.
