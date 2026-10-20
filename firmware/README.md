@@ -5,7 +5,7 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 
 | sketch | what |
 |---|---|
-| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management: auto-sleep after 10 min still (wake on motion via the IMU's wake-up interrupt), lid-down for 3 s = sleep now, low-battery cutoff at 3.30 V (sleeps with the IMU off until USB or reset), 100 mA charging, battery/charging status lines every ~30 s. BLE comes next (roadmap 1.4). |
+| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management (D26): auto-sleep after 10 min still on battery, wake on motion via the IMU's wake-up interrupt; lid-down and still for 6 s = sleep now (only when no PC has the port open); below 3.30 V on battery it sleeps with the IMU off until USB or reset; 100 mA charging; a battery/charging status line about every 30 s. Bench commands over USB: `s` sleep, `o` sleep with the IMU off, `w` dry run of `s`. BLE comes next (roadmap 1.4). |
 | `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py` |
 
 ## Flashing from the terminal
@@ -58,3 +58,26 @@ them: the 6-position calibration (roadmap 1.3) fixes it. Axis directions:
 Standby: Seeed quotes < 5 uA. GPIO states hold through System OFF, which is why P0.14 LOW,
 P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a reset
 (`setup()` runs again); `NRF_POWER->RESETREAS` says why (OFF = GPIO/motion, VBUS = USB).
+
+### pod bench results (2026-10-19, USB only, no battery fitted)
+
+- Streams at 210 to 211 Hz, crystal timestamps, same CSV as imu_serial.
+- Sleep / wake: `s` -> System OFF and stays off (20 s, 3 times); a gentle, slow pickup wakes it
+  (`RESETREAS 0x10000`, OFF/GPIO); the lid-down gesture (port closed) sleeps it, picking it up
+  wakes it; `o` stays off until reset or USB replug; reset reads `0x1`, replug `0x0`.
+- **Instant re-wake bug, fixed empirically:** entering System OFF within ~1 ms of clearing the
+  IMU's wake latch woke it immediately 4/4 times (DETECT, INT1 measured low just before); with
+  time between the clear and OFF it stayed asleep every time since. The 10 s dry run (`w`)
+  never saw INT1 fire, old or new settle, so the root cause is still open. The code now waits
+  ~10 samples, then clears until INT1 stays low for 2 samples, then goes off.
+- Wake threshold from data: real pickups (9 recordings, decimated to the IMU's 12.5 Hz sleep
+  rate) peak at 114 to 437 mg on the slope filter, so `WAKE_THS` 2 (62.5 mg, 1.8x margin on the
+  gentlest) instead of 3 (1.2x). Dry runs at 2: 5/5 quiet.
+- `woke by` uses the core's `readResetReason()`: the core's `init()` saves RESETREAS and clears
+  it before `setup()`.
+- Not measured yet (no battery wired, no meter): sleep current, battery reading accuracy, the
+  low-battery cutoff on a real cell. Awake, the tight data-ready poll keeps the CPU busy
+  (~6 mA more than needed): moving data-ready to an interrupt is part of the BLE rework.
+- **P0.14 at boot:** Seeed's `initVariant()` (variant.cpp:62-63) drives it HIGH on every boot
+  and wake until `setup()` sets it LOW, a few ms. P0.31 then sits at most ~3.6 V through 1 MOhm
+  (< 1 uA). Only patching the installed core avoids it.

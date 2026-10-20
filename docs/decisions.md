@@ -255,6 +255,20 @@ because every sample carries its own time (D4); nothing should assume 208 Hz.
 Recordings made before this: `-1950-desk` (micros, quantized) and `-1954-timing` (IMU
 counter, 2.8% slow).
 
+**D26 (2026-10-19): device power management in firmware/pod.**
+- *Sleep = System OFF* (a reset on wake), woken by the IMU's own wake-up detector on INT1 (P0.11)
+  at 12.5 Hz low-power (~9 uA): the nRF needs nothing running to watch for the bar moving.
+- *Auto-sleep after 10 min still*, not less: rests between heavy sets run 3 to 5 min.
+- *Manual sleep = lid-down and still for 6 s* instead of a double-tap: a rerack clang or a plate
+  hitting the bar can look like a double-tap, but the pod is never lid-down on a sleeve end
+  (Adapter A). On the shaft saddle (Adapter B) a rolled bar could do it, hence the long hold; and
+  it's off while a PC has the port open (recordings, calibration faces).
+- *Low battery: 3.30 V, 3 readings 5 s apart, on battery only* -> sleep with the IMU off; only
+  USB or reset wakes it, so the cell can't be run flat. Charging stays at 100 mA (0.25 C on
+  400 mAh) so a flat pod is full in ~4 h.
+- *Wake threshold 2* (62.5 mg on the slope filter), from real pickup data, not the datasheet
+  alone. Details and bench results: firmware/README.md.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
