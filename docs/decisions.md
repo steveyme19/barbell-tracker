@@ -293,6 +293,33 @@ lose nothing and longer ones lose an exact, counted number of samples.
 Android 12+ only; no pairing in v1; pod data uncalibrated (~3% high) until roadmap 1.3.
 Build order and tests: docs/ble-plan.md.
 
+**D28 (2026-10-23): every BLE notification goes out on DATA; the pod reads the IMU with
+hardware-sequenced I2C.** Two findings from the first BLE build (ble-plan step 5), both measured
+on the bench with the laptop as the receiver.
+*What:*
+- STATUS frames are notified on the DATA characteristic. STATUS stays readable (read only, no
+  notify). The phone subscribes to DATA only. Decoders unchanged: every frame already starts with
+  its type and goes through one decoder in arrival order.
+- The pod's sample poll reads the IMU through `imuRead()` in pod.ino: TWIM1 runs the whole
+  transaction (address, repeated start, read, stop) on hardware shortcuts. Wire stays for setup.
+*Why:*
+- Windows (WinRT: bleak, and Chrome on Windows) handed over a STATUS after a DATA frame the pod
+  had sent later, about 1 in 1500 notifications. The decoder read the old head as a reboot
+  without a new boot_id and asked for index 0: 17354 samples counted as lost that weren't. Over
+  the air the order was right (one SoftDevice queue). Within one characteristic Windows kept the
+  order: thousands of frames, 0 pkt_seq breaks.
+- With the radio on, the poll lost about 1 sample every 2 s, while only advertising too. Measured:
+  no CPU stall (status polls never more than 2.4 ms apart), no I2C error; one of the IMU's two
+  data-ready flags skipped a period. The rate followed radio activity (20 ms fast advertising vs
+  152.5 ms slow) and not TX power (+4 and -20 dBm the same). Cause: Wire triggers STOP from the
+  CPU after the last byte; a SoftDevice or BLE-task preemption right then holds the bus with SCL
+  low, and the IMU skips that output update. With the shortcuts: 0 misses.
+- The GATT table freezes at this build, so the STATUS change had to land now.
+*Also measured (Windows 11, Intel radio):* MTU 247, data length 251, 45 ms interval, and Windows
+moves the link to 2M PHY by itself; the pod accepts it ("stay on 1M" only means the pod never
+asks). Bluetooth audio on the same laptop (headphones) starves its BLE scanning: the pod was
+invisible until they were disconnected.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

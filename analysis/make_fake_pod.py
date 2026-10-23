@@ -76,7 +76,7 @@ class Pod:
         # link / stream state
         self.connected = False
         self.mtu = 23
-        self.data_on = self.status_on = False
+        self.data_on = False              # the phone subscribed to DATA (STATUS rides on it too)
         self.streaming = False
         self.hold = False
         self.cursor = 0
@@ -148,11 +148,10 @@ class Pod:
         self.status_due.append(self.status_frame(extra_flags, head))
 
     def notify(self, frame, is_data):
-        """True if a notify slot was free (docs/ble.md 5: 3 in flight, never block)."""
-        if is_data and not self.data_on:
-            return False
-        if not is_data and not self.status_on:
-            return True                   # only updates the readable value, counts as sent
+        """True if a notify slot was free (docs/ble.md 5: 3 in flight, never block). STATUS and
+        DATA both go out on the DATA characteristic, so they arrive in the order sent."""
+        if not self.data_on:
+            return not is_data            # STATUS only updates the readable value, counts as sent
         if self.inflight >= 3:
             return False
         self.inflight += 1
@@ -260,7 +259,7 @@ class Pod:
         self.connect_wall = self.b.now
         self.mtu = self.b.mtu if self.b.native_mtu else 23
         self.mtu_done = self.b.native_mtu
-        self.data_on = self.status_on = False
+        self.data_on = False
         self.next_status_wall = self.b.now + 1000
 
     def on_disconnect(self):
@@ -352,6 +351,7 @@ class Bench:
         self.stop_deadline = None
         self.note = None
         self.held_seen = False
+        self.status_blind_until = None   # test-only: a receiver that misses STATUS frames until then
 
     def new_pod(self, boot_id, wake, tick_start=None):
         kw = dict(self.pod_kw)
@@ -393,6 +393,8 @@ class Bench:
             if self.pod and self.pod.connected:
                 self.pod.tx_complete()
             if kind == "frame" and self.connected:
+                if frame[0] == pl.T_STATUS and self.status_blind_until is not None and self.now < self.status_blind_until:
+                    continue                  # test-only fault (connect sloppy=True)
                 self.feed(frame, d)
         while self.up and self.up[0][0] <= self.now:
             _, b = self.up.pop(0)
@@ -423,9 +425,10 @@ class Bench:
 
     def connect(self, info=None, sloppy=False):
         """Connect and run the connection order (docs/ble.md 7): read INFO, read STATUS,
-        subscribe STATUS then DATA, write the STREAM command if command() gives one.
-        sloppy (test-only): a phone that skips the STATUS read and subscribes to STATUS 1.5 s
-        after DATA, so DATA arrives before the epoch's first STATUS and must be held."""
+        subscribe to DATA (it carries STATUS too), write the STREAM command if command() gives one.
+        sloppy (test-only): a phone that skips the STATUS read and whose stack misses the STATUS
+        frames of the first 1.5 s, so DATA arrives before the epoch's first STATUS and must be
+        held (the decoder's defensive path: the pod itself always sends a STATUS first)."""
         self.connected = True
         self.pod.on_connect()
         self.run(15)
@@ -435,15 +438,13 @@ class Bench:
             self.run(round(self.latency()))
             self.feed(status, self.now)
             self.run(15)
-            self.pod.status_on = True
+        else:
+            self.status_blind_until = self.now + 1530
         self.run(15)
         self.pod.data_on = True
         # a reboot-recovery request from the STATUS read is answered by this command
         self.events = [e for e in self.events if e[0] != "need-command"]
         self.command()
-        if sloppy:
-            self.run(1500)
-            self.pod.status_on = True
 
     def disconnect(self):
         """Link loss: frames on the air are gone, the pod stops streaming (keeps the hold)."""

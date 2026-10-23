@@ -2,4 +2,4 @@ numpy
 pandas
 matplotlib
 openpyxl   # reads phyphox Excel exports
-# bleak  (phase 1, BLE)
+bleak>=3.0  # BLE: ble_check.py, later log_ble.py (D27)

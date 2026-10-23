@@ -37,6 +37,43 @@
   - **Gotcha:** the first `i` cut the IMU's power, and the board hung (port up, no output):
     a powered-down IMU most likely holds the I2C bus and Wire waits forever. Nothing in the
     pod notices that today, so step 8 should add the watchdog (WDT) as well.
+- **Step 5 done** (2026-10-23): `firmware/pod/ble.ino` (GATT table, advertising, the sender,
+  the CTRL queue, STATUS, the link-setup timeline, the session hold) and `analysis/ble_check.py`
+  (the bench check from the laptop with bleak; the chrome://bluetooth-internals list, scripted).
+  - **Changed against this plan** (a 4-reader audit of the installed Bluefruit52Lib, then the
+    bench): connect / disconnect come from the event callback (the Periph callbacks are
+    deferred and can be dropped); loop() never holds a `BLEConnection*` (the BLE task deletes it
+    at a disconnect) and calls the SoftDevice directly with values the event callback cached;
+    notifications use `sd_ble_gatts_hvx` (Bluefruit's `notify()` waits up to 100 ms for a slot
+    and races a disconnect); the CTRL and CCCD callbacks run inline in the BLE task.
+  - **D28, two bench findings:** STATUS frames are notified on DATA (Windows reordered
+    notifications across characteristics about 1 in 1500, and the decoder took a late STATUS
+    for a reboot); the IMU poll lost about 1 sample every 2 s with the radio on, fixed with
+    hardware-sequenced I2C (`imuRead()`), 0 since.
+  - Link on Windows 11: MTU 247, data length 251, 45 ms interval, 2M PHY (Windows asks, the pod
+    accepts), 16 samples per frame, 15.7 frames/s. Free heap after `begin()` 72.7 KB, so the
+    ring stays at 8192.
+  - `ble_check.py` all PASS: advertisement and UUID, the 5 characteristics and their properties,
+    INFO / CAL / STATUS reads, STATUS on DATA at 1 Hz, boot_mismatch, STREAM_LIVE through
+    PodStream (no gaps, no faults), a disconnect plus STREAM_FROM resume with nothing lost, STOP
+    with head = last index + 1 and no DATA after it.
+  - Soaks: advertising only, 600 s on USB: 126,256 samples, 210.42 Hz, 0 gaps, dt std
+    0.042 ms (the single I2C status read halved the polling floor; step 4 had 0.052 to 0.056;
+    this one ran on the build before the review fixes). Streaming for 600 s with the USB log
+    running, on the final build: BLE 126,832 samples in 7,927 frames of 238 B (13.2/s), the
+    decoder saw 0 gaps, 0 faults and 0 pkt_seq gaps, and the resume and the STOP were exact; USB
+    117,838 samples, 0 gaps, dt std 0.054 ms (over the 0.05 target, under the 0.1 fail line:
+    BLE-task preemption between the status read and the stamp; step 8 stamps in the ISR).
+  - Review (4 lenses, a skeptic each, 16 findings confirmed), all fixed but one: `imuRead()` left
+    the TWIM events set, so Wire's next transfer lost its bytes without an error (the sleep
+    setup's gyro-off write; the `w` dry run now reads CTRL1_XL / CTRL2_G back: 0x10 / 0x0); the
+    readable STATUS echoed event bits (it broke boot_mismatch recovery); the conn-param request
+    fired at subscribe time (unsigned wrap); DATA could go out before the STATUS that reports a
+    new n_max; ble_check checks that could pass vacuously. Left open, documented in ble.md 4:
+    `lost_overflow` can undercount after a lap plus a disconnect with frames in flight.
+  - Unchanged and known: a PC that holds the port open without reading stalls loop() (a
+    blocking `Serial.print`); step 8's `usbDrain()` gates on `availableForWrite()`.
+  - Bluetooth headphones on the laptop starve its BLE scanning: disconnect them for these tests.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
@@ -147,7 +184,7 @@ The firmware uses only Bluefruit52Lib, which ships with core 1.1.13. Flash with 
 | 9ba40001 | service | in the advertisement | |
 | 9ba40002 | DATA | Notify, `setMaxLen(244)`. Read `SECMODE_OPEN`, because Bluefruit copies the read permission to the CCCD's write permission (BLECharacteristic.cpp:296). Write `NO_ACCESS`. | up to 238 B |
 | 9ba40003 | CTRL | write with response | up to 16 B |
-| 9ba40004 | STATUS | read + notify | 20 B |
+| 9ba40004 | STATUS | read (notified STATUS frames go out on DATA, D28) | 20 B |
 | 9ba40005 | INFO | read, written once in setup | 32 B |
 | 9ba40006 | CAL | read; a stub until 1.3 (byte 0 = 0x30, byte 1 = 0 means "none") | 64 B |
 
@@ -396,7 +433,7 @@ New `#` lines, all printed from loop(): ble connected / disconnected with the re
 **`setup()`:**
 1. `gatt.connect()`, then get the service and its 5 characteristics.
 2. Feed `await info.readValue()`, then `await status.readValue()`, into the stream.
-3. Start notifications on STATUS, then DATA, with a handler calling `stream.frame(e.target.value, Date.now())`. Read the value synchronously in the handler.
+3. Start notifications on DATA only (it carries the STATUS frames too, D28), with a handler calling `stream.frame(e.target.value, Date.now())`. Read the value synchronously in the handler.
 4. `writeValueWithResponse(stream.command())`.
 
 `start()` resolves on the first DATA frame. After 10 s it fails with the reason from STATUS when there is one.
@@ -429,7 +466,7 @@ This meets endSession's "flushed before resolve" contract.
 3. `requestMtu(247)`
 4. read INFO
 5. read STATUS (both forwarded as frames)
-6. STATUS CCCD, then DATA CCCD (API 33+ `writeDescriptor(d, value)`; older: `setValue` + `writeDescriptor`)
+6. The DATA CCCD, the only one (STATUS frames ride on DATA, D28) (API 33+ `writeDescriptor(d, value)`; older: `setValue` + `writeDescriptor`)
 7. resolve `{name, address, mtu, wallMs, elapsedMs}`
 
 **Other methods and events.**
@@ -541,7 +578,7 @@ RecordingService stays type health; add connectedDevice before any Play Store bu
   - In chrome://bluetooth-internals (built in, zero install):
     - BarPod-XXXX advertises 9ba40001 with 5 characteristics;
     - INFO reads `20 01 ...`, and boot_id changes after a reset;
-    - STATUS notifies at 1 Hz with the USB flag;
+    - after subscribing to DATA, STATUS frames (type 0x10) arrive on it at 1 Hz with the USB flag;
     - subscribe to DATA and write `02 58 02` to CTRL: 238 B values starting `01 10`, about 13 per second;
     - write `03`: a STATUS with stream_stopped.
   - USB shows `# link mtu 247 ...` for what Windows grants.
@@ -615,7 +652,7 @@ RecordingService stays type health; add connectedDevice before any Play Store bu
   - `npx cap sync android`, `cd android && gradlew.bat assembleDebug` (Java 25, no new dependency), `adb install -r app\build\outputs\apk\debug\app-debug.apk`.
   - In chrome://inspect: `Capacitor.Plugins.PodLink.connect()` shows the Nearby devices prompt once, waits for the answer, and resolves with mtu 247.
   - After a STREAM_LIVE write, a `pod` listener counts about 13 frames/s.
-  - adb logcat shows the MTU and both CCCD writes.
+  - adb logcat shows the MTU and the DATA CCCD write.
 
 **12. App source and screen-off soak.**
 - PodNativeSource and the native branch in app.js.

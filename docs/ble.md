@@ -55,12 +55,16 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
 | UUID | name | properties | length |
 |---|---|---|---|
 | `9ba40001-6de5-429c-b225-8134b9953e9d` | service | primary, in the advertisement | |
-| `9ba40002-...` | DATA | notify | `setMaxLen(244)`, frames up to 238 B |
+| `9ba40002-...` | DATA | notify: DATA and STATUS frames | `setMaxLen(244)`, frames up to 238 B |
 | `9ba40003-...` | CTRL | write with response | `setMaxLen(16)` |
-| `9ba40004-...` | STATUS | read, notify | `setFixedLen(20)` |
+| `9ba40004-...` | STATUS | read | `setFixedLen(20)` |
 | `9ba40005-...` | INFO | read | `setFixedLen(32)` |
 | `9ba40006-...` | CAL | read | `setFixedLen(64)` |
 
+- **One notification channel.** Every notified frame, DATA and STATUS, goes out on DATA, so the
+  phone subscribes to DATA only and gets the frames in the order the pod sent them. Windows
+  (WinRT, under bleak and Chrome) can deliver notifications of two characteristics out of order;
+  the decoder depends on arrival order (D28). STATUS stays readable.
 - **Set every length.** Bluefruit's default max length is 20 B (BLECharacteristic.cpp:43) and
   `write()` / `notify()` silently cut anything longer (:582, :715): without these lines INFO
   and CAL would read back as 20 B.
@@ -129,7 +133,7 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
 
 ### STATUS (0x10), 20 bytes
 
-Notified (when the phone has subscribed) every 1 s while connected, at once when USB or
+Notified on the DATA characteristic (when the phone has subscribed to it) every 1 s while connected, at once when USB or
 charging changes, in answer to every STREAM command before its first DATA, after a STOP has
 drained (or its drain was capped), and before sleep. The readable value is rebuilt every 1 s and at every connect, so a
 read is never more than 1 s old.
@@ -197,6 +201,11 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   pickup.
 - **Loss is counted once per index:** the pod keeps the end of the last counted range and only
   adds samples beyond it, so a repeated STREAM_FROM over the same range doesn't double-count.
+  Known gap (review, 2026-10-23): if the ring laps the cursor while frames are in flight and the
+  link then drops before they arrive, the phone's STREAM_FROM asks below that mark, and those
+  frames (at most 3 x n_max) are skipped without being counted. Only a slow link (MTU < 247)
+  laps while connected; the phone's own overflow gap still counts every sample exactly. To fix
+  with counted intervals instead of one mark, in make_fake_pod.py first (P1).
 
 ## 5. Link
 
@@ -223,8 +232,8 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   in flight (counted as sent minus TX-complete). A notify that finds no free slot is tried
   again on the next pass. A due STATUS goes before any further DATA (so the 1 s STATUS still
   gets out during catch-up, and the STATUS answering a STREAM command goes before its RESYNC
-  frame); the stream_stopped and going_to_sleep STATUS go after the last DATA. A STATUS whose
-  notifications are off only updates the readable value and counts as sent. Sampling never
+  frame); the stream_stopped and going_to_sleep STATUS go after the last DATA. With DATA notifications off, a
+  STATUS only updates the readable value and counts as sent. Sampling never
   waits for BLE.
 - **A disconnect ends the stream, not the session hold.** On disconnect the pod stops
   streaming (STATUS b3 = 0) and forgets its in-flight count (a dead link reports no
@@ -268,7 +277,7 @@ samples, gaps, stats, faults, events and command bytes; `analysis/make_fake_pod.
 vectors that prove it.
 
 - **Connection order, every connect and reconnect:** read INFO, read STATUS (await each read),
-  enable STATUS notifications, enable DATA notifications, then write the STREAM command if
+  enable DATA notifications (they carry STATUS too), then write the STREAM command if
   `command()` returns one. Feed every frame of any type (reads included), in arrival order,
   with its arrival time in ms (browser `Date.now()`, app `SystemClock.elapsedRealtime()`), into
   one decoder. The order matters: a STATUS read arriving after DATA would carry an old head and
@@ -289,7 +298,7 @@ vectors that prove it.
   new boot_id starts a new epoch.
 - **Defensive reboot check.** Within one epoch, a STATUS whose head is below nextIdx, or whose
   ticks64(ticks_now) is more than 2 x 32768 ticks below the epoch's last sample, means the pod
-  rebooted without a new boot_id (the pod sends STATUS and DATA in build order, so a real head
+  rebooted without a new boot_id (the pod sends STATUS and DATA in build order on one characteristic, so a real head
   is never below what was already delivered). That STATUS starts a new epoch (same boot_id, a
   reboot) and is its first STATUS; fault `reboot without a new boot_id`, event `need-command`
   (the app answers with `command()`, unless it's about to write one anyway in the connection
