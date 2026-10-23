@@ -19,6 +19,24 @@
   31/31 on the first run; parity.mjs still all PASS. JS mutation test: 28/30 planted bugs
   caught, the other 2 provably equivalent (no input can tell them apart); 3 scenarios were
   added to the bench to catch bugs that only the Python-side checks saw before.
+- **Step 4 done** (2026-10-23): `firmware/pod/podlink.h` (constants, UUIDs, the DATA / STATUS /
+  INFO packers), the 8192-sample ring in `pod.ino` (raw counts plus the extended RTC2 tick,
+  one `rtcExtend()` for the CSV and the frames), the USB packer behind `PKT_OVER_USB` (now
+  false), `podlink.py --usb` and `dt_stats.py`. On the board (COM14):
+  - 600 s: 126,253 CSV samples against 7,890 DATA frames, every one matched once, worst
+    |da| 0.00005 m/s^2 (print precision), index and pkt_seq continuous, STATUS / INFO ok, one
+    RTC2 wrap crossed, 210.42 Hz, 0 gaps.
+  - `--stall=20` (60 s, bench command `i` stops the IMU): one hole, excused by the next frame's
+    IMU_RESTART, STATUS and frames kept going during the outage, 0 other gaps.
+  - **dt std is 0.052 to 0.056 ms, packer on or off** (120 s each): over the 0.05 target, under
+    the 0.1 fail line. It's the polling floor (one I2C status read is ~0.1 ms), not the packer;
+    the step 8 data-ready interrupt is the fix.
+  - Review (7 findings, all fixed): `lost_overflow` now counts BLE loss only (`lostBle`), the
+    link and STATUS keep running on the IMU-miss path, the restart table has no duplicates,
+    `batt_low` only on battery power (spec amended).
+  - **Gotcha:** the first `i` cut the IMU's power, and the board hung (port up, no output):
+    a powered-down IMU most likely holds the I2C bus and Wire waits forever. Nothing in the
+    pod notices that today, so step 8 should add the watchdog (WDT) as well.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 

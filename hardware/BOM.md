@@ -31,7 +31,7 @@ Plans change, and phase 4 depends on what phase 3 finds.
 | USB-C cable, **data-capable** | 1.1 | have one? | Some USB-C cables only charge. If the board never shows up on the laptop, suspect the cable first. |
 | 2.54 mm male headers, breadboard, jumper wires | 1.6 | est. a few $ | Only needed once you wire something external (the laser). Solder headers onto one XIAO then. |
 | 3D-printed pod (case + lid) | 1.3 | filament | Holds the XIAO and LiPo. Its flat, square faces make it the calibration cube for the 6-position calibration and the full-turn gyro test. See [enclosure.md](enclosure.md). |
-| M2 + M3 heat-set inserts and screws | 1.3 | est. ~$10 for a kit | lid: 4 M2 inserts + 4 **M2 x 6 countersunk (flat-head)** screws; adapter interface: 2 M3 inserts |
+| M2 + M3 heat-set inserts and screws | 1.3 | est. ~$10 for a kit | lid: 4 M2 x 3 inserts (3.2 mm hole) + 4 **M2 x 5 countersunk (flat-head, ISO 7046 / DIN 965)** screws (x 6 bottoms out in the 4 mm hole); adapter interface: 2 M3 x 4 short inserts (4.0 mm hole) |
 | 3.7 V LiPo, ~400 mAh, **with protection circuit** | 1.5 | $9.15 each at Jameco (Adafruit #3898, sold in pairs) | JST-PH connector. Protection circuit cuts off at 3.0 V and blocks shorts. A spare is handy. The one on hand (2026-10-19) is a PL 602030, 30.5 x 19.7 x 7.6 mm measured, not the #3898 (enclosure.md). |
 | JST-PH 2-pin socket with pigtail wires | 1.5 | est. a few $ | The XIAO has battery solder pads, not a connector. Solder a socket on so the battery unplugs. |
 | *Optional:* TF-Luna lidar | 1.6 | $30.99 (Waveshare) | UART or I2C, 3.3 V logic (works with the XIAO directly). Needs a **3.7 to 5.2 V supply**, so power it from the XIAO's 5 V pin while on USB for the bench test. |
@@ -46,7 +46,7 @@ Battery life estimate: the XIAO streaming IMU data probably draws something like
 | item | step | price | notes |
 |---|---|---|---|
 | Hook-and-loop straps + zip ties | 2.1 | est. a few $ | temporary mount on the shaft |
-| Neodymium pot (cup) magnets, Ø16 x 4.5 countersunk M3, **3** (e.g. supermagnete CSN-ES-16), plus 3 M3 x 8 countersunk screws, 3 M3 inserts, 2 M3 x 10 socket head | 2.1 | est. a few $ each | sleeve-end adapter (O3), puck in pod_v1 (enclosure.md). Pot magnets hold far harder than plain disc magnets of the same size. Only on a steel end face. |
+| Neodymium pot (cup) magnets, Ø16 x 4.5 countersunk M3, **3** (e.g. supermagnete CSN-ES-16), plus 3 M3 x 8 countersunk screws (into the puck), 3 more M3 x 4 short inserts, 2 M3 x 10 socket head (DIN 912, puck to pod) | 2.1 | est. a few $ each | sleeve-end adapter (O3), puck in pod_v1 (enclosure.md). Pot magnets hold far harder than plain disc magnets of the same size. Only on a steel end face. |
 | 3D-printed bar adapters: sleeve-end puck, shaft saddle | 2.1 | filament | Screw to the pod. Shaft saddle uses the strap or a small hose clamp, plus a TPU or rubber pad. **Nothing loose on a loaded bar.** See [enclosure.md](enclosure.md). |
 | *Optional (2.8):* Pololu 5 V step-up regulator U1V11F5 | 2.8 | $7.95 (Pololu) | Runs the TF-Luna from the LiPo: 0.5 to 5.5 V in, 12 × 15 mm. Its SHDN pin can switch the laser off between sets. |
 

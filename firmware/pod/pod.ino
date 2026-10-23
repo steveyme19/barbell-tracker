@@ -15,11 +15,13 @@
 // One line per IMU sample:  t_us,ax,ay,az,gx,gy,gz  (t_us from RTC2 on the 32.768 kHz crystal,
 // D25; m/s^2 incl. gravity; deg/s). Lines starting with # are messages.
 // Bench commands over USB: s = sleep (wake on motion), o = sleep with the IMU off,
-// w = dry run of s (no System OFF; reports whether INT1 fires falsely).
+// w = dry run of s (no System OFF; reports whether INT1 fires falsely), i = stop the IMU's
+// sampling (no data-ready; after ~1 s the miss path restarts it: tests IMU_RESTART).
 
 #include <Adafruit_TinyUSB.h>  // USB serial on the Seeed nRF52 core
 #include <Wire.h>
 #include <LSM6DS3.h>
+#include "podlink.h"   // PodLink v1 frames and UUIDs (docs/ble.md)
 
 // ---- settings ----
 const uint16_t ODR_HZ = 208;           // IMU sample rate: 104, 208, 416 or 833
@@ -59,6 +61,27 @@ const float ADC_REF_V = 3.0;           // AR_INTERNAL_3_0
 LSM6DS3 imu(I2C_MODE, 0x6A);           // the Sense's built-in IMU (LSM6DS3TR-C)
 
 uint32_t rtcWraps = 0, rtcLast = 0;    // RTC2 timestamp unwrapping (D25)
+
+// ---- PodLink ring (docs/ble.md, docs/ble-plan.md step 4) ----
+const bool PKT_OVER_USB = false;       // step 4 bench test: DATA / STATUS / INFO frames as P / S / I
+                                       // hex lines next to the CSV (analysis/podlink.py --usb checks them)
+const uint32_t RING_N = 8192;          // samples, a power of two: 128 KiB, ~38.8 s at 211 Hz
+const uint32_t RING_MASK = RING_N - 1;
+PodSample ring[RING_N];
+uint32_t head = 0;                     // samples stored since boot = the next index
+uint32_t restartIdx[40];               // first index after each recent IMU restart
+uint8_t nRestart = 0;                  // how many of restartIdx are used (oldest dropped first)
+uint32_t bootId = 0;                   // random per boot (INFO)
+uint8_t wakeReason = 0;                // INFO: 0 power-on / upload, 1 motion, 2 USB, 3 reset pin
+uint32_t usbCursor = 0;                // next index the USB packer sends
+uint16_t usbPktSeq = 0;
+uint8_t usbFlags = 0;                  // RESYNC / OVERFLOW pending for the next USB frame
+uint32_t usbLost = 0;                  // USB-side loss: only the '# ring' line, never STATUS
+uint32_t lostBle = 0;                  // STATUS lost_overflow: the BLE stream's loss (step 5 on)
+const float LOW_BATT_WARN_V = 3.50;    // STATUS batt_low below this, on battery power only
+uint32_t lastRingLineMs = 0;
+bool usbWasOpen = false;
+uint32_t lastPodStatusMs = 0, lastPodInfoMs = 0;
 uint32_t lastMotionMs = 0;             // idle timer
 uint32_t faceDownSinceMs = 0;          // 0 = not lid-down right now
 float aRef[3];                         // slow average of the accel vector (motion = change from it)
@@ -101,6 +124,110 @@ void blink(uint8_t led, int times) {
   for (int i = 0; i < times; i++) {
     digitalWrite(led, LOW);  delay(80);
     digitalWrite(led, HIGH); delay(120);
+  }
+}
+
+// RTC2 counts 24 bits (wraps every 512 s): extend it. The one place that reads the counter for
+// a timestamp, so the CSV's t_us and the frames' ticks always agree.
+uint64_t rtcExtend() {
+  uint32_t ticks = NRF_RTC2->COUNTER;
+  if (ticks < rtcLast) rtcWraps++;
+  rtcLast = ticks;
+  return ((uint64_t)rtcWraps << 24) + ticks;
+}
+
+bool isRestart(uint32_t idx) {
+  for (uint8_t i = 0; i < nRestart; i++) if (restartIdx[i] == idx) return true;
+  return false;
+}
+
+// Print a frame as "<tag> <hex>" in one write (a P line is ~480 characters).
+void printFrame(char tag, const uint8_t* f, uint16_t len) {
+  static char line[3 + 2 * POD_DATA_MAX + 2];
+  static const char hx[] = "0123456789abcdef";
+  line[0] = tag;
+  line[1] = ' ';
+  for (uint16_t i = 0; i < len; i++) {
+    line[2 + 2 * i] = hx[f[i] >> 4];
+    line[3 + 2 * i] = hx[f[i] & 15];
+  }
+  line[2 + 2 * len] = '\n';
+  Serial.write(line, 3 + 2 * len);
+}
+
+// Step 4: pack the ring into DATA frames the same way the BLE sender will (docs/ble.md 5) and
+// print them on USB. Full frames of 16, or a part frame once its oldest sample is 80 ms old;
+// a frame always starts at an IMU restart and never spans more than 60000 ticks.
+void usbPack() {
+  bool open = (bool)Serial;
+  if (open && !usbWasOpen) {                                 // a PC just opened the port
+    usbCursor = head;
+    usbFlags = POD_F_RESYNC;
+  }
+  usbWasOpen = open;
+  if (!open) return;
+  for (int frames = 0; frames < 4; frames++) {
+    if (head - usbCursor > RING_N) {                         // the ring lapped us
+      usbLost += (head - RING_N) - usbCursor;
+      usbCursor = head - RING_N;
+      usbFlags |= POD_F_OVERFLOW;
+    }
+    uint32_t pending = head - usbCursor;
+    if (pending == 0) return;
+    uint8_t n = pending < POD_MAX_N ? pending : POD_MAX_N;
+    uint32_t t0 = ring[usbCursor & RING_MASK].ticks;
+    bool cut = false;
+    for (uint8_t k = 1; k < n; k++) {
+      uint32_t i = usbCursor + k;
+      if (isRestart(i) || ring[i & RING_MASK].ticks - t0 > POD_DT_MAX) { n = k; cut = true; break; }
+    }
+    uint32_t age = (uint32_t)rtcExtend() - t0;
+    if (n < POD_MAX_N && !cut && age < POD_AGE_TICKS) return;   // wait for a full frame
+    uint8_t flags = usbFlags | (isRestart(usbCursor) ? POD_F_IMU_RESTART : 0);
+    uint8_t f[POD_DATA_MAX];
+    uint16_t len = podPackData(f, ring, RING_MASK, usbCursor, n, usbPktSeq, flags, 0);
+    printFrame('P', f, len);
+    usbCursor += n;
+    usbPktSeq++;
+    usbFlags = 0;
+  }
+}
+
+void podStatusInfo(uint32_t now);
+
+// Everything the link does per loop pass, with or without a new sample (like the simulator's
+// send pass): pack frames, STATUS every 1 s, INFO every 5 s.
+void podLinkTick(uint32_t now) {
+  if (!PKT_OVER_USB) return;
+  usbPack();
+  podStatusInfo(now);
+}
+
+void podStatusInfo(uint32_t now) {
+  if (!Serial) return;
+  if (now - lastRingLineMs >= 30000) {                       // USB-side diagnostics, not STATUS
+    lastRingLineMs = now;
+    Serial.print("# ring head ");
+    Serial.print(head);
+    Serial.print(" usblost ");
+    Serial.print(usbLost);
+    Serial.print(" restarts ");
+    Serial.println(nRestart);
+  }
+  if (now - lastPodStatusMs >= 1000) {
+    lastPodStatusMs = now;
+    uint8_t flags = (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0) |
+                    (lastBattV < LOW_BATT_WARN_V && !usbPowered() ? POD_S_BATT_LOW : 0);
+    uint8_t f[20];
+    podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), head, lostBle, 0, 0,
+                  POD_MAX_N, 0);
+    printFrame('S', f, 20);
+  }
+  if (now - lastPodInfoMs >= 5000) {
+    lastPodInfoMs = now;
+    uint8_t f[32];
+    podPackInfo(f, 1, bootId, NRF_FICR->DEVICEID[0], ODR_HZ, RING_N, wakeReason);
+    printFrame('I', f, 32);
   }
 }
 
@@ -270,6 +397,19 @@ void setup() {
   // the core (reading the register here would always say "power on").
   uint32_t why = readResetReason();
   bool fromSleep = why & (POWER_RESETREAS_OFF_Msk | POWER_RESETREAS_VBUS_Msk);
+  wakeReason = (why & POWER_RESETREAS_OFF_Msk) ? 1 : (why & POWER_RESETREAS_VBUS_Msk) ? 2
+             : (why & POWER_RESETREAS_RESETPIN_Msk) ? 3 : 0;
+  // boot_id: random per boot, never 0. Step 4 has no SoftDevice, so use the RNG peripheral;
+  // step 5 switches to sd_rand_application_vector_get (docs/ble.md 3, INFO).
+  NRF_RNG->CONFIG = 1;                                       // bias correction on
+  NRF_RNG->TASKS_START = 1;
+  for (int i = 0; i < 4 || bootId == 0; i++) {
+    NRF_RNG->EVENTS_VALRDY = 0;
+    while (!NRF_RNG->EVENTS_VALRDY) {}
+    bootId = (bootId << 8) | NRF_RNG->VALUE;
+    if (i > 64) break;
+  }
+  NRF_RNG->TASKS_STOP = 1;
 
   Serial.begin(115200);
   uint32_t t0 = millis();
@@ -321,6 +461,10 @@ void loop() {
     if (c == 's') goToSleep(true, "command s");
     if (c == 'o') goToSleep(false, "command o");
     if (c == 'w') goToSleep(true, "command w (dry run)", true);
+    if (c == 'i') {                                          // bench: the IMU stops sampling
+      imu.writeRegister(REG_CTRL1_XL, 0x00);                 // (powered, bus fine, no data-ready)
+      imu.writeRegister(REG_CTRL2_G, 0x00);                  // -> 50 misses -> imuStart()
+    }
   }
 
   housekeeping(now);
@@ -338,24 +482,42 @@ void loop() {
     if (++imuMisses >= 50) {
       Serial.println("# IMU stopped answering, restarting it");
       imuMisses = 0;
-      if (!imuStart() && !usbPowered()) goToSleep(false, "IMU lost");
+      if (imuStart()) {
+        // frames start here (IMU_RESTART). No duplicates (a restart that gave no sample yet),
+        // forget restarts that already left the ring, and if it's still full drop the oldest.
+        uint32_t lo = head > RING_N ? head - RING_N : 0;
+        uint8_t keep = 0;
+        for (uint8_t i = 0; i < nRestart; i++) if (restartIdx[i] >= lo) restartIdx[keep++] = restartIdx[i];
+        nRestart = keep;
+        if (nRestart == 0 || restartIdx[nRestart - 1] != head) {
+          if (nRestart == 40) { memmove(restartIdx, restartIdx + 1, 39 * 4); nRestart--; }
+          restartIdx[nRestart++] = head;
+        }
+      } else if (!usbPowered()) {
+        goToSleep(false, "IMU lost");
+      }
     }
+    rtcExtend();                                             // keep counting RTC2 wraps
+    podLinkTick(now);                                        // the 80 ms flush and STATUS go on
     return;
   }
   imuMisses = 0;
 
-  uint32_t ticks = NRF_RTC2->COUNTER;                        // RTC2: 24 bits, unwrap it
-  if (ticks < rtcLast) rtcWraps++;
-  rtcLast = ticks;
-  uint32_t t = (uint32_t)((((uint64_t)rtcWraps << 24) + ticks) * 15625 / 512);   // ticks -> us
+  uint64_t ext = rtcExtend();                                // RTC2 ticks since boot, unwrapped
+  uint32_t t = (uint32_t)(ext * 15625 / 512);                // ticks -> us (wraps after ~71 min)
 
   uint8_t b[12];                                             // gyro x, y, z then accel x, y, z
   if (imu.readRegisterRegion(b, LSM6DS3_ACC_GYRO_OUTX_L_G, 12) != 0) return;
   float a[3], g[3];
+  PodSample& smp = ring[head & RING_MASK];
+  smp.ticks = (uint32_t)ext;                                 // u32: wraps after 36.4 h
   for (int k = 0; k < 3; k++) {
-    g[k] = imu.calcGyro((int16_t)(b[2 * k] | (b[2 * k + 1] << 8)));
-    a[k] = imu.calcAccel((int16_t)(b[6 + 2 * k] | (b[7 + 2 * k] << 8))) * G;
+    smp.g[k] = (int16_t)(b[2 * k] | (b[2 * k + 1] << 8));
+    smp.a[k] = (int16_t)(b[6 + 2 * k] | (b[7 + 2 * k] << 8));
+    g[k] = imu.calcGyro(smp.g[k]);
+    a[k] = imu.calcAccel(smp.a[k]) * G;
   }
+  head++;
 
   if (Serial) {
     Serial.print(t);
@@ -363,6 +525,7 @@ void loop() {
     for (int k = 0; k < 3; k++) { Serial.print(','); Serial.print(g[k], 3); }
     Serial.println();
   }
+  podLinkTick(now);
 
   // ---- motion (idle timer): the accel vector moved away from its slow average, or turning ----
   if (!aRefSet) { for (int k = 0; k < 3; k++) aRef[k] = a[k]; aRefSet = true; }

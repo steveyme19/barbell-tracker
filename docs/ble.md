@@ -116,9 +116,11 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
   - **IMU_RESTART**: sample 0 of this frame is the first sample after an IMU restart (50
     data-ready waits of 20 ms timed out in a row: about 1 s with no samples, pod.ino). The time
     hole is just before it, with no index jump. The pod remembers the first index after every
-    restart still in the ring (index >= lo; restarts are >= 1 s apart, so at most ~40) and always
+    restart still in the ring (index >= lo), in a table of 40 without duplicates, and always
     starts a frame there, also when resending the ring after an outage, so a resent backlog
-    carries the flag again.
+    carries the flag again. Best effort: an IMU that restarts more than 40 times inside the
+    ring loses the oldest entries, and the phone then calls those holes `imu` instead of
+    `imu-restart` (still counted).
   - **FINAL**: the last DATA frame of a STOP or a sleep drain, if one is sent, and only on a
     frame built after the drain started (best effort). No empty frame is
     ever sent to carry it: with nothing pending, or a sleep drain cut short, there is no FINAL
@@ -147,7 +149,8 @@ read is never more than 1 s old.
 
 Flags:
 - **State bits**, set in every STATUS while they hold: b0 USB power, b1 charging, b2 batt_low
-  (< 3.50 V), b3 streaming, b6 mtu_too_small.
+  (battery < 3.50 V while on battery power; never set on USB power, where the reading can be
+  the charger's), b3 streaming, b6 mtu_too_small.
 - **Event bits**, set only in the one STATUS that reports the event: b4 going_to_sleep,
   b5 stream_stopped, b7 boot_mismatch.
 
