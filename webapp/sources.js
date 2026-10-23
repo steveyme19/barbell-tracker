@@ -2,9 +2,9 @@
 // with t in seconds, acceleration in m/s^2 (including gravity), rotation in deg/s.
 // The algorithm and UI never know which source they're getting (decision D4).
 // NativeSensorSource is the Android app's phone sensor (docs/android.md A2). The pod's
-// Bluetooth stream (PodLink, docs/ble.md) is decoded by PodStream at the bottom of this file,
-// a line-for-line port of analysis/podlink.py checked by webapp/test/pod.mjs; the Web Bluetooth
-// and app sources that feed it come in docs/ble-plan.md steps 6 and 12.
+// Bluetooth stream (PodLink, docs/ble.md) is decoded by PodStream, a line-for-line port of
+// analysis/podlink.py checked by webapp/test/pod.mjs; PodWebSource (bottom) feeds it over Web
+// Bluetooth. The app's own Bluetooth source comes in docs/ble-plan.md step 12.
 
 /** Live phone sensor via DeviceMotion. Chrome typically delivers ~60 Hz. */
 export class PhoneSource {
@@ -123,7 +123,6 @@ export class ReplaySource {
 // PodLink v1: the pod's Bluetooth stream (docs/ble.md). A line-for-line port of
 // analysis/podlink.py (the reference, decision P1); webapp/test/pod.mjs checks it against the
 // Python test vectors (analysis/make_fake_pod.py). Pure code, no DOM: Node imports it too.
-// The Web Bluetooth and app sources that feed it come in steps 6 and 12 of docs/ble-plan.md.
 
 export const POD = {
   SERVICE: "9ba40001-6de5-429c-b225-8134b9953e9d",
@@ -541,5 +540,246 @@ export class PodStream {
     let ep = eps[0];
     for (let i = eps.length - 1; i >= 0; i--) if (eps[i].first_t <= t) { ep = eps[i]; break; }
     return ep.wall_base + (t - ep.t_offset) * 1000;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The pod over Web Bluetooth (desktop and Android Chrome, on https or localhost; docs/ble-plan.md
+// section 3 and step 6). Pick the pod with PodWebSource.pick() inside a click (the browser's
+// chooser needs the user gesture), then use it like any other source: start(), stop(). A new
+// PodWebSource per session gets its own PodStream, so t starts at 0 again. Reconnecting after a
+// dropout comes in step 10: today a lost link ends the stream ("link" event) and stop() counts
+// the tail.
+
+/** Bytes of a DataView or Uint8Array as lowercase hex (the capture's payload column). */
+const hexOf = (v) => Array.from(new Uint8Array(v.buffer, v.byteOffset, v.byteLength),
+  (b) => b.toString(16).padStart(2, "0")).join("");
+const sleepMs = (ms) => new Promise((res) => setTimeout(res, ms));
+// Which source owns each pod's connection. Two sources share one BluetoothDevice (a new session
+// after a failed one), and a connection is per device, so only the owner may disconnect it.
+const podOwners = new WeakMap();
+
+export class PodWebSource {
+  /** The browser's device chooser, filtered to pods. Call it from a click handler. */
+  static async pick() {
+    if (!globalThis.navigator?.bluetooth) {
+      throw new Error("This browser has no Web Bluetooth. Use Chrome (desktop or Android) or the app.");
+    }
+    return navigator.bluetooth.requestDevice({ filters: [{ services: [POD.SERVICE] }] });
+  }
+
+  /**
+   * device: from pick(). onEvent(kind, info): the PodStream events plus ("link", "lost").
+   * capture: keep every frame, command and call (the make_fake_pod.py log format, so
+   * podlink.py can replay it) and every decoded sample.
+   */
+  constructor(onSample, device, { onEvent = () => {}, capture = false, startTimeoutMs = 10000 } = {}) {
+    this.device = device;
+    this.onEvent = onEvent;
+    this.capture = capture ? { log: [], samples: [] } : null;
+    this.startTimeoutMs = startTimeoutMs;   // no first sample by then: start() fails (tests shorten it)
+    this.chars = null;
+    this.closed = false;                // close() ran: a setup still in flight must stop and touch nothing
+    this.linkLost = false;
+    this.cmdSent = false;               // a STREAM command went out (the pod holds the session)
+    this.gotData = null;                // resolves start() at the first sample
+    this.lostWait = null;               // fails start() when the link drops
+    this.stopped = null;                // resolves stop()'s wait at the stream_stopped STATUS
+    this.wake = null;                   // ends stop()'s wait early when the link drops
+    this.stream = new PodStream((s) => {
+      if (this.closed) return;
+      if (this.capture) this.capture.samples.push(s);
+      this.gotData?.();
+      onSample(s);
+    }, (kind, info) => this.event(kind, info));
+    this.onValue = (e) => { if (!this.closed) this.frame(e.target.value); };
+    this.onGone = () => {
+      this.linkLost = true;
+      this.lostWait?.();
+      this.wake?.();
+      if (!this.closed) this.onEvent("link", "lost");
+    };
+  }
+
+  /** After every await in the setup: a closed source (start() timed out) gives up here. */
+  alive() {
+    if (this.closed) throw new Error("The pod source was closed.");
+  }
+
+  get name() { return this.device.name || "pod"; }
+
+  log(kind, arrival, payload) {
+    this.capture?.log.push([kind, arrival, payload]);
+  }
+
+  /** One frame (a read or a notification) into the decoder, stamped on arrival. */
+  frame(dv) {
+    const t = Date.now();
+    this.log("frame", t, hexOf(dv));
+    this.stream.frame(dv, t);
+  }
+
+  event(kind, info) {
+    if (kind === "stopped") this.stopped?.();
+    // The decoder asks: the pod rebooted without a new boot_id, or our INFO was stale.
+    if (kind === "need-command") this.command().catch(() => {});
+    if (kind === "need-info") this.reread().catch(() => {});
+    this.onEvent(kind, info);
+  }
+
+  /** Connect and find the characteristics. Right after a disconnect (End, then Start at once)
+   * Chrome can hand back a connection that drops a moment later: try again, up to 3 times. */
+  async discover() {
+    for (let attempt = 1; ; attempt++) {
+      this.alive();
+      try {
+        const server = await this.device.gatt.connect();
+        // closed while connecting (start() timed out): drop this late connection, unless a newer
+        // source on this pod owns it now
+        if (this.closed && !podOwners.has(this.device)) this.device.gatt.disconnect();
+        this.alive();
+        const svc = await server.getPrimaryService(POD.SERVICE);
+        const ch = {};
+        for (const [k, u] of [["data", POD.DATA], ["ctrl", POD.CTRL], ["status", POD.STATUS], ["info", POD.INFO]]) {
+          ch[k] = await svc.getCharacteristic(u);
+        }
+        this.alive();
+        return ch;
+      } catch (err) {
+        if (this.closed || attempt >= 3) throw err;
+        await sleepMs(500 * attempt);
+      }
+    }
+  }
+
+  /** Connect and run the connection order (docs/ble.md 7). */
+  async setup() {
+    const ch = await this.discover();
+    this.chars = ch;
+    this.frame(await ch.info.readValue());
+    this.alive();
+    this.frame(await ch.status.readValue());
+    this.alive();
+    ch.data.addEventListener("characteristicvaluechanged", this.onValue);
+    this.device.addEventListener("gattserverdisconnected", this.onGone);
+    await ch.data.startNotifications();          // STATUS frames come on DATA too (D28)
+    this.alive();
+    await this.command();
+  }
+
+  async command() {
+    const b = this.stream.command();
+    this.log("cmd", "", b ? hexOf(b) : "none");
+    if (!b) throw new Error(`The pod can't stream: ${this.stream.faults.at(-1) ?? "not ready"}.`);
+    this.cmdSent = true;
+    await this.chars.ctrl.writeValueWithResponse(b);
+  }
+
+  async reread() {
+    this.frame(await this.chars.info.readValue());
+    this.frame(await this.chars.status.readValue());
+    await this.command();
+  }
+
+  /** Why no sample came, from the latest STATUS (start()'s 10 s timeout). */
+  whyNoData() {
+    const st = this.stream.ep?.status;
+    if (!this.chars) return "Couldn't reach the pod. Bump it to wake it, keep it close, and try again.";
+    if (st && (st.flags & POD.S_MTU_TOO_SMALL)) return "The pod's Bluetooth link is too small (MTU). Try again; if it stays, this browser can't carry the pod.";
+    if (this.stream.faults.length) return `Pod: ${this.stream.faults.at(-1)}.`;
+    return "The pod sent no data in 10 s.";
+  }
+
+  /** Resolves at the first sample; fails after 10 s (or when the link drops) with the reason. */
+  async start() {
+    podOwners.set(this.device, this);
+    let timer = null;
+    const first = new Promise((res) => { this.gotData = () => { this.gotData = null; res(); }; });
+    const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(this.whyNoData())), this.startTimeoutMs); });
+    const lost = new Promise((_, rej) => { this.lostWait = () => rej(new Error("The pod's link dropped while starting. Try again.")); });
+    const setup = this.setup();
+    setup.catch(() => {});                       // a setup that outlives the timeout fails quietly
+    try {
+      await Promise.race([setup.then(() => first), late, lost]);
+    } catch (err) {
+      // The pod already holds a session for this command: release it (best effort), or it
+      // keeps the 30 min idle limit for nothing (docs/ble.md 6).
+      if (this.cmdSent && !this.linkLost && this.chars && this.device.gatt.connected) {
+        await Promise.race([this.chars.ctrl.writeValueWithResponse(new Uint8Array([POD.OP_STOP])), sleepMs(1000)]).catch(() => {});
+      }
+      await this.close();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      this.lostWait = null;
+    }
+  }
+
+  /**
+   * STOP, wait for the pod's stream_stopped STATUS (everything up to its head has arrived, or
+   * the tail is counted as a gap), then disconnect. Resolves after the last sample.
+   */
+  async stop() {
+    const ch = this.chars;
+    if (ch && this.device.gatt.connected && !this.linkLost) {
+      let done = false;
+      let failed = false;
+      const stopped = new Promise((res) => { this.stopped = () => { done = true; res(); }; this.wake = res; });
+      const b = this.stream.stopCommand();
+      this.log("stop", "", hexOf(b));
+      const wait = this.stream.stopWaitMs();
+      try {
+        await ch.ctrl.writeValueWithResponse(b);
+        await Promise.race([stopped, sleepMs(wait)]);
+      } catch {
+        failed = true;                           // the link went: finish() counts the tail
+      }
+      this.stopped = this.wake = null;
+      // a real timeout only; a dropped link goes straight to finish() (docs/ble.md 7)
+      if (!done && !failed && !this.linkLost) this.log("call", "", `stop_timed_out=${this.stream.stopTimedOut() ? 1 : 0}`);
+    }
+    this.stream.finish();
+    this.log("call", "", "finish");
+    await this.close();
+  }
+
+  async close() {
+    this.closed = true;
+    this.device.removeEventListener("gattserverdisconnected", this.onGone);
+    const data = this.chars?.data;
+    this.chars = null;
+    const owner = podOwners.get(this.device) === this;
+    if (data) {
+      data.removeEventListener("characteristicvaluechanged", this.onValue);
+      // the characteristic is shared with any newer source on this pod: only the owner unsubscribes
+      if (owner) { try { await data.stopNotifications(); } catch { /* already gone */ } }
+    }
+    if (owner) {
+      podOwners.delete(this.device);
+      try { this.device.gatt.disconnect(); } catch { /* already gone */ }
+    }
+  }
+
+  wallAt(t) { return this.stream.wallAt(t); }
+
+  /** For the footer and pod.json: the latest STATUS, INFO-derived values and loss counts. */
+  linkInfo() {
+    const ep = this.stream.ep;
+    const st = ep?.status ?? null;
+    const lost = this.stream.gaps.filter((g) => !g.kind.startsWith("imu")).reduce((n, g) => n + g.n, 0);
+    return {
+      name: this.name, serial: this.stream.serial, bootId: ep?.boot_id ?? null, odr: ep?.odr ?? null,
+      ringN: ep?.ring_n ?? null, accelLsb: ep?.accel_lsb ?? null, gyroLsb: ep?.gyro_lsb ?? null,
+      perPacket: st?.n_per_packet ?? null, intervalMs: st ? st.interval * 1.25 : null,
+      volts: st ? st.battery_mv / 1000 : null, podLost: st?.lost_overflow ?? null,
+      lost, gaps: this.stream.gaps.length, faults: this.stream.faults.slice(), stats: { ...this.stream.stats },
+    };
+  }
+
+  /** The capture as a CSV in make_fake_pod.py's vector format (scenario "capture"). */
+  captureCSV() {
+    if (!this.capture) return "";
+    const rows = this.capture.log.map(([k, a, p], i) => `capture,${i},${k},${a},${p}`);
+    return ["scenario,step,kind,arrival_ms,payload", ...rows].join("\n") + "\n";
   }
 }

@@ -47,6 +47,14 @@ each; it buzzes per side. Live sessions then use corrected acceleration (D23).
 Tools (at the bottom): replay a recording (a long file shows up as sets; real time at
 1/10/30x, or all at once), the live acceleration plot and the sample rate.
 
+The pod (Chrome on a laptop or Android, https or localhost): tap **Connect pod**, pick
+`BarPod-XXXX` in the browser's list, then **Start session** as usual. The choice sticks
+(**Use the phone** switches back), but after a page reload the browser needs the Connect
+tap once more. The footer shows `pod BarPod-1A2B · 211 Hz · 16/pkt · 45 ms · lost 0 · gaps 0
+· 3.95 V`. Pod data is raw (no phone calibration) until roadmap 1.3. A dropped link ends the
+stream for now (End, then Start); reconnecting by itself is ble-plan step 10. Laptop: turn
+Bluetooth headphones off, they starve the scan (D28).
+
 ## Files
 
 | file | what |
@@ -58,11 +66,14 @@ Tools (at the bottom): replay a recording (a long file shows up as sets; real ti
 | `calib.js` | 6-face accelerometer calibration (D23), ported from `analysis/calib.py` |
 | `lv.js` | load-velocity profile + e1RM (D22), ported from `analysis/lv.py` |
 | `store.js` | session history in IndexedDB: a small record per session + each set's raw samples (history list, resume after the app was killed) |
-| `sources.js` | `PhoneSource` (DeviceMotion), `ReplaySource` (recordings). `BleSource` comes in phase 4. |
+| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`) and `PodWebSource` (the pod over Web Bluetooth) |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
 | `fileio.js` | read phyphox CSV/zip, write CSV |
 | `plot.js` | tiny canvas plotter |
 | `test/parity.mjs` | checks `reps.js` against `reps.py` |
+| `test/pod.mjs` | checks `PodStream` against `podlink.py` (31 simulator scenarios, bit for bit) |
+| `test/pod_web.mjs` | `PodWebSource`'s failure paths against a fake Bluetooth device |
+| `test/pod_browser.mjs` | bench: the real pod in real Chrome over the DevTools protocol (`--reps` for hand reps) |
 
 ## Architecture (decision D4)
 

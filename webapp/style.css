@@ -96,6 +96,7 @@ button, .file {
 }
 button.primary { background: var(--oxblood); border-color: var(--oxblood); color: #fff; }
 button:disabled { opacity: 0.4; cursor: default; }
+button.on { border-color: var(--line); border-width: 2px; font-weight: 600; }   /* the pod is the source */
 button.small { flex: 0 0 auto; min-height: 34px; font-size: 13px; padding: 0 12px; }
 .file input { display: none; }
 .replay .file { flex: 3 1 0; font-weight: 500; }

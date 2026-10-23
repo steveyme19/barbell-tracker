@@ -1,6 +1,6 @@
 // UI wiring: source -> session tracker (sets.js) -> rep algorithm -> UI (decision D4).
 // Session mode: start once, lift, and the tracker finds each set and the rest between.
-import { PhoneSource, NativeSensorSource, ReplaySource } from "./sources.js";
+import { PhoneSource, NativeSensorSource, ReplaySource, PodWebSource } from "./sources.js";
 import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles, recordInBackground, vibrateNative } from "./native.js";
 import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
@@ -51,11 +51,17 @@ let tickTimer = null;
 let wakeLock = null;
 let drawQueued = false;
 let sourceName = "";
+let sourceKind = "phone";     // sticky: "phone" or "pod" (localStorage "source")
+let podDevice = null;         // the pod picked with Connect pod (a page reload needs one more tap)
+let starting = false;         // a source is starting (the pod takes 1 to 10 s): no other session meanwhile
+let podSlept = false;         // the pod said it went to sleep: its disconnect is not a "link lost"
 
 // ---------- incoming data ----------
 
 function onSample(s) {
-  session.t0Wall ??= Date.now();      // wall clock at this tracker's time 0 (rest across a resume)
+  // wall clock at this tracker's time 0 (rest across a resume). The pod knows when each sample
+  // was taken; its first ones are the 2.8 s lead-in from before Start, so ask it.
+  session.t0Wall ??= source?.wallAt ? source.wallAt(s.t) - s.t * 1000 : Date.now();
   tracker.push(s);
   nSamples++;
   recent.push(s);
@@ -168,49 +174,124 @@ function newSession({ autosave, persist = false, from = null }) {
   live = null;
   recent = [];
   nSamples = 0;
+  lastHiddenRun = -Infinity;   // every new source starts its t again (the pod at 0)
   if (!from) $("setList").innerHTML = "";
   $("hint").textContent = "";
   $("hint").classList.remove("err");
 }
 
 async function startSession(from = null) {
-  if (!window.isSecureContext) {
-    showError("Motion sensors need HTTPS. Open the GitHub Pages link on your phone.");
+  const pod = sourceKind === "pod";
+  if (pod && !podDevice) {
+    showError("Tap Connect pod first (after a page reload the browser asks once more).");
     return;
   }
+  if (!window.isSecureContext) {
+    showError(pod ? "Bluetooth needs HTTPS (or localhost)." : "Motion sensors need HTTPS. Open the GitHub Pages link on your phone.");
+    return;
+  }
+  if (running || starting) return;
+  starting = true;
+  podSlept = false;
   $("resumeBar").hidden = true;
+  for (const id of ["startBtn", "podBtn", "phoneBtn", "fileInput", "calBtn"]) $(id).disabled = true;
   if (from) {
     newSession({ autosave: native, persist: true, from });
     await restoreSets(from);
   } else {
     newSession({ autosave: native, persist: true });
   }
-  session.ended = false;
-  persistSession();
-  askPersist();
-  // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
-  sourceName = native ? "phone (native)" : "phone";
-  // Calibrated acceleration for live sensors (D23); replays are played as recorded.
-  const feed = (s) => onSample(applyCalibration(s, cal));
-  source = native ? new NativeSensorSource(feed) : new PhoneSource(feed);
+  if (pod) {
+    // The pod: raw counts scaled by its INFO, no phone calibration (D27, until roadmap 1.3).
+    source = new PodWebSource(onSample, podDevice, { onEvent: onPodEvent, capture: Boolean(window.barDebug?.podCapture) });
+    sourceName = `pod ${source.name}`;
+    $("hint").textContent = "Connecting to the pod…";
+  } else {
+    // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
+    sourceName = native ? "phone (native)" : "phone";
+    // Calibrated acceleration for live sensors (D23); replays are played as recorded.
+    const feed = (s) => onSample(applyCalibration(s, cal));
+    source = native ? new NativeSensorSource(feed) : new PhoneSource(feed);
+  }
+  const mine = source;
   try {
-    await source.start();
+    await mine.start();
   } catch (err) {
+    starting = false;
+    for (const id of ["startBtn", "podBtn", "phoneBtn", "fileInput"]) $(id).disabled = false;
+    showSource();
+    if (from) $("resumeBar").hidden = false;       // the resume offer stays: try again
+    render();
     showError(err.message);
     return;
   }
-  // The calibration used, next to the set files, so the raw readings can be recovered.
-  if (cal && session.autosave) saveFile(session.folder, "calibration.json", JSON.stringify(cal, null, 1)).catch(() => {});
+  starting = false;
+  // Stored only once it runs: a failed start must not leave an empty "unfinished" session
+  // that hides the real one from the resume offer.
+  session.ended = false;
+  persistSession();
+  askPersist();
+  if (pod) $("hint").textContent = "";
+  // What the samples were scaled with, next to the set files, so the raw readings can be recovered.
+  if (pod && session.autosave) saveFile(session.folder, "pod.json", JSON.stringify(source.linkInfo(), null, 1)).catch(() => {});
+  else if (cal && session.autosave) saveFile(session.folder, "calibration.json", JSON.stringify(cal, null, 1)).catch(() => {});
   begin();
   // Screen-off recording. Android only allows starting it while the app is in front (you
   // just tapped Start, so it is). If it's refused, the session still runs with the screen on.
   if (native) recordInBackground(true).catch((err) => showError(`Screen-off recording didn't start, keep the screen on this session. (${err.message})`));
-  setTimeout(() => {
-    if (running && nSamples === 0) showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
-  }, 2000);
+  if (!pod) {
+    setTimeout(() => {
+      if (running && nSamples === 0) showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
+    }, 2000);
+  }
+}
+
+// What the pod's stream reports while it runs (step 10 adds reconnecting and banners).
+function onPodEvent(kind, info) {
+  if (kind === "fault") showError(`Pod: ${info}.`);
+  else if (kind === "sleep") {
+    podSlept = true;                                 // its deliberate disconnect follows
+    if (running) showError(`The pod went to sleep (${info}). Bump it to wake it, then Start again.`);
+  } else if (kind === "link" && running && !podSlept) {
+    showError("Pod link lost. Tap End session, then Start again (reconnecting by itself comes later).");
+  }
+}
+
+// ---------- the source: the phone's sensors or the pod ----------
+
+async function connectPod() {
+  if (running || starting) return;
+  if (!window.isSecureContext) { showError("Bluetooth needs HTTPS (or localhost)."); return; }
+  try {
+    podDevice = await PodWebSource.pick();           // the browser's chooser: needs this click
+    setSourceKind("pod");
+    $("hint").textContent = "";
+    $("hint").classList.remove("err");
+  } catch (err) {
+    // Chrome says NotFoundError both for a cancelled chooser and for no Bluetooth adapter
+    if (!(err.name === "NotFoundError" && /cancel/i.test(err.message))) showError(err.message);
+  }
+}
+
+function setSourceKind(kind) {
+  if (running || starting) return;
+  sourceKind = kind;
+  try { localStorage.setItem("source", kind); } catch { /* storage blocked */ }
+  showSource();
+}
+
+function showSource() {
+  const pod = sourceKind === "pod";
+  $("podBtn").textContent = pod && podDevice ? `Pod: ${podDevice.name}` : "Connect pod";
+  $("podBtn").classList.toggle("on", pod && Boolean(podDevice));
+  $("phoneBtn").hidden = !pod;
+  // The 6-face calibration is the phone's (D23); the pod's comes with roadmap 1.3.
+  $("calBtn").disabled = pod && !calRun;
+  $("calBtn").title = pod ? "Phone only: the pod's calibration comes with roadmap 1.3" : "";
 }
 
 async function startReplay(file) {
+  if (running || starting) return;
   let rec;
   try {
     rec = await parseRecording(file.name, await file.arrayBuffer());
@@ -234,6 +315,8 @@ function begin() {
   $("startBtn").disabled = true;
   $("endBtn").disabled = false;
   $("fileInput").disabled = true;
+  $("podBtn").disabled = true;
+  $("phoneBtn").disabled = true;
   scheduleAnalysis();
   tickTimer = setInterval(render, 1000);                 // the rest timer
   keepAwake();
@@ -251,6 +334,9 @@ async function endSession() {
   $("startBtn").disabled = false;
   $("endBtn").disabled = true;
   $("fileInput").disabled = false;
+  $("podBtn").disabled = false;
+  $("phoneBtn").disabled = false;
+  showSource();                // Calibrate again (phone source only)
   wakeLock?.release().catch(() => {});
   wakeLock = null;
   if (native) {
@@ -304,7 +390,7 @@ async function restoreSets(rec) {
 }
 
 async function viewSession(rec) {
-  if (running) return;
+  if (running || starting) return;
   session = sessionFromRecord(rec, { autosave: native && rec.autosave, persist: true });
   session.viewing = true;
   tracker = null;
@@ -637,7 +723,7 @@ function render() {
   } else {
     $("heroLabel").textContent = "Session";
     $("heroBig").textContent = "Start a session";
-    $("heroSub").textContent = "Clip the phone to the bar, tap Start, then just lift. Sets and rest are found automatically.";
+    $("heroSub").textContent = "Clip the pod (or the phone) to the bar, tap Start, then just lift. Sets and rest are found automatically.";
   }
 
   $("clock").textContent = running ? `● ${formatTime(now)}` : "Not recording";
@@ -691,7 +777,17 @@ function drawLive() {
 
 function updateFooter() {
   let rate = "--";
-  if (source instanceof PhoneSource && source.interval) {
+  if (source instanceof PodWebSource) {
+    // pod BarPod-1A2B · 211 Hz · 16/pkt · 45 ms · lost 0 · gaps 0 · 3.95 V
+    const n = recent.length;
+    const L = source.linkInfo();
+    const bits = [n > 10 ? `${Math.round((n - 1) / (recent[n - 1].t - recent[0].t))} Hz` : "--"];
+    if (L.perPacket !== null) bits.push(`${L.perPacket}/pkt`);
+    if (L.intervalMs) bits.push(`${Math.round(L.intervalMs)} ms`);
+    bits.push(`lost ${L.lost}`, `gaps ${L.gaps}`);
+    if (L.volts) bits.push(`${L.volts.toFixed(2)} V`);
+    rate = bits.join(" · ");
+  } else if (source instanceof PhoneSource && source.interval) {
     rate = `${Math.round(1000 / source.interval)} Hz (interval ${source.interval.toFixed(1)} ms)`;
   } else if (recent.length > 10) {
     // Measured from the sample timestamps, so it's the real rate, not the requested one.
@@ -737,7 +833,7 @@ function showFaces() {
 
 async function startCalibration() {
   if (calRun) { stopCalibration("Calibration cancelled."); return; }
-  if (running) { showError("End the session first."); return; }
+  if (running || starting) { showError("End the session first."); return; }
   calRun = new CalibrationRun();
   $("calFaces").hidden = false;
   showFaces();
@@ -775,6 +871,7 @@ function stopCalibration(msg = "") {
   $("calBtn").textContent = "Calibrate";
   $("calFaces").hidden = true;
   showCal();
+  showSource();                                    // the pod may have become the source meanwhile
   if (msg) $("calStatus").textContent = msg;
 }
 
@@ -826,6 +923,8 @@ function fillSuggestions() {
 // ---------- wire up ----------
 
 $("startBtn").addEventListener("click", () => startSession());
+$("podBtn").addEventListener("click", connectPod);
+$("phoneBtn").addEventListener("click", () => setSourceKind("phone"));
 $("endBtn").addEventListener("click", endSession);
 $("shareBtn").addEventListener("click", shareSession);
 $("exercise").addEventListener("change", (e) => setExercise(e.target.value));
@@ -838,6 +937,7 @@ $("calReset").addEventListener("click", () => {
   showCal();
 });
 try { cal = JSON.parse(localStorage.getItem("calibration") || "null"); } catch { cal = null; }
+try { sourceKind = localStorage.getItem("source") === "pod" ? "pod" : "phone"; } catch { /* storage blocked */ }
 showCal();
 $("vlTarget").addEventListener("change", (e) => setVlTarget(e.target.value));
 try { recents = JSON.parse(localStorage.getItem("recentExercises") || "[]"); } catch { recents = []; }
@@ -866,6 +966,13 @@ window.barDebug = {
   tracker: () => tracker,
   summary: () => (session ? summaryCSV() : ""),
   calRun: () => calRun,
+  podCapture: false,          // true before Start: keep the pod's frames for downloadPodCapture()
+  pod: () => (source instanceof PodWebSource ? { ...source.linkInfo(), gapList: source.stream.gaps,
+    nextIdx: source.stream.ep?.next_idx ?? null, lastIdx: source.stream.ep?.last_idx ?? null,
+    head: source.stream.ep?.status?.head ?? null } : null),
+  podCaptureData: () => (source?.capture ? { csv: source.captureCSV(), samples: source.capture.samples } : null),
+  // The capture in make_fake_pod.py's vector format: analysis/podlink.py replays it.
+  downloadPodCapture: () => { if (source?.capture) download(`pod-capture-${session?.stamp ?? "x"}.csv`, source.captureCSV()); },
   recording: () => {
     const s = session?.sets[session.sets.length - 1];
     return s ? { name: s.file, csv: toCSV(s.samples) } : { name: "none.csv", csv: "" };
@@ -873,6 +980,7 @@ window.barDebug = {
 };
 // Masthead date, like the top of a logbook page.
 $("masthead").textContent = `Training log · ${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}`;
+showSource();
 render();
 drawLive();
 renderHistory();

@@ -73,6 +73,29 @@
     `lost_overflow` can undercount after a lap plus a disconnect with frames in flight.
   - Unchanged and known: a PC that holds the port open without reading stalls loop() (a
     blocking `Serial.print`); step 8's `usbDrain()` gates on `availableForWrite()`.
+- **Step 6 done** (2026-10-23, laptop Chrome; the Pixel run is still open): `PodWebSource` in
+  `webapp/sources.js`, the Connect pod button with the sticky source, the pod branch of
+  startSession, the footer, `t0Wall` from `wallAt`, the `lastHiddenRun` reset, `barDebug.pod()` and
+  the capture (`barDebug.podCapture`, `downloadPodCapture()`, in make_fake_pod.py's log format).
+  - Tested by `webapp/test/pod_browser.mjs`: real Chrome over the DevTools protocol, the
+    Bluetooth chooser answered through CDP's DeviceAccess domain. Two sessions in one tab, each:
+    started in 2 s (5 s right after an End: see below), footer `210 Hz · 16/pkt · 45 ms · lost 0`,
+    the stop handshake exact (last index + 1 = the stream_stopped head), 0 gaps, 0 faults, and
+    **the browser's capture replayed through podlink.py gives the same samples, difference 0**
+    (JS against the Python reference on real pod data).
+  - Hand reps tracked as Deadlift: 5 reps of about 18 in read 17.5, 16.6, 16.9, 16.8 and 16.9 in,
+    leveled, the same in reps.py on the saved set (`analysis/data/bar-deadlift-2026-10-23-1857-
+    set01.csv` plus its capture); an independent integration of the raw samples gave 42.9 to
+    45.1 cm. As "Phone test" the floors drift in the plot, by design (that profile levels nothing).
+  - Found on the bench: Start right after End got a connection that dropped during discovery
+    (Chrome finishing the old disconnect), so discovery retries up to 3 times.
+  - Review (3 lenses, a skeptic each, 16 confirmed, all fixed): the 10 s start timeout left the
+    setup running, and a late connect brought back a "zombie" source streaming into the app (now
+    a `closed` check after every await, and a per-device owner so a zombie never disconnects a
+    newer session); the controls stayed live during a start (history, replay, phone); a failed
+    start stored an empty unfinished session and lost the resume offer; no STOP after a failed
+    start (the pod kept its hold); a link drop didn't end the start or stop waits; smaller UI
+    states. `webapp/test/pod_web.mjs` covers these paths with a fake Bluetooth device (5 PASS).
   - Bluetooth headphones on the laptop starve its BLE scanning: disconnect them for these tests.
 
 ## 0. Corrections from the spec audit (2026-10-19)
