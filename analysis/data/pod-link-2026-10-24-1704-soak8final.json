@@ -1,0 +1,32 @@
+{
+ "samples": 126384,
+ "ended": "done",
+ "gaps": [],
+ "faults": [],
+ "stats": {
+  "samples": 126384,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 1,
+  "epochs": 1,
+  "clock_clamped": 0,
+  "stopped": 1
+ },
+ "lost_overflow_by_boot": {
+  "2871764861": [
+   0,
+   0
+  ]
+ },
+ "last_idx": 134237,
+ "next_idx": 134238,
+ "lost_counted": 0
+}

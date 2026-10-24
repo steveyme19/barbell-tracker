@@ -320,6 +320,34 @@ moves the link to 2M PHY by itself; the pod accepts it ("stay on 1M" only means 
 asks). Bluetooth audio on the same laptop (headphones) starves its BLE scanning: the pod was
 invisible until they were disconnected.
 
+**D29 (2026-10-24): the pod samples on the IMU's data-ready interrupt, in a top-priority task
+that owns the IMU's I2C bus; a watchdog resets a stuck loop().**
+- The IMU pulses INT1 (P0.11) at every gyro sample (pulsed data-ready, DRDY_PULSE_CFG_G 0x0B bit
+  7, checked against ST's `lsm6ds3tr-c_reg.h`; INT1_CTRL 0x0D = 0x02). The GPIOTE interrupt stamps
+  RTC2 and wakes `samplerTask` (FreeRTOS priority 4, above Bluefruit's BLE task, USB and loop()),
+  which reads the sample with `imuRead()` (D28) and stores it in the ring. A sample's time is the
+  pulse's, never when a task got round to it.
+- loop() only sends: the USB CSV from its own cursor (only while the host takes it), the BLE
+  frames, the `#` lines (non-blocking, dropped and counted when USB is full). Anything else that
+  needs the IMU's bus goes through the sampler (`samplerPark()` before sleep).
+- The hardware watchdog (8 s, paused while halted for a debugger, running in sleep) is fed only
+  from loop(). The reset banner says WATCHDOG.
+*Why:*
+- The busy poll could only be as good as one status read plus whatever preempted it: dt std 0.042
+  to 0.056 ms (steps 4-5), over the 0.05 target with the radio streaming. On the interrupt: 0.0168
+  ms over 10 min with BLE streaming and a 30 s link drop, 0 missed, 0 BLE samples missing.
+- A host that holds the port open without reading blocked `Serial.print`, so it stopped sampling
+  and the radio with it. Now it costs only that host's CSV lines (`csv lost`).
+- Step 4's bench hung the board for good once (a powered-down IMU holding the bus, most likely).
+  Nothing noticed. The watchdog turns any such hang into an 8 s reset and a new boot the phone
+  sees (boot_id).
+- The CPU now idles between samples (tickless `delay(5)` in loop()). The current saving is an
+  estimate until it's measured.
+*Gotcha found on the way:* after reset and after `detachInterrupt()` the nRF leaves a pin's input
+buffer disconnected, so `digitalRead(INT1)` always read LOW. D26's dry-run "quiet" results and its
+"INT1 stays low" re-wake check saw nothing; the settle delay was the real fix. Fixed with
+`pinMode(INT1, INPUT)` before both.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

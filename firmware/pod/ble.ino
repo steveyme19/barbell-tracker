@@ -172,7 +172,7 @@ void buildStatus(uint8_t* f, uint8_t extra, uint32_t h) {
   uint8_t flags = extra | (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0) |
                   (lastBattV < LOW_BATT_WARN_V && !usbPowered() ? POD_S_BATT_LOW : 0) |
                   (streaming ? POD_S_STREAMING : 0) | (connected && nm < 4 ? POD_S_MTU_TOO_SMALL : 0);
-  podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), h, lostBle, 0, 0, nm,
+  podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), h, lostBle, missedDrdy, 0, nm,
                 connected ? evInterval : 0);
 }
 
@@ -232,13 +232,14 @@ void countLost(uint32_t from, uint32_t lo) {
 bool buildData() {
   uint8_t nm = nMax();
   if (nm < 4) return false;                   // MTU too small: no quiet degrading
-  if (head - bleCursor > RING_N) {            // sampling lapped the cursor
-    uint32_t lo = head - RING_N;
+  uint32_t h = head;                          // the sampler task moves it: read it once
+  if (h - bleCursor > RING_N) {               // sampling lapped the cursor
+    uint32_t lo = h - RING_N;
     countLost(bleCursor, lo);
     bleCursor = lo;
     overflowPending = true;
   }
-  uint32_t end = draining ? drainHead : head;
+  uint32_t end = draining ? drainHead : h;
   if ((int32_t)(end - bleCursor) <= 0) return false;
   uint32_t pending = end - bleCursor;
   uint32_t t0 = ring[bleCursor & RING_MASK].ticks;
@@ -256,6 +257,11 @@ bool buildData() {
                   (draining && bleCursor + n == drainHead ? POD_F_FINAL : 0);
   dataLen = podPackData(dataFrame, ring, RING_MASK, bleCursor, n, pktSeq, flags, cmdSeq);
   dataN = n;
+  __asm__ volatile("" ::: "memory");          // the copy happens before the check below
+  if (head - bleCursor > RING_N) {            // the sampler overwrote the oldest slots mid-copy: drop
+    dataLen = 0;                              // the frame, the next pass's lap check counts the loss
+    return false;
+  }
   return true;
 }
 
@@ -290,6 +296,7 @@ void sendPass() {
 void handleCtrl(const uint8_t* b, uint8_t len) {
   if (len == 0) return;
   uint8_t op = b[0];
+  uint32_t head = ::head;                     // one snapshot for the whole command
   if (op == POD_OP_STREAM_FROM || op == POD_OP_STREAM_LIVE) {
     uint32_t cur;
     if (op == POD_OP_STREAM_FROM) {
@@ -346,8 +353,9 @@ void onDisconnect() {
   nStatusQ = 0;
   hvnQueued = hvnDone;                        // a dead link reports no TX complete
   connHdl = BLE_CONN_HANDLE_INVALID;
-  Serial.print("# ble disconnected, reason 0x");
-  Serial.println(discReason, HEX);
+  msg.print("# ble disconnected, reason 0x");
+  msg.println(discReason, HEX);
+  msg.send();
 }
 
 void onConnect(uint32_t now) {
@@ -362,24 +370,26 @@ void onConnect(uint32_t now) {
   uint8_t f[20];
   buildStatus(f, 0, head);
   chrStatus.write(f, 20);                     // the readable value is fresh at every connect
-  Serial.println("# ble connected");
+  msg.println("# ble connected");
+  msg.send();
 }
 
 void printLink() {
-  Serial.print("# link mtu ");
-  Serial.print(mtuNow);
-  Serial.print(" interval ");
-  Serial.print(evInterval * 1.25, 2);
-  Serial.print(" ms latency ");
-  Serial.print(evLatency);
-  Serial.print(" timeout ");
-  Serial.print(evTimeout * 10);
-  Serial.print(" ms phy ");
-  Serial.print(evPhy == 2 ? "2M" : evPhy == 4 ? "coded" : "1M");
-  Serial.print(" dl ");
-  Serial.print(evDl);
-  Serial.print(" n_max ");
-  Serial.println(nMax());
+  msg.print("# link mtu ");
+  msg.print(mtuNow);
+  msg.print(" interval ");
+  msg.print(evInterval * 1.25, 2);
+  msg.print(" ms latency ");
+  msg.print(evLatency);
+  msg.print(" timeout ");
+  msg.print(evTimeout * 10);
+  msg.print(" ms phy ");
+  msg.print(evPhy == 2 ? "2M" : evPhy == 4 ? "coded" : "1M");
+  msg.print(" dl ");
+  msg.print(evDl);
+  msg.print(" n_max ");
+  msg.println(nMax());
+  msg.send();
 }
 
 // Retry a SoftDevice request once, 0.5 s later, if it came back BUSY. true = this step is done.
@@ -391,10 +401,11 @@ bool stepDone(uint32_t err, uint32_t now, const char* what) {
   }
   retried = false;
   if (err != NRF_SUCCESS) {
-    Serial.print("# link ");
-    Serial.print(what);
-    Serial.print(" error 0x");
-    Serial.println(err, HEX);
+    msg.print("# link ");
+    msg.print(what);
+    msg.print(" error 0x");
+    msg.println(err, HEX);
+    msg.send();
   }
   return true;
 }
@@ -574,29 +585,42 @@ void bleTick(uint32_t now) {
     queueStatus(0, head);                     // not connected: only the readable value
   }
 
-  if (Serial && now - lastBleLineMs >= 30000) {
+  if (usbOpen && now - lastBleLineMs >= 30000) {
     lastBleLineMs = now;
-    Serial.print("# ble ");
-    Serial.print(connected ? "connected" : (Bluefruit.Advertising.isRunning() ? "advertising" : "NOT advertising"));
-    Serial.print(streaming ? ", streaming" : "");
-    Serial.print(", frames ");
-    Serial.print(framesSent);
-    Serial.print(", lost ");
-    Serial.print(lostBle);
-    Serial.print(", ctrl dropped ");
-    Serial.print(ctrlDropped);
-    Serial.print(", hold ");
-    Serial.print(sessionHold ? "on" : "off");
-    Serial.print(" | max poll gap ");               // timing diagnostics (pod.ino), us
-    Serial.print(diagPollGap * 15625 / 512);
-    Serial.print(" us, ble ");
-    Serial.print(diagBle * 15625 / 512);
-    Serial.print(" us, print ");
-    Serial.print(diagPrint * 15625 / 512);
-    Serial.print(" us, missed ");
-    Serial.print(diagMissed);
-    Serial.print(", imu read errors ");
-    Serial.println(diagReadErr);
-    diagPollGap = diagBle = diagPrint = 0;
+    msg.print("# ble ");
+    msg.print(connected ? "connected" : (Bluefruit.Advertising.isRunning() ? "advertising" : "NOT advertising"));
+    msg.print(streaming ? ", streaming" : "");
+    msg.print(", frames ");
+    msg.print(framesSent);
+    msg.print(", lost ");
+    msg.print(lostBle);
+    msg.print(", hold ");
+    msg.println(sessionHold ? "on" : "off");
+    msg.send();
+    // the sampler (sampler.ino) and USB, since boot; the latency since the last line
+    msg.print("# ring head ");
+    msg.print(head);
+    msg.print(", missed ");
+    msg.print(missedDrdy);
+    msg.print(" (late ");
+    msg.print(lateRead);
+    msg.print("), holes ");
+    msg.print(holes);
+    msg.print(", xl lag ");
+    msg.print(xlLag);
+    msg.print(", read errors ");
+    msg.print(readErrors);
+    msg.print(", restarts ");
+    msg.print(imuRestarts);
+    msg.print(", max latency ");
+    msg.print(maxLatency * 15625 / 512);
+    msg.print(" us, csv lost ");
+    msg.print(csvLost);
+    msg.print(", ctrl dropped ");
+    msg.print(ctrlDropped);
+    msg.print(", lines dropped ");
+    msg.println(msg.dropped);
+    msg.send();
+    maxLatency = 0;
   }
 }

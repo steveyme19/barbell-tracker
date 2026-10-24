@@ -120,6 +120,48 @@
     STOP, a link drop during STOP read as a stop timeout, a duplicate command after a reconnect,
     the pod counter mixed boots, same-minute reruns overwrote recordings.
   - Bluetooth headphones on the laptop starve its BLE scanning: disconnect them for these tests.
+- **Step 8 done** (2026-10-24): `firmware/pod/sampler.ino` (the data-ready ISR, the sampler task at
+  priority 4, the park handshake, the IMU restart), loop() reduced to commands, housekeeping, the
+  link and `usbDrain()`, then `delay(5)`; the non-blocking `#` lines (`MsgLine`), the watchdog (D29),
+  `missed_drdy` in STATUS, FW_BUILD 8. 0x0B bit 7 (DRDY_PULSED) checked against ST's
+  `lsm6ds3tr-c_reg.h` first.
+  - Final build, 10 min BLE + USB together with a 30 s link drop at 450 s: USB 640 s, 134,664
+    samples at 210.41 Hz (board 3's 210.4 in the README table), 0 gaps, **dt std 0.0168 ms**
+    (min 4.364, max 5.158 ms); all **126,384 BLE samples matched** their USB twins
+    (|da| 5e-5, |dg| 0, |dt| 1 us), **0 missing**, the drop lost 0 (one reconnect, resumed from
+    the ring), 0 faults, 0 pkt_seq gaps, a clean STOP. The pod's own counters for the boot:
+    missed 0, late 0, holes 0, xl lag 0, read errors 0, restarts 0, csv lost 0, lines dropped 0.
+    The plan says each board; only this one was run.
+  - The build before the review gave the same: USB 640 s at 210.42 Hz, 0 gaps, dt std 0.0167 ms;
+    126,399 BLE samples matched, 0 missing, the 30 s drop lost 0. **dt std went from 0.042 to
+    0.056 ms (the poll, steps 4-5) to 0.017 ms**: the stamp is the pulse's now, not the poll's.
+  - The D26 bench set on the final build: `w` 5/5 quiet; `s` plus a pickup 3/3 (asleep 32, 62 and
+    32 s, each woken by INT1: GPIO LATCH P0 0x800); lid-down with the port closed slept, a pickup
+    woke it; `o` stayed off through 30 s of shaking and woke only on a USB replug. Also `i` (the
+    sampler restarts the IMU: a 1053 ms hole, flagged IMU_RESTART) and `h` (loop() hung: the
+    watchdog reset at 8.0 s, banner WATCHDOG). Current unmeasured (no meter).
+  - The watchdog survives the soft reset of an upload: `imu_serial` flashed over the pod streamed
+    25 s without a reset; the same sketch without its feed line was reset about 8 s after the
+    upload (the control). Any other sketch flashed over the pod has to feed it.
+  - **Found: D26's INT1 checks read nothing.** The nRF leaves a pin's input buffer off after reset
+    and after `detachInterrupt()`, so `digitalRead(INT1)` was always LOW: the dry run's "quiet"
+    and the re-wake guard's "stays low" passed by default (the settle delay was the real fix).
+    `pinMode(INT1, INPUT)` now comes first; a dry run with the pod moved reports "fired after
+    1973 ms", the positive control D26 never had.
+  - **Open:** two `s` rounds early in the bench set woke on their own after 5.7 and 4.3 s
+    (RESETREAS OFF, so the IMU's wake pin), before the LATCH diagnostic existed; in the first the
+    pod may have been touched. Three hands-off rounds after that slept until the pickup. Watch it
+    on the battery build (step 9 and the T5 sleep tests).
+  - **My mistake on the way:** a WAKE_UP_SRC read added to setup() before the watchdog started hung
+    the pod after a wake (the I2C read waited forever). Removed; setup() now starts the watchdog on
+    its first line and only reads GPIO LATCH (which pin woke it) with no I2C. Recovered with
+    `flash.py` (the 1200 baud touch still worked).
+  - Review (several lenses; its verdicts came back attached to the wrong findings, so I checked
+    each one against the code by hand), fixed: the idle timer's wrap race, missing compiler
+    barriers between the ring slot and `head`, the INT1 input buffer, failed reads that never counted toward a restart, P
+    frames that could still block on USB, the watchdog surviving a soft reset (imu_serial now
+    feeds it), the watchdog starting late in setup(), the lid-down request not rechecked in loop(),
+    FW_BUILD.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
@@ -165,8 +207,9 @@ firmware-internal corrections to the sections below:
   already stopped while connected) and no fixed `delay(50)`. Wait up to 300 ms for zero in
   flight before disconnecting.
 - **missed_drdy** is 0 in the polling firmware (steps 4-7). From step 8 it counts every IMU
-  sample not stored: `+= n - 1` per sampler pass, +1 per late-read drop, +1 per failed burst
-  read (IMU-restart holes excluded); `lateRead` stays as its own `# ring` diagnostic. The
+  sample not stored: `+= n - 1` per sampler pass, +1 per late-read drop, +1 per pass whose
+  status poll timed out (accel not ready within 1 ms) or whose read failed (IMU-restart holes
+  excluded; as built in step 8); `lateRead` stays as its own `# ring` diagnostic. The
   phone's sum of the time-hole n (ble.md section 7) over `imu` holes must then equal the
   missed_drdy delta.
 - **MTU in the UI:** Web Bluetooth doesn't expose the MTU and no frame carries it, so the

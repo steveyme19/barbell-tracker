@@ -73,6 +73,9 @@ void setup() {
 }
 
 void loop() {
+  // The pod firmware's watchdog survives the soft reset of an upload: feed it if it's running,
+  // or this sketch gets reset 8 s after flashing over the pod.
+  if (NRF_WDT->RUNSTATUS) NRF_WDT->RR[0] = WDT_RR_RR_Reload;
   // Wait until the chip has a new sample (status bit 0 = accel ready, bit 1 = gyro ready).
   // Polling sends every sample exactly once, at the chip's own rate. Stay in this loop
   // while waiting, so each sample is timestamped within one status read (~0.1 ms).

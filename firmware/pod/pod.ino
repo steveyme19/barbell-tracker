@@ -11,6 +11,10 @@
 //   - charging at 100 mA (FAST_CHARGE) instead of the default 50 mA
 //   - Bluetooth (ble.ino): the PodLink v1 service, docs/ble.md. Every sample also goes into a
 //     38 s ring, and the phone streams from it and resumes after a dropout without losing samples
+//   - sampling (sampler.ino): the IMU's data-ready interrupt wakes a top-priority task that
+//     stamps, reads and stores each sample; loop() only sends (USB CSV, Bluetooth) from the ring,
+//     so neither the radio nor a stuck USB host can delay or drop a sample
+//   - a watchdog: if loop() stops for 8 s (a hung I2C bus, a bug), the board resets
 // System OFF is a reset: waking runs setup() again. Board facts (pins, divider) and the bench
 // results are in firmware/README.md.
 //
@@ -18,7 +22,8 @@
 // D25; m/s^2 incl. gravity; deg/s). Lines starting with # are messages.
 // Bench commands over USB: s = sleep (wake on motion), o = sleep with the IMU off,
 // w = dry run of s (no System OFF; reports whether INT1 fires falsely), i = stop the IMU's
-// sampling (no data-ready; after ~1 s the miss path restarts it: tests IMU_RESTART).
+// sampling (no data-ready; after ~1 s the sampler restarts it: tests IMU_RESTART),
+// h = hang loop() (tests the watchdog: a reset after 8 s).
 
 #include <Adafruit_TinyUSB.h>  // USB serial on the Seeed nRF52 core
 #include <Wire.h>
@@ -40,9 +45,12 @@ const uint8_t WAKE_THS = 2;            // wake-up threshold, 31.25 mg per step a
                                        // 1.8x margin on the gentlest, 3 would give only 1.2x.
 
 const float G = 9.80665;               // m/s^2 per g
-const uint16_t FW_BUILD = 5;           // INFO fw_build: the BLE plan step this firmware is from
+const uint16_t FW_BUILD = 8;           // INFO fw_build: the BLE plan step this firmware is from
 
 // ---- IMU registers used directly (LSM6DS3TR-C datasheet) ----
+const uint8_t REG_DRDY_PULSE_CFG_G = 0x0B;   // bit 7 DRDY_PULSED: data-ready as a ~75 us pulse
+                                            // (LSM6DS3TR-C; Seeed's header has the plain LSM6DS3 name)
+const uint8_t REG_INT1_CTRL = 0x0D;    // bit 1 INT1_DRDY_G: gyro data-ready on INT1
 const uint8_t REG_WHO_AM_I = 0x0F;
 const uint8_t REG_CTRL1_XL = 0x10;
 const uint8_t REG_CTRL2_G = 0x11;
@@ -73,11 +81,13 @@ const bool PKT_OVER_USB = false;       // step 4 bench test: DATA / STATUS / INF
 const uint32_t RING_N = 8192;          // samples, a power of two: 128 KiB, ~38.8 s at 211 Hz
 const uint32_t RING_MASK = RING_N - 1;
 PodSample ring[RING_N];
-uint32_t head = 0;                     // samples stored since boot = the next index
+volatile uint32_t head = 0;            // samples stored since boot = the next index. Only the sampler
+                                       // task writes it, after the slot; readers copy it once per pass
 uint32_t restartIdx[40];               // first index after each recent IMU restart
 uint8_t nRestart = 0;                  // how many of restartIdx are used (oldest dropped first)
 uint32_t bootId = 0;                   // random per boot (INFO)
 uint8_t wakeReason = 0;                // INFO: 0 power-on / upload, 1 motion, 2 USB, 3 reset pin
+uint32_t wakeLatch0 = 0, wakeLatch1 = 0;   // GPIO LATCH at boot: the pins that met their SENSE level
 uint32_t usbCursor = 0;                // next index the USB packer sends
 uint16_t usbPktSeq = 0;
 uint8_t usbFlags = 0;                  // RESYNC / OVERFLOW pending for the next USB frame
@@ -89,19 +99,50 @@ const float LOW_BATT_WARN_V = 3.50;    // STATUS batt_low below this, on battery
 uint32_t lastRingLineMs = 0;
 bool usbWasOpen = false;
 uint32_t lastPodStatusMs = 0, lastPodInfoMs = 0;
-uint32_t lastMotionMs = 0;             // idle timer
-uint32_t faceDownSinceMs = 0;          // 0 = not lid-down right now
-float aRef[3];                         // slow average of the accel vector (motion = change from it)
-bool aRefSet = false;                  // seeded from the first sample
+volatile uint32_t lastMotionMs = 0;    // idle timer (the sampler sets it)
 uint32_t lastBattMs = 0;
 float lastBattV = 0;
 uint8_t lowBattCount = 0;
-uint16_t imuMisses = 0;                // data-ready waits that timed out in a row
-// Sampling diagnostics for the 30 s '# ble' line (times in RTC2 ticks, 30.5 us): the longest gap
-// between two status polls, the longest bleTick() and CSV print, samples the poll missed (a dt
-// over 1.5 periods; D28 is why this exists) and failed IMU reads.
-uint32_t diagPollGap = 0, diagBle = 0, diagPrint = 0, diagMissed = 0;
-uint32_t diagLastPoll = 0, diagLastTicks = 0, diagReadErr = 0;
+
+// ---- shared with the sampler task (sampler.ino; declared here because Arduino joins the tabs
+// after this one). Written there, read by loop() and ble.ino, or the other way round. ----
+volatile uint8_t sleepReq = 0;         // a sleep the sampler asks loop() for (STATUS sleep_reason codes)
+volatile bool imuStopReq = false;      // bench command i: the sampler stops the IMU (tests restarts)
+volatile bool usbOpen = false;         // loop()'s (bool)Serial: the sampler must not touch Serial
+volatile uint32_t missedDrdy = 0;      // samples the IMU produced that never reached the ring (STATUS)
+volatile uint32_t lateRead = 0;        // of those: a newer sample arrived while one was being read
+volatile uint32_t xlLag = 0;           // the accel's ready bit came after the gyro's pulse
+volatile uint32_t readErrors = 0;      // IMU reads that failed (NACK or timeout)
+volatile uint32_t imuRestarts = 0;
+volatile uint32_t holes = 0;           // stored samples > 1.5 periods apart (a cross-check of missedDrdy)
+volatile uint32_t maxLatency = 0;      // RTC2 ticks from a data-ready pulse to its sample stored
+const uint8_t SLEEP_LID_DOWN = 2, SLEEP_IMU_LOST = 5;   // STATUS sleep_reason codes (docs/ble.md 3)
+
+uint32_t csvCursor = 0;                // next ring index the USB CSV prints
+bool csvWasOpen = false;
+uint32_t csvLost = 0;                  // CSV lines the ring overwrote before USB took them (a slow host)
+uint32_t seenRestarts = 0;
+
+// A '#' line for USB, sent whole or not at all: a host that holds the port open without reading
+// must never block loop() (Serial.write would wait for it forever).
+class MsgLine : public Print {
+ public:
+  size_t write(uint8_t c) override {
+    if (n < sizeof(buf)) buf[n++] = c;
+    return 1;
+  }
+  using Print::write;
+  void send() {
+    if (n && usbOpen && Serial.availableForWrite() >= (int)n) Serial.write(buf, n);
+    else if (n) dropped++;
+    n = 0;
+  }
+  uint32_t dropped = 0;
+ private:
+  char buf[200];
+  uint16_t n = 0;
+};
+MsgLine msg;
 
 // ---------------------------------------------------------------------------------------------
 
@@ -139,18 +180,46 @@ void blink(uint8_t led, int times) {
   }
 }
 
-// RTC2 counts 24 bits (wraps every 512 s): extend it. The one place that reads the counter for
-// a timestamp, so the CSV's t_us and the frames' ticks always agree.
-uint64_t rtcExtend() {
+// RTC2 counts 24 bits (wraps every 512 s): extend it. The one place that unwraps the counter.
+// The sampler task and loop() both call it, so the read and the wrap count update are one
+// critical section. raw24: the counter value it read (the sampler steps back from it to a
+// data-ready stamp; a stamp itself never goes into the wrap compare, docs/ble-plan.md 0).
+uint64_t rtcExtendRaw(uint32_t* raw24) {
+  taskENTER_CRITICAL();
   uint32_t ticks = NRF_RTC2->COUNTER;
   if (ticks < rtcLast) rtcWraps++;
   rtcLast = ticks;
-  return ((uint64_t)rtcWraps << 24) + ticks;
+  uint64_t ext = ((uint64_t)rtcWraps << 24) + ticks;
+  taskEXIT_CRITICAL();
+  if (raw24) *raw24 = ticks;
+  return ext;
 }
 
+uint64_t rtcExtend() { return rtcExtendRaw(NULL); }
+
+// The sampler writes the restart table (sampler.ino), loop() reads it: critical section.
 bool isRestart(uint32_t idx) {
-  for (uint8_t i = 0; i < nRestart; i++) if (restartIdx[i] == idx) return true;
-  return false;
+  bool found = false;
+  taskENTER_CRITICAL();
+  for (uint8_t i = 0; i < nRestart && !found; i++) found = restartIdx[i] == idx;
+  taskEXIT_CRITICAL();
+  return found;
+}
+
+// The watchdog: 8 s without loop() feeding it resets the board (a hung I2C bus, a bug). It
+// pauses while a debugger halts the CPU and keeps counting in sleep; System OFF stops it. Once
+// started only a power-on, a pin reset or a wake from System OFF stops it: a soft reset into
+// another sketch (an upload) keeps it running, so firmware/imu_serial feeds it too.
+// (The bootloader feeds it while it waits in DFU.)
+void wdtStart() {
+  NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) | (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV = 8 * 32768;
+  NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+  NRF_WDT->TASKS_START = 1;
+}
+
+void wdtFeed() {
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 }
 
 // Print a frame as "<tag> <hex>" in one write (a P line is ~480 characters).
@@ -179,12 +248,13 @@ void usbPack() {
   usbWasOpen = open;
   if (!open) return;
   for (int frames = 0; frames < 4; frames++) {
-    if (head - usbCursor > RING_N) {                         // the ring lapped us
-      usbLost += (head - RING_N) - usbCursor;
-      usbCursor = head - RING_N;
+    uint32_t h = head;
+    if (h - usbCursor > RING_N) {                            // the ring lapped us
+      usbLost += (h - RING_N) - usbCursor;
+      usbCursor = h - RING_N;
       usbFlags |= POD_F_OVERFLOW;
     }
-    uint32_t pending = head - usbCursor;
+    uint32_t pending = h - usbCursor;
     if (pending == 0) return;
     uint8_t n = pending < POD_MAX_N ? pending : POD_MAX_N;
     uint32_t t0 = ring[usbCursor & RING_MASK].ticks;
@@ -198,6 +268,11 @@ void usbPack() {
     uint8_t flags = usbFlags | (isRestart(usbCursor) ? POD_F_IMU_RESTART : 0);
     uint8_t f[POD_DATA_MAX];
     uint16_t len = podPackData(f, ring, RING_MASK, usbCursor, n, usbPktSeq, flags, 0);
+    __asm__ volatile("" ::: "memory");                       // the copy happens before the check below
+    if (head - usbCursor > RING_N) continue;                 // overwritten during the copy: the lap check takes it
+    // A P line (up to 479 B) is bigger than the 256 B USB FIFO, so it can't wait for room for all
+    // of it: this bench mode (PKT_OVER_USB, a reading PC) may block for the rest of a line.
+    if (Serial.availableForWrite() < 64) return;
     printFrame('P', f, len);
     usbCursor += n;
     usbPktSeq++;
@@ -217,30 +292,31 @@ void podLinkTick(uint32_t now) {
 }
 
 void podStatusInfo(uint32_t now) {
-  if (!Serial) return;
+  if (!usbOpen) return;
   if (now - lastRingLineMs >= 30000) {                       // USB-side diagnostics, not STATUS
     lastRingLineMs = now;
-    Serial.print("# ring head ");
-    Serial.print(head);
-    Serial.print(" usblost ");
-    Serial.print(usbLost);
-    Serial.print(" restarts ");
-    Serial.println(nRestart);
+    msg.print("# ring head ");
+    msg.print(head);
+    msg.print(" usblost ");
+    msg.print(usbLost);
+    msg.print(" restarts ");
+    msg.println(nRestart);
+    msg.send();
   }
   if (now - lastPodStatusMs >= 1000) {
     lastPodStatusMs = now;
     uint8_t flags = (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0) |
                     (lastBattV < LOW_BATT_WARN_V && !usbPowered() ? POD_S_BATT_LOW : 0);
     uint8_t f[20];
-    podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), head, lostBle, 0, 0,
+    podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), head, lostBle, missedDrdy, 0,
                   POD_MAX_N, 0);
-    printFrame('S', f, 20);
+    if (Serial.availableForWrite() >= 43) printFrame('S', f, 20);
   }
   if (now - lastPodInfoMs >= 5000) {
     lastPodInfoMs = now;
     uint8_t f[32];
     podPackInfo(f, FW_BUILD, bootId, NRF_FICR->DEVICEID[0], ODR_HZ, RING_N, wakeReason);
-    printFrame('I', f, 32);
+    if (Serial.availableForWrite() >= 67) printFrame('I', f, 32);
   }
 }
 
@@ -250,7 +326,7 @@ void podStatusInfo(uint32_t now) {
 // byte; when the SoftDevice or a BLE task preempts loop() right then, the bus stays held (SCL
 // low) for up to ~2 ms and the IMU skips that output update: about one lost sample every 2 s
 // with the radio on (measured 2026-10-23, misses tracked radio events, not TX power).
-// Same peripheral as Wire1 (TWIM1, already set up by imu.begin()); only loop() uses it.
+// Same peripheral as Wire1 (TWIM1, already set up by imu.begin()); only the sampler task uses it.
 // Wire waits on these events without clearing them first: a stale LASTTX would let its next
 // transfer trigger STOP during the address byte and lose the write without an error.
 void twimClearEvents(NRF_TWIM_Type* tw) {
@@ -314,6 +390,10 @@ bool imuStart() {
     if (imu.begin() == 0) {
       Wire1.setClock(400000);
       imu.writeRegister(REG_CTRL3_C, readReg(REG_CTRL3_C) | 0x40);   // block data update
+      // Data-ready as a pulse (a latched level with an edge interrupt deadlocks after one late
+      // read), then the gyro's data-ready on INT1: the sampler's interrupt (sampler.ino)
+      imu.writeRegister(REG_DRDY_PULSE_CFG_G, readReg(REG_DRDY_PULSE_CFG_G) | 0x80);
+      imu.writeRegister(REG_INT1_CTRL, 0x02);
       return true;
     }
   }
@@ -344,10 +424,20 @@ void flashDeepPowerDown() {
 // and its wake-up interrupt wakes us. Otherwise the IMU is powered off and only USB power or the
 // reset button wakes the board. dryRun (bench command w): everything but System OFF.
 void goToSleep(bool motionWake, const char* why, bool dryRun = false) {
-  Serial.print("# sleeping: ");
-  Serial.println(why);
+  samplerPark();                                             // the I2C bus is loop()'s from here on
+  wdtFeed();
+  msg.print("# sleeping: ");
+  msg.println(why);
+  msg.send();
   Serial.flush();
   blink(motionWake ? LED_BLUE : LED_RED, 3);
+  // INT1 carries the wake-up next, not data-ready (the sampler detached its interrupt)
+  imu.writeRegister(REG_INT1_CTRL, 0x00);
+  imu.writeRegister(REG_DRDY_PULSE_CFG_G, readReg(REG_DRDY_PULSE_CFG_G) & 0x7F);
+  // The pin's input buffer is disconnected after reset and after detachInterrupt(): without this,
+  // digitalRead(INT1) is always LOW (the re-wake guard and the dry run below read it). Found in the
+  // step 8 review: before it, both read nothing, and the D26 "w quiet" results proved nothing.
+  pinMode(PIN_LSM6DS3TR_C_INT1, INPUT);
 
   if (motionWake) {
     imu.writeRegister(REG_CTRL2_G, 0x00);                    // gyro off
@@ -384,13 +474,16 @@ void goToSleep(bool motionWake, const char* why, bool dryRun = false) {
     // Watch INT1 for 10 s instead of switching off: a false wake-up event shows up as INT1
     // going high while the board sits still.
     uint32_t t0 = millis();
-    while (millis() - t0 < 10000 && digitalRead(PIN_LSM6DS3TR_C_INT1) == LOW) {}
-    Serial.print(digitalRead(PIN_LSM6DS3TR_C_INT1) ? "# dry run: INT1 fired after " : "# dry run: INT1 quiet for ");
-    Serial.print(millis() - t0);
-    Serial.print(" ms; CTRL1_XL 0x");                        // proves the sleep setup's writes landed
-    Serial.print(readReg(REG_CTRL1_XL), HEX);                // (motion wake: 0x10 and 0x0)
-    Serial.print(" CTRL2_G 0x");
-    Serial.println(readReg(REG_CTRL2_G), HEX);
+    while (millis() - t0 < 10000 && digitalRead(PIN_LSM6DS3TR_C_INT1) == LOW) wdtFeed();
+    msg.print(digitalRead(PIN_LSM6DS3TR_C_INT1) ? "# dry run: INT1 fired after " : "# dry run: INT1 quiet for ");
+    msg.print(millis() - t0);
+    msg.print(" ms; CTRL1_XL 0x");                           // proves the sleep setup's writes landed
+    msg.print(readReg(REG_CTRL1_XL), HEX);                   // (motion wake: 0x10 and 0x0)
+    msg.print(" CTRL2_G 0x");
+    msg.print(readReg(REG_CTRL2_G), HEX);
+    msg.print(" INT1_CTRL 0x");
+    msg.println(readReg(REG_INT1_CTRL), HEX);
+    msg.send();
     Serial.flush();
     delay(100);
     NVIC_SystemReset();                                      // start fresh, like a real wake
@@ -417,7 +510,9 @@ void goToSleep(bool motionWake, const char* why, bool dryRun = false) {
 // bus can't stop the battery protection.
 void housekeeping(uint32_t now) {
   uint32_t idleS = sessionHold ? IDLE_SLEEP_STREAMING_S : IDLE_SLEEP_S;
-  if (now - lastMotionMs > idleS * 1000 && !usbPowered()) goToSleep(true, "idle");
+  // signed: the sampler task can stamp lastMotionMs a millisecond after loop() read millis(), and
+  // an unsigned difference would wrap to "idle for 49 days" and sleep in the middle of a set
+  if ((int32_t)(now - lastMotionMs) > (int32_t)(idleS * 1000) && !usbPowered()) goToSleep(true, "idle");
 
   if (now - lastBattMs > 5000) {
     lastBattMs = now;
@@ -428,13 +523,14 @@ void housekeeping(uint32_t now) {
     } else {
       lowBattCount = 0;
     }
-    if (Serial && now % 30000 < 5000) {                      // a status line about every 30 s
-      Serial.print("# battery ");
-      Serial.print(lastBattV, 2);
-      Serial.print(" V, USB ");
-      Serial.print(usbPowered() ? "yes" : "no");
-      Serial.print(", charging ");
-      Serial.println(charging() ? "yes" : "no");
+    if (usbOpen && now % 30000 < 5000) {                     // a status line about every 30 s
+      msg.print("# battery ");
+      msg.print(lastBattV, 2);
+      msg.print(" V, USB ");
+      msg.print(usbPowered() ? "yes" : "no");
+      msg.print(", charging ");
+      msg.println(charging() ? "yes" : "no");
+      msg.send();
     }
   }
 }
@@ -442,6 +538,7 @@ void housekeeping(uint32_t now) {
 // ---------------------------------------------------------------------------------------------
 
 void setup() {
+  wdtStart();                                                // first: nothing before it may hang unguarded
   // Battery safety (CLAUDE.md): P0.14 must never be HIGH while charging, or P0.31 sees the
   // full battery voltage. LOW is the safe state (it also switches on the battery reading).
   // Note: the core's initVariant() drives it HIGH for a few ms before setup() runs
@@ -462,6 +559,10 @@ void setup() {
   // the core (reading the register here would always say "power on").
   uint32_t why = readResetReason();
   bool fromSleep = why & (POWER_RESETREAS_OFF_Msk | POWER_RESETREAS_VBUS_Msk);
+  wakeLatch0 = NRF_P0->LATCH;                                // what woke us, before anything changes it
+  wakeLatch1 = NRF_P1->LATCH;
+  NRF_P0->LATCH = wakeLatch0;                                // write 1s to clear
+  NRF_P1->LATCH = wakeLatch1;
   wakeReason = (why & POWER_RESETREAS_OFF_Msk) ? 1 : (why & POWER_RESETREAS_VBUS_Msk) ? 2
              : (why & POWER_RESETREAS_RESETPIN_Msk) ? 3 : 0;
   Serial.begin(115200);
@@ -472,12 +573,14 @@ void setup() {
     // On battery, don't sit here awake: sleep with the IMU off (USB or reset wakes it)
     if (!usbPowered()) goToSleep(false, "IMU not found");
     while (true) {
+      wdtFeed();
       Serial.println("# IMU not found. Is this board the Sense version?");
       blink(LED_RED, 1);
       delay(1000);
     }
   }
 
+  wdtFeed();
   analogCalibrateOffset();                                   // SAADC offset, once
   lastBattV = batteryVolts();
 
@@ -487,16 +590,26 @@ void setup() {
   if (why & POWER_RESETREAS_OFF_Msk) Serial.println("motion (from sleep)");
   else if (why & POWER_RESETREAS_VBUS_Msk) Serial.println("USB power (from sleep)");
   else if (why & POWER_RESETREAS_RESETPIN_Msk) Serial.println("reset button");
+  else if (why & POWER_RESETREAS_DOG_Msk) Serial.println("WATCHDOG (loop() stopped for 8 s)");
   else Serial.println("power on / upload");
   Serial.print("# RESETREAS 0x");
   Serial.println(why, HEX);
+  if (why & POWER_RESETREAS_OFF_Msk) {
+    // Which pin woke us: LATCH keeps the pins that met their SENSE level (INT1 is P0.11, 0x800)
+    Serial.print("# wake: GPIO latch P0 0x");
+    Serial.print(wakeLatch0, HEX);
+    Serial.print(" P1 0x");
+    Serial.println(wakeLatch1, HEX);
+  }
   Serial.print("# battery ");
   Serial.print(lastBattV, 2);
   Serial.println(usbPowered() ? " V (on USB: with no battery fitted this is the charger, not a cell)" : " V");
 
   // Bluetooth (ble.ino), then the clock: the SoftDevice takes over the low-frequency clock as it
   // starts, so RTC2 starts after it and its count never pauses under a running stream.
-  bleSetup();
+  wdtFeed();
+  bleSetup();                                                // the first boot formats a small filesystem (~1 s)
+  wdtFeed();
 
   // RTC2 at 32768 Hz for timestamps (RTC0 = SoftDevice, RTC1 = FreeRTOS)
   NRF_RTC2->TASKS_STOP = 1;
@@ -506,122 +619,68 @@ void setup() {
 
   Serial.println("# t_us,ax,ay,az,gx,gy,gz");
 
-  if (!fromSleep) blink(LED_GREEN, 1);                       // a wake shouldn't cost 200 ms of data
   lastMotionMs = millis();
   lastBattMs = millis();
+  samplerStart();                                            // from here the sampler owns the IMU
+  if (!fromSleep) blink(LED_GREEN, 1);                       // the ring fills meanwhile
+  wdtFeed();
 }
 
 void loop() {
   uint32_t now = millis();
+  wdtFeed();
+  usbOpen = (bool)Serial;
 
-  if (Serial && Serial.available()) {                        // bench commands (top of file)
+  if (usbOpen && Serial.available()) {                       // bench commands (top of file)
     char c = Serial.read();
     if (c == 's') goToSleep(true, "command s");
     if (c == 'o') goToSleep(false, "command o");
     if (c == 'w') goToSleep(true, "command w (dry run)", true);
-    if (c == 'i') {                                          // bench: the IMU stops sampling
-      imu.writeRegister(REG_CTRL1_XL, 0x00);                 // (powered, bus fine, no data-ready)
-      imu.writeRegister(REG_CTRL2_G, 0x00);                  // -> 50 misses -> imuStart()
+    if (c == 'i') imuStopReq = true;                         // the sampler stops the IMU (it owns the bus)
+    if (c == 'h') {                                          // bench: hang; the watchdog resets in 8 s
+      msg.println("# hanging loop() on purpose: the watchdog resets in 8 s");
+      msg.send();
+      Serial.flush();                                        // loop() won't return to send it
+      for (;;) {}
     }
+  }
+  if (sleepReq == SLEEP_LID_DOWN) {                         // still no PC and no session?
+    if (!usbOpen && !sessionHold) goToSleep(true, "lid-down gesture");
+    sleepReq = 0;
+  }
+  if (sleepReq == SLEEP_IMU_LOST) goToSleep(false, "IMU lost");
+  if (imuRestarts != seenRestarts) {
+    seenRestarts = imuRestarts;
+    msg.println("# IMU stopped answering, restarted it");
+    msg.send();
   }
 
   housekeeping(now);
+  podLinkTick(now);                                          // Bluetooth (and the P / S / I bench lines)
+  usbDrain();
+  delay(5);                                                  // the CPU sleeps; the sampler wakes on its own
+}
 
-  // Wait for a new sample (status bit 0 = accel ready, bit 1 = gyro ready), staying in this
-  // loop so each sample is timestamped within one status read (~0.1 ms) of being ready. Give up
-  // after 20 ms (4 sample periods) so a stuck IMU can't freeze everything; restart it after 1 s
-  // of nothing.
-  uint8_t status = 0;
-  uint32_t w0 = millis();
-  do {
-    uint32_t r = NRF_RTC2->COUNTER;
-    if (((r - diagLastPoll) & 0xFFFFFF) > diagPollGap && diagLastPoll) diagPollGap = (r - diagLastPoll) & 0xFFFFFF;
-    diagLastPoll = r;
-    if (!imuRead(LSM6DS3_ACC_GYRO_STATUS_REG, &status, 1)) { status = 0; diagReadErr++; }
-  } while ((status & 0x03) != 0x03 && millis() - w0 < 20);
-  if ((status & 0x03) != 0x03) {
-    if (++imuMisses >= 50) {
-      Serial.println("# IMU stopped answering, restarting it");
-      imuMisses = 0;
-      if (imuStart()) {
-        // frames start here (IMU_RESTART). No duplicates (a restart that gave no sample yet),
-        // forget restarts that already left the ring, and if it's still full drop the oldest.
-        uint32_t lo = head > RING_N ? head - RING_N : 0;
-        uint8_t keep = 0;
-        for (uint8_t i = 0; i < nRestart; i++) if (restartIdx[i] >= lo) restartIdx[keep++] = restartIdx[i];
-        nRestart = keep;
-        if (nRestart == 0 || restartIdx[nRestart - 1] != head) {
-          if (nRestart == 40) { memmove(restartIdx, restartIdx + 1, 39 * 4); nRestart--; }
-          restartIdx[nRestart++] = head;
-        }
-      } else if (!usbPowered()) {
-        goToSleep(false, "IMU lost");
-      }
+// The CSV over USB, from the ring: never blocks (a host that holds the port open without reading
+// stalls only USB, counted in csvLost) and starts live when the port opens.
+void usbDrain() {
+  if (usbOpen && !csvWasOpen) csvCursor = head;
+  csvWasOpen = usbOpen;
+  if (!usbOpen) return;
+  for (int k = 0; k < 32; k++) {
+    uint32_t h = head;
+    if (h - csvCursor > RING_N) {                            // the host fell 38 s behind
+      csvLost += (h - RING_N) - csvCursor;
+      csvCursor = h - RING_N;
     }
-    rtcExtend();                                             // keep counting RTC2 wraps
-    podLinkTick(now);                                        // the 80 ms flush and STATUS go on
-    return;
-  }
-  imuMisses = 0;
-
-  uint64_t ext = rtcExtend();                                // RTC2 ticks since boot, unwrapped
-  uint32_t t = (uint32_t)(ext * 15625 / 512);                // ticks -> us (wraps after ~71 min)
-
-  uint8_t b[12];                                             // gyro x, y, z then accel x, y, z
-  if (!imuRead(LSM6DS3_ACC_GYRO_OUTX_L_G, b, 12)) { diagReadErr++; return; }
-  float a[3], g[3];
-  PodSample& smp = ring[head & RING_MASK];
-  smp.ticks = (uint32_t)ext;                                 // u32: wraps after 36.4 h
-  for (int k = 0; k < 3; k++) {
-    smp.g[k] = (int16_t)(b[2 * k] | (b[2 * k + 1] << 8));
-    smp.a[k] = (int16_t)(b[6 + 2 * k] | (b[7 + 2 * k] << 8));
-    g[k] = imu.calcGyro(smp.g[k]);
-    a[k] = imu.calcAccel(smp.a[k]) * G;
-  }
-  head++;
-  if (diagLastTicks && smp.ticks - diagLastTicks > 236 && !isRestart(head - 1)) {   // > 1.5 periods, not a restart
-    diagMissed++;
-    if (Serial) {
-      Serial.print("# missed a sample, dt ");
-      Serial.print((smp.ticks - diagLastTicks) * 15625 / 512);
-      Serial.println(" us");
-    }
-  }
-  diagLastTicks = smp.ticks;
-
-  uint32_t p0 = NRF_RTC2->COUNTER;
-  if (Serial) {
-    Serial.print(t);
-    for (int k = 0; k < 3; k++) { Serial.print(','); Serial.print(a[k], 4); }
-    for (int k = 0; k < 3; k++) { Serial.print(','); Serial.print(g[k], 3); }
+    if (csvCursor == h || Serial.availableForWrite() < 72) return;   // a line is at most ~65 B
+    PodSample smp = ring[csvCursor & RING_MASK];
+    __asm__ volatile("" ::: "memory");                       // the copy happens before the check below
+    if (head - csvCursor > RING_N) continue;                 // overwritten during the copy: lap check
+    Serial.print((uint32_t)((uint64_t)smp.ticks * 15625 / 512));   // ticks -> us (wraps after ~71 min)
+    for (int i = 0; i < 3; i++) { Serial.print(','); Serial.print(imu.calcAccel(smp.a[i]) * G, 4); }
+    for (int i = 0; i < 3; i++) { Serial.print(','); Serial.print(imu.calcGyro(smp.g[i]), 3); }
     Serial.println();
-  }
-  uint32_t p1 = NRF_RTC2->COUNTER;
-  if (((p1 - p0) & 0xFFFFFF) > diagPrint) diagPrint = (p1 - p0) & 0xFFFFFF;
-  podLinkTick(now);
-  uint32_t p2 = NRF_RTC2->COUNTER;
-  if (((p2 - p1) & 0xFFFFFF) > diagBle) diagBle = (p2 - p1) & 0xFFFFFF;
-
-  // ---- motion (idle timer): the accel vector moved away from its slow average, or turning ----
-  if (!aRefSet) { for (int k = 0; k < 3; k++) aRef[k] = a[k]; aRefSet = true; }
-  float da = 0, gm = 0, am = 0;
-  for (int k = 0; k < 3; k++) {
-    da += (a[k] - aRef[k]) * (a[k] - aRef[k]);
-    gm += g[k] * g[k];
-    am += a[k] * a[k];
-    aRef[k] += (a[k] - aRef[k]) * 0.005;                     // ~1 s time constant at 208 Hz
-  }
-  bool moving = da > 0.6 * 0.6 || gm > 15.0 * 15.0;          // 0.6 m/s^2, 15 deg/s
-  if (moving) lastMotionMs = now;
-
-  // ---- sleep now: lid-down (chip side down = -z up, within ~27 deg) and still ----
-  // "Still" here doesn't use aRef, so it holds right after the flip. Not while a PC has the
-  // port open (a recording, or the chip-down calibration face) or a phone holds a session.
-  bool still = gm < 15.0 * 15.0 && fabsf(sqrtf(am) - G) < 1.0;
-  if (a[2] < -9.0 && still && !Serial && !sessionHold) {
-    if (faceDownSinceMs == 0) faceDownSinceMs = now;
-    else if (now - faceDownSinceMs > FACE_DOWN_S * 1000) goToSleep(true, "lid-down gesture");
-  } else {
-    faceDownSinceMs = 0;
+    csvCursor++;
   }
 }

@@ -5,7 +5,7 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 
 | sketch | what |
 |---|---|
-| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management (D26): auto-sleep after 10 min still on battery, wake on motion via the IMU's wake-up interrupt; lid-down and still for 6 s = sleep now (only when no PC has the port open); below 3.30 V on battery it sleeps with the IMU off until USB or reset; 100 mA charging; a battery/charging status line about every 30 s. Bench commands over USB: `s` sleep, `o` sleep with the IMU off, `w` dry run of `s`, `i` stop the IMU's sampling (tests the restart path). Keeps an 8192-sample ring (~38 s) and serves it over Bluetooth as `BarPod-XXXX` (`ble.ino`, PodLink v1: `docs/ble.md`, D27/D28; check it from the laptop with `analysis/ble_check.py`, Bluetooth headphones off); `PKT_OVER_USB = true` also prints the frames over USB for `analysis/podlink.py --usb`. The 30 s `# ble` line shows the link state and the sampling diagnostics (missed samples, IMU read errors, longest poll gap). |
+| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management (D26): auto-sleep after 10 min still on battery, wake on motion via the IMU's wake-up interrupt; lid-down and still for 6 s = sleep now (only when no PC has the port open); below 3.30 V on battery it sleeps with the IMU off until USB or reset; 100 mA charging; a battery/charging status line about every 30 s. Sampling (`sampler.ino`, D29): the IMU's data-ready pulse on INT1 is stamped in an interrupt and wakes a top-priority task that reads the sample and stores it in an 8192-sample ring (~38 s); loop() only sends from the ring, so neither the radio nor a USB host that stops reading can delay or drop a sample. A watchdog resets the board if loop() stops for 8 s. The ring goes out over Bluetooth as `BarPod-XXXX` (`ble.ino`, PodLink v1: `docs/ble.md`, D27/D28; check it from the laptop with `analysis/ble_check.py`, Bluetooth headphones off); `PKT_OVER_USB = true` also prints the frames over USB for `analysis/podlink.py --usb`. Bench commands over USB: `s` sleep, `o` sleep with the IMU off, `w` dry run of `s`, `i` stop the IMU (the sampler restarts it after ~1 s: tests IMU_RESTART), `h` hang loop() (the watchdog resets it after 8 s). Every 30 s: `# ble` (link state) and `# ring` (since boot: missed and late samples, time holes, accel lag, I2C read errors, IMU restarts, worst stamp-to-store latency since the last line, CSV lines lost to a slow host, dropped commands and `#` lines). |
 | `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py` |
 
 ## Flashing from the terminal
@@ -74,6 +74,10 @@ P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a r
   time between the clear and OFF it stayed asleep every time since. The 10 s dry run (`w`)
   never saw INT1 fire, old or new settle, so the root cause is still open. The code now waits
   ~10 samples, then clears until INT1 stays low for 2 samples, then goes off.
+  **Correction (step 8, 2026-10-24):** in this build `digitalRead(INT1)` always read LOW (the
+  pin's input buffer was never connected), so the dry run's "quiet" and the "stays low" check
+  saw nothing: the fix that worked was the ~1 s of settle delay. Since step 8 the pin is an input
+  before both, and the dry run catches a real pulse (moved during `w`: fired after 1973 ms).
 - Wake threshold from data: real pickups (9 recordings, decimated to the IMU's 12.5 Hz sleep
   rate) peak at 114 to 437 mg on the slope filter, so `WAKE_THS` 2 (62.5 mg, 1.8x margin on the
   gentlest) instead of 3 (1.2x). Dry runs at 2: 5/5 quiet.
@@ -81,7 +85,7 @@ P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a r
   it before `setup()`.
 - Not measured yet (no battery wired, no meter): sleep current, battery reading accuracy, the
   low-battery cutoff on a real cell. Awake, the tight data-ready poll keeps the CPU busy
-  (~6 mA more than needed): moving data-ready to an interrupt is part of the BLE rework.
+  (~6 mA more than needed, an estimate): step 8 moved data-ready to an interrupt, still unmeasured.
 - **P0.14 at boot (patched 2026-10-19):** Seeed's `initVariant()` drove it HIGH on every boot
   and wake until `setup()` set it LOW, a few ms (P0.31 up to ~3.6 V through 1 MOhm, < 1 uA).
   The installed core is patched to drive it LOW: `%LOCALAPPDATA%\Arduino15\packages\Seeeduino\hardware\nrf52\1.1.13\variants\Seeed_XIAO_nRF52840_Sense\variant.cpp`

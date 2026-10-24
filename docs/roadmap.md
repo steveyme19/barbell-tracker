@@ -73,10 +73,14 @@ Bluetooth to the XIAO (same time as 4.1).
       ±g) to get per-axis bias and scale. This is the fix for the scale error that
       zero-velocity correction can't catch. Then calibrate **gyro scale** per axis
       with full-turn tests (algorithm.md §1). Save both calibrations in firmware.
-- [ ] **1.4 BLE streaming.** Custom service, several samples batched per
+- [x] **1.4 BLE streaming.** Custom service, several samples batched per
       notification, each batch with a sequence counter and device timestamp. Receive
       with bleak. Prove you aren't dropping samples. Output files use the same columns
       as phone recordings so every Python script works on both.
+      *Done 2026-10-24 (docs/ble-plan.md steps 1-8, D27-D29): PodLink v1, `log_ble.py`, and
+      `compare_ble_usb.py` proving every BLE sample equals its USB twin with 0 missing. The
+      rest (sleep with a phone connected, reconnects in the app, the Android plugin, real sets)
+      continues in steps 9-13.*
 - [ ] **1.5 Battery.** LiPo wiring, charging, runtime test. Read Seeed's battery docs
       carefully before wiring anything.
 - [ ] **1.6 (optional) Laser bench test.** TF-Luna on the XIAO, powered from USB 5 V.
