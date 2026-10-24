@@ -96,6 +96,29 @@
     start stored an empty unfinished session and lost the resume offer; no STOP after a failed
     start (the pod kept its hold); a link drop didn't end the start or stop waits; smaller UI
     states. `webapp/test/pod_web.mjs` covers these paths with a fake Bluetooth device (5 PASS).
+- **Step 7 done** (2026-10-24): `analysis/log_ble.py` (the receiver: PodStream, reconnect with
+  STREAM_FROM, `--outage=S@T` drops, the STOP handshake; saves the samples, the capture as it
+  happens and a link JSON) and `analysis/compare_ble_usb.py` (locks a BLE file onto a USB file of
+  the same run by values and time steps, then requires every sample to match and every missing
+  one to be a counted gap). **Roadmap 1.4's proof:**
+  - 10 min, BLE and USB together: all **126,888 BLE samples matched their USB twins**, worst
+    |da| 5e-5 m/s^2 (USB print precision), |dg| 0, |dt| 1 us; **0 missing**, 0 faults, 0
+    pkt_seq gaps. The same capture replayed through the JS PodStream gives the same samples.
+  - Outage matrix (3, 10, 30, 60 s link drops in one 8 min run): the first three lost nothing;
+    the 60 s one lost exactly **5,122 samples**, one overflow gap, exactly where those samples
+    sit in the USB timeline, and the pod's own lost_overflow counter rose by exactly 5,122. A
+    45 s drop on the final logger: 2,141, same checks.
+  - Not done as written: the drops were deliberate disconnects from the laptop, not the laptop's
+    Bluetooth switched off (a system setting); the pod's ring and resume path is the same, a real
+    radio-off adds the 4 s supervision timeout (a quick manual test). Chrome as a second
+    receiver on the same link was skipped: one link carries one command stream and the app always
+    commands, and Chrome = podlink.py is already proven by step 6's capture replay.
+  - The comparer's own check: 10 planted faults caught (a dropped sample, values or a timestamp
+    off, a phantom or missing gap, a wrong pod counter, a cut BLE tail, a USB log that died early
+    or started late). Review (2 lenses, 10 confirmed, all fixed): tail loss and coverage weren't
+    checked, the alignment could lock on too few samples, an exception lost the capture and the
+    STOP, a link drop during STOP read as a stop timeout, a duplicate command after a reconnect,
+    the pod counter mixed boots, same-minute reruns overwrote recordings.
   - Bluetooth headphones on the laptop starve its BLE scanning: disconnect them for these tests.
 
 ## 0. Corrections from the spec audit (2026-10-19)
@@ -628,7 +651,7 @@ RecordingService stays type health; add connectedDevice before any Play Store bu
     - |da| <= 6e-5 m/s^2 and |dg| <= 6e-4 deg/s;
     - |dt| <= 3 us;
     - pkt_seq gaps 0 and unexplained gaps 0.
-  - Outage matrix (laptop Bluetooth off):
+  - Outage matrix (done with `log_ble.py --outage`, deliberate drops; see Progress):
     - 3, 10 and 30 s: lost 0, no time hole;
     - 60 s: lost equals the pod's lost_overflow delta exactly, the reason is overflow, and the hole matches the USB timeline.
   - Repeat the 10 min run with laptop Chrome capture as a second receiver.
