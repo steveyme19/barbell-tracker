@@ -54,4 +54,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Android 13+: shows the "Recording session" notification (asked once). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The pod over Bluetooth LE (PodLinkPlugin.java, docs/android.md A4): Android 12+, the
+         "Nearby devices" prompt. The scan only looks for the pod's service, never for location. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 </manifest>

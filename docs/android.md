@@ -191,8 +191,26 @@ Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
   RecordingService keeps the process alive (to be checked, step 12 of the plan).
 - **Not** `@capacitor-community/bluetooth-le` (named here before): Kotlin, needs a bundler
   (P3), one event per notification, reconnects from JS.
-- Permissions: Android 12+ only (`BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`),
-  `bluetooth_le` feature not required. Same D4 sample format, device timestamps.
+- Permissions: Android 13+ only (`BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`),
+  `bluetooth_le` feature not required. Same D4 sample format, device timestamps. 13, not 12 (the
+  plan's v1): the pod's address is random static and only `getRemoteLeDevice` (API 33) can say so;
+  on 12 a reconnect after a Bluetooth restart waits forever for a public address (step 11 review).
+- **`PodLinkPlugin.java`** (step 11, built 2026-10-24): `connect({any?})` asks for Nearby
+  devices the first time, tries the saved pod (10 s), else scans 8 s for the PodLink service: the
+  saved pod the moment it's heard, with none saved the strongest, and never another pod in place of
+  the saved one unless `any: true` (picking a new pod). Then the connection order (services, MTU
+  247, read INFO, read STATUS, the DATA CCCD), the address saved, and it resolves `{name, address,
+  mtu, link, wallMs, elapsedMs}`. `write({b, link?})` (base64, CTRL with response, queued; a command
+  computed for an earlier link is refused), `reread()` (INFO and STATUS again, for the decoder's
+  need-info), `disconnect()`. Events `pod {f: [base64], w: [elapsedRealtime ms]}` every ~50 ms and
+  `podState {state: connecting|ready|lost|closed, status, mtu, link}`. An unrequested drop
+  reconnects with autoConnect and runs the chain again ("ready" with link + 1); JS answers with its
+  command. Bluetooth switched off counts as a drop (Android can drop the client without a callback:
+  an adapter-state receiver, and a 5 s no-frame watchdog, since the pod sends a STATUS every second);
+  the reconnect waits until it's back on.
+  Check it on the phone: `node android/podlink_check.mjs --install [--drop]` (the frames also go
+  through the app's own PodStream; `--drop` makes the pod sleep-and-reset over USB to test the
+  reconnect). `PodNativeSource` (the app's source on top of it) is step 12.
 
 ## Later
 

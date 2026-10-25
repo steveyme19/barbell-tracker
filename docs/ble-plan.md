@@ -250,6 +250,34 @@
   - Open: real radio-off (laptop Bluetooth off: a system setting); Android Chrome (the Pixel run);
     an End while the link is fully down can't send STOP, so the pod keeps its hold up to 30 min (the
     spec's accepted fallback).
+- **Step 11 built, not yet run on the phone** (2026-10-24/25): `android/.../PodLinkPlugin.java`
+  (registered in MainActivity; manifest: BLUETOOTH_SCAN neverForLocation, BLUETOOTH_CONNECT,
+  bluetooth_le not required). A dumb pipe: connect() (Nearby devices once; the saved pod 10 s, else
+  an 8 s scan), the connection order (services, MTU 247, INFO, STATUS, the DATA CCCD), raw frames to
+  JS every ~50 ms with their elapsedRealtime arrival, write() / reread() queued one at a time,
+  disconnect(); an unrequested drop reconnects with autoConnect and runs the order again ("ready",
+  link + 1). `gradlew assembleDebug` builds (Java 25, no new dependency).
+  - **Not verified:** the phone wasn't plugged in. `node android/podlink_check.mjs --install --drop`
+    does the plan's checks (connect resolves with mtu 247, ~13 DATA frames/s, logcat shows the MTU and
+    the DATA CCCD write), runs the frames through the app's own PodStream on the phone (0 gaps), and
+    with --drop has the pod sleep-and-reset over USB to check the plugin reconnects by itself.
+  - **Changed against this plan:** Android 13+ (API 33), not 12+ (section 6, choice 3): only
+    getRemoteLeDevice(addr, ADDRESS_TYPE_RANDOM) tells Android the pod's address is random static;
+    on 12 a reconnect after a Bluetooth restart waits forever. connect() takes no address; `any:
+    true` picks a new pod (the strongest, not the saved one). New `reread()` (the decoder's
+    need-info) and a `link` number, so a command JS computed for an earlier link is refused.
+  - Review (3 lenses, 2 skeptics each, then a recheck of the fixes plus a fresh hunt), all fixed:
+    - **Bluetooth off and on mid-session wedged it** (high): Android can drop the GATT client with no
+      callback; now an adapter-state receiver, autoConnect only with the adapter fully on, and a 5 s
+      no-frame watchdog (the pod sends a STATUS every second);
+    - **an app crash**: the pod's own MTU exchange (connect + 1 s) arriving before discovery made the
+      chain read a null characteristic; every callback now moves the chain only from its own step;
+    - **an app crash** (from the recheck): disconnect() during the Nearby devices prompt, then an
+      answer, reached permissionDone(null);
+    - a stale scan timer or 133 retry acted on a later connect(); a ready link dropping with 133
+      retried silently instead of "lost"; the scan could silently swap the saved pod for another one
+      in range; podState could pass frames that arrived before it (the going_to_sleep STATUS after
+      "lost"); a null name on a direct connect; names not tied to their pod.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
@@ -630,6 +658,7 @@ This meets endSession's "flushed before resolve" contract.
 **Plugin shape.**
 - `@CapacitorPlugin(name = "PodLink", permissions = @Permission(alias = "bluetooth", strings = {BLUETOOTH_SCAN, BLUETOOTH_CONNECT}))`, registered in MainActivity before `super.onCreate`.
 - Android 12+ (API 31) only in v1; the Pixel is API 36. Older versions get a clear rejection.
+  (As built: 13+, see the step 11 progress entry.)
 - **Java is a dumb pipe and never parses a frame.** The JS PodStream is the only decoder besides Python, so no third decoder can drift (judge 1 must_fix).
 
 **`connect()`:**
@@ -917,7 +946,7 @@ Every skip and failure is reported before roadmap 1.4, 4.1 or A4 is ticked.
 
 1. **D26 amendment:** from a STREAM command until STOP, a 30 min idle limit and no lid-down gesture. A phone that dies without sending STOP keeps the pod awake for up to 30 min.
 2. **One pip install of bleak** into the venv for roadmap 1.4. Laptop Chrome stays a zero-install second receiver.
-3. **The app supports Android 12+ (API 31) only in v1.**
+3. **The app supports Android 12+ (API 31) only in v1.** Changed in step 11 to **13+ (API 33)**: only API 33 can tell Android the pod's address is random static, so on 12 a reconnect after a Bluetooth restart never finds it. The Pixel is API 36.
 4. **No pairing in v1.** Anyone in range can connect to the pod or put it to sleep, and only one phone can connect at a time.
 5. **Pod data stays uncalibrated until 1.3.** |a| reads about 3% high, which goes straight into MCV and ROM. Consider doing 1.3 before trusting pod numbers.
 

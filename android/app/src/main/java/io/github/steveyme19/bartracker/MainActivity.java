@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Local plugins have to be registered before the bridge starts.
         registerPlugin(BarSensorsPlugin.class);
+        registerPlugin(PodLinkPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
