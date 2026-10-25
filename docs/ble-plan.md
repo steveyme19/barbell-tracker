@@ -162,6 +162,44 @@
     frames that could still block on USB, the watchdog surviving a soft reset (imu_serial now
     feeds it), the watchdog starting late in setup(), the lid-down request not rechecked in loop(),
     FW_BUILD.
+- **Step 9 done** (2026-10-24): the sleep prologue (`bleSleepPrologue` in ble.ino), the BLE SLEEP
+  op (0x10, mode 0 motion wake / 1 IMU off), sleep_reason in the going_to_sleep STATUS, a reason
+  from every `goToSleep()` caller, FW_BUILD 9; `LOW_BATT_WARN_V` and batt_low were already in from
+  step 5. `log_ble.py --sleep=T[:mode] --until-wake=S` and `analysis/check_sleep.py` (the criteria
+  below as PASS lines). The INT1 teardown came with step 8.
+  - **Changed against this plan:** advertising stops when the prologue starts (no phone connects
+    during the sleep setup) and again at its end (the BLE task may switch fast to slow meanwhile).
+    The dry run `w` runs the prologue too, then resets: a hands-free test of the whole phone side.
+    setup() starts the sampler before the 2 s wait for a PC and runs `bleTick()` during it, with
+    the banners after it (`bleSetup()` is quiet, `bleBanner()` prints): otherwise on USB power a
+    pickup fell into the wait and never reached the ring.
+  - USB `s` 3/3 and the BLE SLEEP op 3/3, streaming to log_ble, all check_sleep PASS: the reason
+    arrived (command); sleep-tail 0 every time (the pod drained 5 to 16 samples in 0 to 2 ms); the
+    disconnect came 129 to 137 ms after the going_to_sleep STATUS (the pod: done in 90 ms, its
+    local reason 0x16), not the 4 s timeout; asleep at least 15 s, port gone; a pickup gave a new
+    boot_id and a new epoch from index 0, t increasing across the sleep, and the pickup inside its
+    first 2 s (gyro at full scale). Windows/bleak doesn't report the reason, so 0x13 on the phone
+    side is inferred from the timing.
+  - The SLEEP op with mode 1 (IMU off): the same prologue results, then off for 85 s including
+    10 s of shaking; only a USB replug woke it, into a new epoch (check_sleep `--no-pickup` PASS).
+  - Two `w` dry runs pass the same checks without a pickup, and their captures replay through
+    podlink.py to the same samples (6668 / 6610, no gaps, no faults).
+  - Lid-down with the session hold on: armed (az < -9.0, still) for 123 s, the pod stayed awake;
+    8 s after the STOP it slept. **The first two tries proved nothing**: the pod lay 24 deg off flat
+    on its USB cable (az -8.76) and the gesture never armed. Uncalibrated, board 3's z reads only
+    9.56 lid-down, so the cone is about 20 deg, not the 27 the code comment said (fixed); roadmap
+    1.3's calibration widens it again.
+  - Skipped (need a battery, roadmap 1.5): the idle and low-battery sleeps with a phone connected.
+  - Review (4 lenses, 2 skeptics each; 8 findings, all upheld, all low), all fixed:
+    - a sleep during a STOP drain dropped the STOP's cap, so the phone could hit a false 'stop
+      timed out', and an unsent frame built for the STOP drain could carry a second FINAL. Fixed in
+      the model first (`pod_sleep`), with 2 new scenarios (33 now), each shown to fail without its
+      fix, then in the firmware; pod.mjs 33/33, parity all PASS;
+    - during the new 2 s wait the pod advertised but nothing served the link: a phone read a STATUS
+      with ticks_now and head 0 (seen in the first dry run's capture), and its STREAM command
+      waited. Now `bleTick()` runs in the wait; the next dry run read ticks 42598, head 273;
+    - the `# ble sleep` line said "STATUS out" after a link loss or with DATA off;
+    - check_sleep.py crashed on an empty file and failed a run stopped with Ctrl+C.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 

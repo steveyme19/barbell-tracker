@@ -264,10 +264,17 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   phone sees it at once instead of after the 4 s timeout), waiting at most 500 ms for the
   disconnect to complete; then the D26 sleep. Samples between the last sent frame and the final
   head are the phone's `sleep-tail` gap.
-- During the prologue the pod ignores CTRL writes. A disconnect during the sleep drain skips
-  the STATUS and goes straight to sleep.
+- During the prologue the pod ignores CTRL writes (from the SLEEP op on). A disconnect during
+  the sleep drain skips the STATUS and goes straight to sleep. Advertising stops as the prologue
+  starts, so no phone connects while the IMU is set up for sleep.
+- A sleep during a STOP drain takes it over: the drain runs to the final head instead of
+  stop_head, but keeps the STOP's cap if that is sooner than 1.5 s (the phone's stop wait is sized
+  on it), and a frame built but not yet sent is rebuilt, so FINAL only ever marks the frame
+  ending at the final head. The going_to_sleep STATUS answers the phone's stop wait; no
+  stream_stopped is sent. (make_fake_pod.py: stop-then-sleep-at-cap, stop-final-then-sleep.)
 - **Wake** is a reboot (new boot_id, index 0). The ring fills from the first sample, so
-  `STREAM_FROM(new boot, 0)` delivers the pickup that woke it.
+  `STREAM_FROM(new boot, 0)` delivers the pickup that woke it. On USB power too: sampling starts
+  before the pod's 2 s wait for a PC, and the link is served during that wait.
 
 ## 7. Phone side (the PodStream contract)
 

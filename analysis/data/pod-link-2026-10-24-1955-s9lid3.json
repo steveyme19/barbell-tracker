@@ -1,0 +1,41 @@
+{
+ "samples": 50664,
+ "ended": "done",
+ "gaps": [],
+ "faults": [],
+ "stats": {
+  "samples": 50664,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 0,
+  "epochs": 1,
+  "clock_clamped": 0,
+  "stopped": 1
+ },
+ "lost_overflow_by_boot": {
+  "2343336821": [
+   0,
+   0
+  ]
+ },
+ "sleeps": [],
+ "epochs": [
+  {
+   "boot_id": 2343336821,
+   "reboot": false,
+   "samples_before": 0,
+   "at_s": 2.272
+  }
+ ],
+ "last_idx": 55506,
+ "next_idx": 55507,
+ "lost_counted": 0
+}

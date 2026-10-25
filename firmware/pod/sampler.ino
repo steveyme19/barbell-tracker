@@ -88,7 +88,9 @@ void motionCheck(const PodSample& s) {
   uint32_t now = millis();
   if (da > 0.6 * 0.6 || gm > 15.0 * 15.0) lastMotionMs = now;   // 0.6 m/s^2, 15 deg/s
 
-  // Sleep now: lid-down (chip side down = -z up, within ~27 deg) and still. "Still" doesn't use
+  // Sleep now: lid-down (chip side down = -z up: a[2] < -9.0, about 20-27 deg off flat, depending
+  // on the uncalibrated z scale: board 3 reads only 9.56 lid-down, so 20 deg; roadmap 1.3) and
+  // still. Tested 2026-10-24: propped 24 deg on its USB cable it never fires. "Still" doesn't use
   // aRef, so it holds right after the flip. Not while a PC has the port open (a recording, or
   // the chip-down calibration face) or a phone holds a session.
   bool still = gm < 15.0 * 15.0 && fabsf(sqrtf(am) - G) < 1.0;

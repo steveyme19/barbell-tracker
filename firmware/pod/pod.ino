@@ -11,6 +11,7 @@
 //   - charging at 100 mA (FAST_CHARGE) instead of the default 50 mA
 //   - Bluetooth (ble.ino): the PodLink v1 service, docs/ble.md. Every sample also goes into a
 //     38 s ring, and the phone streams from it and resumes after a dropout without losing samples
+//     (before any sleep the phone gets the rest of the stream, the reason and a clean disconnect)
 //   - sampling (sampler.ino): the IMU's data-ready interrupt wakes a top-priority task that
 //     stamps, reads and stores each sample; loop() only sends (USB CSV, Bluetooth) from the ring,
 //     so neither the radio nor a stuck USB host can delay or drop a sample
@@ -45,7 +46,7 @@ const uint8_t WAKE_THS = 2;            // wake-up threshold, 31.25 mg per step a
                                        // 1.8x margin on the gentlest, 3 would give only 1.2x.
 
 const float G = 9.80665;               // m/s^2 per g
-const uint16_t FW_BUILD = 8;           // INFO fw_build: the BLE plan step this firmware is from
+const uint16_t FW_BUILD = 9;           // INFO fw_build: the BLE plan step this firmware is from
 
 // ---- IMU registers used directly (LSM6DS3TR-C datasheet) ----
 const uint8_t REG_DRDY_PULSE_CFG_G = 0x0B;   // bit 7 DRDY_PULSED: data-ready as a ~75 us pulse
@@ -116,7 +117,9 @@ volatile uint32_t readErrors = 0;      // IMU reads that failed (NACK or timeout
 volatile uint32_t imuRestarts = 0;
 volatile uint32_t holes = 0;           // stored samples > 1.5 periods apart (a cross-check of missedDrdy)
 volatile uint32_t maxLatency = 0;      // RTC2 ticks from a data-ready pulse to its sample stored
-const uint8_t SLEEP_LID_DOWN = 2, SLEEP_IMU_LOST = 5;   // STATUS sleep_reason codes (docs/ble.md 3)
+// STATUS sleep_reason codes (docs/ble.md 3)
+const uint8_t SLEEP_IDLE = 1, SLEEP_LID_DOWN = 2, SLEEP_LOW_BATT = 3, SLEEP_COMMAND = 4, SLEEP_IMU_LOST = 5;
+uint8_t sleepCmd = 0;                  // the phone's SLEEP op (ble.ino): 1 = motion wake, 2 = IMU off
 
 uint32_t csvCursor = 0;                // next ring index the USB CSV prints
 bool csvWasOpen = false;
@@ -422,13 +425,16 @@ void flashDeepPowerDown() {
 
 // Sleep (System OFF). motionWake: the IMU keeps watching at 12.5 Hz in low-power mode (~9 uA)
 // and its wake-up interrupt wakes us. Otherwise the IMU is powered off and only USB power or the
-// reset button wakes the board. dryRun (bench command w): everything but System OFF.
-void goToSleep(bool motionWake, const char* why, bool dryRun = false) {
-  samplerPark();                                             // the I2C bus is loop()'s from here on
-  wdtFeed();
+// reset button wakes the board. reason: STATUS sleep_reason. dryRun (bench command w): everything
+// but System OFF, the phone's side included (a reset follows, which the phone sees as a wake).
+void goToSleep(bool motionWake, const char* why, uint8_t reason, bool dryRun = false) {
+  samplerPark();                                             // sampling stops: head is final, and the
+  wdtFeed();                                                 // I2C bus is loop()'s from here on
   msg.print("# sleeping: ");
   msg.println(why);
   msg.send();
+  bleSleepPrologue(reason);                                  // the phone gets the rest, the reason and a clean disconnect
+  wdtFeed();
   Serial.flush();
   blink(motionWake ? LED_BLUE : LED_RED, 3);
   // INT1 carries the wake-up next, not data-ready (the sampler detached its interrupt)
@@ -512,14 +518,14 @@ void housekeeping(uint32_t now) {
   uint32_t idleS = sessionHold ? IDLE_SLEEP_STREAMING_S : IDLE_SLEEP_S;
   // signed: the sampler task can stamp lastMotionMs a millisecond after loop() read millis(), and
   // an unsigned difference would wrap to "idle for 49 days" and sleep in the middle of a set
-  if ((int32_t)(now - lastMotionMs) > (int32_t)(idleS * 1000) && !usbPowered()) goToSleep(true, "idle");
+  if ((int32_t)(now - lastMotionMs) > (int32_t)(idleS * 1000) && !usbPowered()) goToSleep(true, "idle", SLEEP_IDLE);
 
   if (now - lastBattMs > 5000) {
     lastBattMs = now;
     lastBattV = batteryVolts();
     if (!usbPowered()) {
       lowBattCount = lastBattV < LOW_BATT_V ? lowBattCount + 1 : 0;
-      if (lowBattCount >= 3) goToSleep(false, "low battery, charge me");
+      if (lowBattCount >= 3) goToSleep(false, "low battery, charge me", SLEEP_LOW_BATT);
     } else {
       lowBattCount = 0;
     }
@@ -565,13 +571,11 @@ void setup() {
   NRF_P1->LATCH = wakeLatch1;
   wakeReason = (why & POWER_RESETREAS_OFF_Msk) ? 1 : (why & POWER_RESETREAS_VBUS_Msk) ? 2
              : (why & POWER_RESETREAS_RESETPIN_Msk) ? 3 : 0;
-  Serial.begin(115200);
-  uint32_t t0 = millis();
-  while (!Serial && usbPowered() && millis() - t0 < 2000) delay(10);   // no PC on battery
+  Serial.begin(115200);                                      // the wait for a PC comes after the sampler starts
 
   if (!imuStart()) {
     // On battery, don't sit here awake: sleep with the IMU off (USB or reset wakes it)
-    if (!usbPowered()) goToSleep(false, "IMU not found");
+    if (!usbPowered()) goToSleep(false, "IMU not found", SLEEP_IMU_LOST);
     while (true) {
       wdtFeed();
       Serial.println("# IMU not found. Is this board the Sense version?");
@@ -581,11 +585,35 @@ void setup() {
   }
 
   wdtFeed();
+  uint8_t who = readReg(REG_WHO_AM_I);                       // before the sampler takes the bus
   analogCalibrateOffset();                                   // SAADC offset, once
   lastBattV = batteryVolts();
 
+  // Bluetooth (ble.ino), then the clock: the SoftDevice takes over the low-frequency clock as it
+  // starts, so RTC2 starts after it and its count never pauses under a running stream.
+  wdtFeed();
+  bleSetup();                                                // the first boot formats a small filesystem (~1 s)
+  wdtFeed();
+
+  // RTC2 at 32768 Hz for timestamps (RTC0 = SoftDevice, RTC1 = FreeRTOS)
+  NRF_RTC2->TASKS_STOP = 1;
+  NRF_RTC2->PRESCALER = 0;
+  NRF_RTC2->TASKS_CLEAR = 1;
+  NRF_RTC2->TASKS_START = 1;
+
+  lastMotionMs = millis();
+  lastBattMs = millis();
+  samplerStart();                                            // from here the sampler owns the IMU
+
+  // Up to 2 s for a PC to open the port (USB power only). The ring fills meanwhile, so the
+  // pickup that woke the pod reaches the phone even on USB power (docs/ble.md 6, Wake), and the
+  // link runs as in loop(): advertising is on, so a phone may connect now (its # lines are
+  // dropped until a PC opens the port).
+  uint32_t t0 = millis();
+  while (!Serial && usbPowered() && millis() - t0 < 2000) { wdtFeed(); bleTick(millis()); delay(10); }
+
   Serial.print("# pod firmware, IMU WHO_AM_I 0x");
-  Serial.print(readReg(REG_WHO_AM_I), HEX);
+  Serial.print(who, HEX);
   Serial.print(", woke by: ");
   if (why & POWER_RESETREAS_OFF_Msk) Serial.println("motion (from sleep)");
   else if (why & POWER_RESETREAS_VBUS_Msk) Serial.println("USB power (from sleep)");
@@ -604,24 +632,9 @@ void setup() {
   Serial.print("# battery ");
   Serial.print(lastBattV, 2);
   Serial.println(usbPowered() ? " V (on USB: with no battery fitted this is the charger, not a cell)" : " V");
-
-  // Bluetooth (ble.ino), then the clock: the SoftDevice takes over the low-frequency clock as it
-  // starts, so RTC2 starts after it and its count never pauses under a running stream.
-  wdtFeed();
-  bleSetup();                                                // the first boot formats a small filesystem (~1 s)
-  wdtFeed();
-
-  // RTC2 at 32768 Hz for timestamps (RTC0 = SoftDevice, RTC1 = FreeRTOS)
-  NRF_RTC2->TASKS_STOP = 1;
-  NRF_RTC2->PRESCALER = 0;
-  NRF_RTC2->TASKS_CLEAR = 1;
-  NRF_RTC2->TASKS_START = 1;
-
+  bleBanner();
   Serial.println("# t_us,ax,ay,az,gx,gy,gz");
 
-  lastMotionMs = millis();
-  lastBattMs = millis();
-  samplerStart();                                            // from here the sampler owns the IMU
   if (!fromSleep) blink(LED_GREEN, 1);                       // the ring fills meanwhile
   wdtFeed();
 }
@@ -633,9 +646,9 @@ void loop() {
 
   if (usbOpen && Serial.available()) {                       // bench commands (top of file)
     char c = Serial.read();
-    if (c == 's') goToSleep(true, "command s");
-    if (c == 'o') goToSleep(false, "command o");
-    if (c == 'w') goToSleep(true, "command w (dry run)", true);
+    if (c == 's') goToSleep(true, "command s", SLEEP_COMMAND);
+    if (c == 'o') goToSleep(false, "command o", SLEEP_COMMAND);
+    if (c == 'w') goToSleep(true, "command w (dry run)", SLEEP_COMMAND, true);
     if (c == 'i') imuStopReq = true;                         // the sampler stops the IMU (it owns the bus)
     if (c == 'h') {                                          // bench: hang; the watchdog resets in 8 s
       msg.println("# hanging loop() on purpose: the watchdog resets in 8 s");
@@ -645,10 +658,10 @@ void loop() {
     }
   }
   if (sleepReq == SLEEP_LID_DOWN) {                         // still no PC and no session?
-    if (!usbOpen && !sessionHold) goToSleep(true, "lid-down gesture");
+    if (!usbOpen && !sessionHold) goToSleep(true, "lid-down gesture", SLEEP_LID_DOWN);
     sleepReq = 0;
   }
-  if (sleepReq == SLEEP_IMU_LOST) goToSleep(false, "IMU lost");
+  if (sleepReq == SLEEP_IMU_LOST) goToSleep(false, "IMU lost", SLEEP_IMU_LOST);
   if (imuRestarts != seenRestarts) {
     seenRestarts = imuRestarts;
     msg.println("# IMU stopped answering, restarted it");
@@ -657,6 +670,7 @@ void loop() {
 
   housekeeping(now);
   podLinkTick(now);                                          // Bluetooth (and the P / S / I bench lines)
+  if (sleepCmd) goToSleep(sleepCmd == 1, sleepCmd == 1 ? "BLE SLEEP" : "BLE SLEEP, IMU off", SLEEP_COMMAND);
   usbDrain();
   delay(5);                                                  // the CPU sleeps; the sampler wakes on its own
 }

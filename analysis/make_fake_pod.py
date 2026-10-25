@@ -484,7 +484,11 @@ class Bench:
         p.sleeping = True
         p.sleep_reason = reason
         if p.streaming and p.connected:
-            p.drain = {"head": p.head, "kind": "sleep", "deadline": self.now + 1500}
+            dl = self.now + 1500
+            if p.drain and p.drain["kind"] == "stop":
+                dl = min(dl, p.drain["deadline"])     # never past the STOP's cap: the phone's stop wait is sized on it
+            p.retry = None                # a frame built for a STOP drain may carry FINAL there: rebuild it
+            p.drain = {"head": p.head, "kind": "sleep", "deadline": dl}
         else:
             self.pod_go_to_sleep_2()
 
@@ -791,6 +795,66 @@ def sc_sleep_cut():
     tail = lambda got: len(got) == 1 and got[0] > 0
     return b, {"ranges": [(ep, first_cmd(p), p.drain_heads[-1][1])], "gaps": {"sleep-tail": tail},
                "stats": {"reconnects": 1, "stopped": 1}}
+
+
+def finals(b):
+    """(first_idx, n) of every DATA frame with FINAL the phone received."""
+    out = []
+    for kind, _, payload in b.log:
+        if kind == "frame" and payload[:2] == f"{pl.T_DATA:02x}":
+            f = pl.decode_frame(bytes.fromhex(payload))
+            if f["flags"] & pl.F_FINAL:
+                out.append((f["first_idx"], f["n"]))
+    return out
+
+
+def sc_stop_then_sleep():
+    # a STOP drain on a link slower than the cap assumes (40-80 ms: ~50 frames/s, not 60), and a
+    # sleep (lid-down: STOP released the hold) 100 ms before its cap. The sleep keeps the STOP's
+    # cap, so going_to_sleep lands inside the phone's stop wait (~1.2 s past the cap at 16 per
+    # frame); a fresh 1.5 s drain would land after it: a false 'stop timed out'
+    b = Bench("stop-then-sleep-at-cap", seed=41, lat=(40.0, 40.0))
+    b.run(3000); b.connect(); b.run(4000)
+    b.disconnect(); b.run(30000)
+    b.connect(); b.run(300)
+    b.stop()
+    p = b.pods[0]
+    while not (p.drain and p.drain["kind"] == "stop"):
+        b.run(1)
+    b.run(round(p.drain["deadline"] - b.now - 100))
+    b.pod_sleep(2)
+    b.run(4000); b.finish()
+    ep = b.stream.epochs[0]
+    tail = lambda got: len(got) == 1 and got[0] > 0
+    return b, {"ranges": [(ep, first_cmd(p), p.drain_heads[-1][1])], "gaps": {"sleep-tail": tail},
+               "stats": {"reconnects": 1, "stopped": 1},
+               "extra": {"no FINAL on a capped drain": lambda: None if not finals(b) else f"FINAL frames {finals(b)}"}}
+
+
+def sc_stop_final_then_sleep():
+    # the STOP drain's last frame (FINAL) is built but waits for a free slot when the sleep comes:
+    # it must be rebuilt, so the only FINAL frame ends at the final head
+    b = Bench("stop-final-then-sleep", seed=42)
+    b.run(3000); b.connect(); b.run(4000)
+    b.disconnect(); b.run(6000)           # a backlog keeps all 3 slots busy to the drain's last frame
+    b.connect(); b.run(300)
+    b.stop()
+    p = b.pods[0]
+    for _ in range(5000):
+        if p.retry is not None and p.retry["bytes"][12] & pl.F_FINAL:
+            break
+        b.run(1)
+    else:
+        raise AssertionError("never caught a built FINAL frame waiting for a slot")
+    b.pod_sleep(4)
+    b.run(4000); b.finish()
+    ep = b.stream.epochs[0]
+    end = p.drain_heads[-1][1]
+    ok = lambda: (None if [fi + n for fi, n in finals(b)] == [end]
+                  else f"FINAL frames {finals(b)}, the sleep drain ended at {end}")
+    return b, {"ranges": [(ep, first_cmd(p), end)], "stats": {"stopped": 1},
+               "extra": {"one FINAL, at the final head": ok,
+                         "sleep event": lambda: None if ("sleep", "command") in b.events else "no sleep(command) event"}}
 
 
 def sc_imu_restart():
@@ -1130,7 +1194,7 @@ SCENARIOS = [sc_clean, sc_scale, sc_reconnect_rewind, sc_overflow, sc_lap, sc_pk
              sc_stop_timeout_finish, sc_lost_tail,
              sc_lost_tail_catchup,
              sc_same_boot_id, sc_boot_mismatch, sc_other_pod, sc_held_data, sc_clock_step,
-             sc_after_close, sc_round_tie]
+             sc_after_close, sc_round_tie, sc_stop_then_sleep, sc_stop_final_then_sleep]
 
 
 def run_all(write=True, quiet=False):

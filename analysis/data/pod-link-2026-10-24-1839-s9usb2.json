@@ -1,0 +1,58 @@
+{
+ "samples": 6896,
+ "ended": "done",
+ "gaps": [],
+ "faults": [],
+ "stats": {
+  "samples": 6896,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 0,
+  "epochs": 2,
+  "clock_clamped": 0,
+  "stopped": 2
+ },
+ "lost_overflow_by_boot": {
+  "894452709": [
+   0,
+   0
+  ],
+  "3967845572": [
+   0,
+   0
+  ]
+ },
+ "sleeps": [
+  {
+   "reason": "command",
+   "at_s": 18.026,
+   "samples": 3957,
+   "disconnect_after_ms": 134
+  }
+ ],
+ "epochs": [
+  {
+   "boot_id": 894452709,
+   "reboot": false,
+   "samples_before": 0,
+   "at_s": 1.974
+  },
+  {
+   "boot_id": 3967845572,
+   "reboot": true,
+   "samples_before": 3957,
+   "at_s": 46.136
+  }
+ ],
+ "last_idx": 2938,
+ "next_idx": 2939,
+ "lost_counted": 0
+}

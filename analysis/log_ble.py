@@ -7,9 +7,14 @@ ever filled in: a sample that can't come back is a counted, located gap.
     python log_ble.py                                    # Ctrl+C stops (with the STOP handshake)
     python log_ble.py --seconds=600 --name=proof
     python log_ble.py --seconds=420 --outage=3@40 --outage=60@300   # drop the link: 3 s at 40 s, ...
+    python log_ble.py --seconds=300 --sleep=15 --until-wake=15      # step 9: sleep, pickup, new epoch
 
 --outage=S@T disconnects on purpose T s into the run and reconnects S s later (the outage
 matrix: the pod's side is the same as a real dropout, docs/ble.md 5). Times count from the start.
+--sleep=T[:mode] sends the SLEEP op T s in (mode 0 = wake on motion, 1 = IMU off). After any
+sleep the receiver keeps trying to reconnect, so a pickup lands in a new epoch;
+--until-wake=S ends the run S s after the first sample from a pod that rebooted (woke).
+Check a sleep run with check_sleep.py.
 
 Saves, in data/ (P2), and never over an earlier run (a -2, -3 suffix in the same minute):
   bar-pod-<stamp>[-name].csv       the samples, same columns as log_serial.py and the app
@@ -72,9 +77,15 @@ class Receiver:
         self.n_at_connect = 0
         self.lost_by_boot = {}         # boot_id -> [first, last] lost_overflow the pod reported
         self.ended = "running"         # how the run ended, for the JSON
+        self.t0 = time.time()
+        self.sleeps = []               # per going_to_sleep STATUS: reason, when, the disconnect after it
+        self.epochs = []               # per epoch: boot_id, reboot, samples before it, when
+        self.woke_at = None            # time of the first sample of a rebooted (woken) pod
 
     # ---- the decoder's side ----
     def on_sample(self, s):
+        if self.woke_at is None and self.epochs and self.epochs[-1]["reboot"]:
+            self.woke_at = time.time()
         self.n += 1
         a = (s["ax"] ** 2 + s["ay"] ** 2 + s["az"] ** 2) ** 0.5
         self.f.write(f"{s['t']:.6f},{s['ax']:.6f},{s['ay']:.6f},{s['az']:.6f},{a:.6f},"
@@ -90,6 +101,12 @@ class Receiver:
                 self.mtu_small_since = time.time()
         elif kind in ("fault", "gap", "epoch", "sleep"):
             print(f"      {kind}: {info}", flush=True)
+        if kind == "sleep":
+            self.sleeps.append({"reason": info, "at_s": round(time.time() - self.t0, 3), "samples": self.n,
+                                "disconnect_after_ms": None})
+        elif kind == "epoch":
+            self.epochs.append({"boot_id": info["boot_id"], "reboot": info["reboot"], "samples_before": self.n,
+                                "at_s": round(time.time() - self.t0, 3)})
 
     def log(self, kind, arrival, payload):
         self.cap.write(f"capture,{self.step},{kind},{arrival},{payload}\n")
@@ -112,6 +129,9 @@ class Receiver:
     def on_disconnect(self, _client):
         self.linked = False
         self.lost_link.set()
+        sl = self.sleeps[-1] if self.sleeps else None
+        if sl and sl["disconnect_after_ms"] is None:       # the pod's own disconnect after going_to_sleep
+            sl["disconnect_after_ms"] = round((time.time() - self.t0 - sl["at_s"]) * 1000)
 
     async def command(self):
         b = self.stream.command()
@@ -141,6 +161,11 @@ class Receiver:
         self.connected_at = time.time()
         self.n_at_connect = self.n
         return self.dev.address
+
+    async def sleep_command(self, mode):
+        b = bytes([pl.OP_SLEEP, mode])
+        self.log("ctrl", "", b.hex())   # not "cmd": replay() checks those against command()
+        await self.client.write_gatt_char(pl.CTRL_UUID, b, response=True)
 
     async def drop(self):
         self.linked = False
@@ -188,13 +213,15 @@ class Receiver:
         await self.drop()
 
 
-async def run(rx, address, seconds, outages, quit_flag):
+async def run(rx, address, seconds, outages, quit_flag, sleeps=(), until_wake=None):
     t0 = time.time()
     el = lambda: time.time() - t0
-    give_up = lambda: quit_flag() or (seconds is not None and el() >= seconds)
+    woke_done = lambda: until_wake is not None and rx.woke_at is not None and time.time() - rx.woke_at >= until_wake
+    give_up = lambda: quit_flag() or (seconds is not None and el() >= seconds) or woke_done()
     addr = await rx.connect(address)
     print(f"Streaming from {rx.dev.name or 'BarPod'} {addr}. Ctrl+C stops.", flush=True)
     outages = sorted(outages, key=lambda o: o[1])
+    sleeps = sorted(sleeps)
     t_print = 0
     while not give_up():
         await asyncio.sleep(0.25)
@@ -212,6 +239,11 @@ async def run(rx, address, seconds, outages, quit_flag):
                 rx.frame(await rx.client.read_gatt_char(pl.INFO_UUID))
                 rx.frame(await rx.client.read_gatt_char(pl.STATUS_UUID))
             await rx.command()
+        if sleeps and el() >= sleeps[0][0] and rx.linked:
+            at, mode = sleeps.pop(0)
+            print(f"  {el():6.1f} s: SLEEP op, mode {mode}", flush=True)
+            await rx.sleep_command(mode)
+            continue
         if outages and el() >= outages[0][1]:
             dur, at = outages.pop(0)
             print(f"  {el():6.1f} s: outage {dur:g} s (disconnecting on purpose)", flush=True)
@@ -224,7 +256,9 @@ async def run(rx, address, seconds, outages, quit_flag):
                 break
             continue
         if rx.lost_link.is_set() and not rx.linked:
-            print(f"  {el():6.1f} s: link lost, reconnecting", flush=True)
+            asleep = rx.sleeps and rx.sleeps[-1]["samples"] == rx.n
+            print(f"  {el():6.1f} s: " + ("the pod went to sleep, reconnecting when it wakes" if asleep
+                                          else "link lost, reconnecting"), flush=True)
             if not await rx.reconnect(addr, give_up):
                 break
         if el() - t_print >= 10:
@@ -236,9 +270,9 @@ async def run(rx, address, seconds, outages, quit_flag):
                   f"pod lost_overflow {st['lost_overflow'] if st else '?'}", flush=True)
 
 
-async def session(rx, address, seconds, outages, quit_flag):
+async def session(rx, address, seconds, outages, quit_flag, sleeps=(), until_wake=None):
     try:
-        await run(rx, address, seconds, outages, quit_flag)
+        await run(rx, address, seconds, outages, quit_flag, sleeps, until_wake)
         rx.ended = "quit" if quit_flag() else "done"
     except Exception as e:
         rx.ended = f"error: {type(e).__name__}: {e}"
@@ -256,6 +290,12 @@ def main():
         if a.startswith("--outage="):
             d, at = a.split("=", 1)[1].split("@")
             outages.append((float(d), float(at)))
+    sleeps = []
+    for a in sys.argv:
+        if a.startswith("--sleep="):
+            at, _, mode = a.split("=", 1)[1].partition(":")
+            sleeps.append((float(at), int(mode or 0)))
+    until_wake = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--until-wake=")), None)
     tag = datetime.now().strftime("%Y-%m-%d-%H%M") + (f"-{name}" if name else "")
     data = Path(__file__).parent / "data"
     out_csv = new_path(data, "bar-pod", tag, "csv")
@@ -270,14 +310,14 @@ def main():
         signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGINT, on_int)
     try:
-        asyncio.run(session(rx, address, seconds, outages, lambda: quit_now[0]))
+        asyncio.run(session(rx, address, seconds, outages, lambda: quit_now[0], sleeps, until_wake))
     finally:
         rx.f.close()
         rx.cap.close()
         s = rx.stream
         ep = s.ep
         link = {"samples": rx.n, "ended": rx.ended, "gaps": s.gaps, "faults": s.faults, "stats": s.stats,
-                "lost_overflow_by_boot": rx.lost_by_boot,
+                "lost_overflow_by_boot": rx.lost_by_boot, "sleeps": rx.sleeps, "epochs": rx.epochs,
                 "last_idx": ep.last_idx if ep else None, "next_idx": ep.next_idx if ep else None,
                 "lost_counted": sum(g["n"] for g in s.gaps if not g["kind"].startswith("imu"))}
         link_path.write_text(json.dumps(link, indent=1))
