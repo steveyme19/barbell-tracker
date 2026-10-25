@@ -210,7 +210,10 @@ Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
   the reconnect waits until it's back on.
   Check it on the phone: `node android/podlink_check.mjs --install [--drop]` (the frames also go
   through the app's own PodStream; `--drop` makes the pod sleep-and-reset over USB to test the
-  reconnect). `PodNativeSource` (the app's source on top of it) is step 12.
+  reconnect). Passed on the Pixel 9 Pro XL 2026-10-25: mtu 247, 13.2 frames/s, 210.7 samples/s with
+  0 gaps, a reconnect by itself in 19 s. `PodNativeSource` (the app's source on top of it) is step 12.
+  A debug build's Capacitor logs every event at verbose level: read logcat early, the 256 KiB buffer
+  wraps in minutes.
 
 ## Later
 

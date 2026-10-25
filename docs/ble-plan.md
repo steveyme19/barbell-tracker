@@ -250,17 +250,25 @@
   - Open: real radio-off (laptop Bluetooth off: a system setting); Android Chrome (the Pixel run);
     an End while the link is fully down can't send STOP, so the pod keeps its hold up to 30 min (the
     spec's accepted fallback).
-- **Step 11 built, not yet run on the phone** (2026-10-24/25): `android/.../PodLinkPlugin.java`
+- **Step 11 done** (2026-10-24/25, verified on the Pixel 9 Pro XL, API 36): `android/.../PodLinkPlugin.java`
   (registered in MainActivity; manifest: BLUETOOTH_SCAN neverForLocation, BLUETOOTH_CONNECT,
   bluetooth_le not required). A dumb pipe: connect() (Nearby devices once; the saved pod 10 s, else
   an 8 s scan), the connection order (services, MTU 247, INFO, STATUS, the DATA CCCD), raw frames to
   JS every ~50 ms with their elapsedRealtime arrival, write() / reread() queued one at a time,
   disconnect(); an unrequested drop reconnects with autoConnect and runs the order again ("ready",
   link + 1). `gradlew assembleDebug` builds (Java 25, no new dependency).
-  - **Not verified:** the phone wasn't plugged in. `node android/podlink_check.mjs --install --drop`
-    does the plan's checks (connect resolves with mtu 247, ~13 DATA frames/s, logcat shows the MTU and
-    the DATA CCCD write), runs the frames through the app's own PodStream on the phone (0 gaps), and
-    with --drop has the pod sleep-and-reset over USB to check the plugin reconnects by itself.
+  - On the phone (`node android/podlink_check.mjs --install --drop`, all PASS): Nearby devices asked
+    once and waited for the answer; connect() resolved with mtu 247 (1.5 s to the saved pod later),
+    INFO and STATUS first; logcat shows the MTU and the DATA CCCD write (status 0); 13.2 DATA
+    frames/s and 1.00 STATUS/s, arrival times in order; the frames through the app's own PodStream
+    on the phone: 210.7 samples/s, 16/pkt, 0 gaps, no faults. The pod's `w` (the sleep prologue,
+    then a reset) gave "lost", then the plugin's autoConnect and the connection order again, "ready"
+    in 19 s; the decoder got the new boot and samples resumed. Android called that drop status 257,
+    not the pod's 0x13: any unrequested drop is a reconnect, so it doesn't matter.
+  - The harness's first run failed three checks, all its own: the frame rate counted STREAM_LIVE's
+    2.8 s lead-in; it closed the pod's USB port right after writing `w` (the pod reads commands only
+    while a host holds the port, so `w` never arrived); and it read logcat at the end, by when a debug
+    build's verbose log of every event (20/s) had wrapped the phone's 256 KiB buffer.
   - **Changed against this plan:** Android 13+ (API 33), not 12+ (section 6, choice 3): only
     getRemoteLeDevice(addr, ADDRESS_TYPE_RANDOM) tells Android the pod's address is random static;
     on 12 a reconnect after a Bluetooth restart waits forever. connect() takes no address; `any:

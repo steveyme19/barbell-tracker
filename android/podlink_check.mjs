@@ -62,12 +62,20 @@ async function page() {
   return { js, close: () => { ws.close(); adb("forward", "--remove", `tcp:${PORT}`); } };
 }
 
+// The pod reads a bench command only while a host holds its port open (loop() checks Serial
+// first), so stay open until it answers: "# sleeping: ..." (up to 3 s).
 function sendToPod(cmd) {
-  const code = ["import serial, serial.tools.list_ports as lp",
+  const code = ["import serial, time, serial.tools.list_ports as lp",
     "port = next(p.device for p in lp.comports() if '2886' in p.hwid)",
-    "s = serial.Serial(port, 115200); s.write(b'" + cmd + "'); s.close()"].join("\n");
+    "s = serial.Serial(port, 115200, timeout=0.3); s.reset_input_buffer(); time.sleep(0.3); s.write(b'" + cmd + "')",
+    "t0 = time.time()",
+    "while time.time() - t0 < 3:",
+    "    ln = s.readline().decode('ascii', 'ignore').strip()",
+    "    if ln.startswith('# sleeping'): print(ln); break",
+    "s.close()"].join("\n");
   const r = spawnSync(PYTHON, ["-c", code], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`couldn't send ${cmd} to the pod over USB: ${r.stderr.slice(-300)}`);
+  return r.stdout.trim();
 }
 
 async function main() {
@@ -118,25 +126,31 @@ async function main() {
     check(!info.error && info.mtu === 247 && firstTypes[0] === 0x20 && firstTypes[1] === 0x10,
       `connect() in ${((Date.now() - t0) / 1000).toFixed(1)} s: ${JSON.stringify(info)}; first frames INFO, STATUS (${firstTypes.map((x) => "0x" + x.toString(16)).join(" ")})`);
     if (info.error) return;
+    // now, while it's fresh: a debug build logs every event at verbose level and the 256 KiB log
+    // buffer wraps within minutes
+    const log = adb("logcat", "-d", "-s", "PodLink:*").split("\n").filter((l) => /PodLink/.test(l));
+    for (const l of log.slice(-8)) note(l.replace(/^.*PodLink\s*:\s*/, "logcat: "));
+    check(log.some((l) => /mtu 247/.test(l)) && log.some((l) => /DATA CCCD write, status 0/.test(l)), "logcat shows the MTU and the DATA CCCD write");
     await js(`(async () => { const b = window.__pl.stream.command(); await window.__pl.write(b); window.__pl.auto = true; })()`);
+    await sleep(5000);                            // STREAM_LIVE(600) sends 2.8 s of lead-in at once: count after it
     const n0 = await js("window.__pl.frames.length");
+    const s0 = await js("window.__pl.samples");
     await sleep(SECONDS * 1000);
     const st = await js(`(() => { const H = window.__pl; const f = H.frames.slice(${n0});
       const span = (f.at(-1)[1] - f[0][1]) / 1000;
       const w = H.frames.map((x) => x[1]); let back = 0; for (let i = 1; i < w.length; i++) if (w[i] < w[i - 1]) back++;
       return { span, data: f.filter((x) => x[0] === 1).length, status: f.filter((x) => x[0] === 0x10).length, back,
-        samples: H.samples, gaps: H.stream.gaps.length, faults: H.stream.faults, perPkt: H.stream.ep?.status?.n_per_packet }; })()`);
+        samples: H.samples, inWindow: H.samples - ${s0}, gaps: H.stream.gaps.length, faults: H.stream.faults, perPkt: H.stream.ep?.status?.n_per_packet }; })()`);
     const fps = st.data / st.span;
     check(fps > 12 && fps < 14.5 && st.status >= SECONDS - 2 && st.back === 0,
       `${fps.toFixed(1)} DATA frames/s and ${(st.status / st.span).toFixed(2)} STATUS/s over ${st.span.toFixed(1)} s, arrival times in order`);
     check(st.gaps === 0 && !st.faults.length && st.samples > 0,
-      `the app's PodStream on those frames: ${st.samples} samples (${(st.samples / st.span).toFixed(0)}/s), ${st.perPkt}/pkt, gaps ${st.gaps}, faults ${JSON.stringify(st.faults)}`);
+      `the app's PodStream on those frames: ${st.samples} samples (${(st.inWindow / st.span).toFixed(1)}/s in the window), ${st.perPkt}/pkt, gaps ${st.gaps}, faults ${JSON.stringify(st.faults)}`);
 
     if (DROP) {
       const before = await js("window.__pl.states.length");
       const samples0 = await js("window.__pl.samples");
-      sendToPod("w");
-      note("sent w to the pod over USB: the sleep prologue, then a reset");
+      note(`sent w to the pod over USB: ${sendToPod("w") || "(no answer)"}`);
       const tDrop = Date.now();
       for (let i = 0; i < 240; i++) {
         const s = await js(`window.__pl.states.slice(${before})`);
@@ -158,12 +172,13 @@ async function main() {
     await js("Capacitor.Plugins.PodLink.disconnect()");
     const states = await js("window.__pl.states");
     check(states.at(-1) === "closed", `disconnect(): states ${states.join(" ")}`);
+    if (DROP) {
+      const log = adb("logcat", "-d", "-s", "PodLink:*").split("\n").filter((l) => /PodLink/.test(l));
+      for (const l of log.slice(-10)) note(l.replace(/^.*PodLink\s*:\s*/, "logcat: "));
+    }
   } finally {
     close();
   }
-  const log = adb("logcat", "-d", "-s", "PodLink:*").split("\n").filter((l) => /PodLink/.test(l));
-  for (const l of log.slice(-12)) note(l.replace(/^.*PodLink\s*:\s*/, "logcat: "));
-  check(log.some((l) => /mtu 247/.test(l)) && log.some((l) => /DATA CCCD write, status 0/.test(l)), "logcat shows the MTU and the DATA CCCD write");
 }
 
 main().then(() => { console.log(ok ? "PASS" : "FAIL"); process.exit(ok ? 0 : 1); },
