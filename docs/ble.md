@@ -370,9 +370,14 @@ vectors that prove it.
   - **Closing.** A STATUS with going_to_sleep always closes the open stream (the ring dies with
     the sleep): if `head - nextIdx > 0`, a `sleep-tail` gap. A STATUS with stream_stopped closes
     it with a `stop-tail` gap the same way, except when it belongs to a stream the phone already
-    replaced: if the current command hasn't started and the open stream was opened by an older
-    cmd_seq, it's dropped and counted (`stale_stops`) and changes nothing (the new STREAM_FROM
-    fetches those samples again). A tail gap has idx = nextIdx, n = head - nextIdx, t0 = the
+    replaced: if the current command hasn't started, the open stream was opened by an older
+    cmd_seq, and a STOP is still owed its answer after a later STREAM command overtook it
+    (`stale_due` > 0: +1 when command() cancels a pending STOP; reset to 0 at a same-boot
+    reconnect INFO, a new epoch and the current command's first DATA), it's dropped and counted
+    (`stale_stops`, `stale_due` - 1) and changes nothing (the new STREAM_FROM fetches those
+    samples again). Without that STOP it is the answer to a STOP sent after the command: after a
+    reconnect a capped STOP (n_max < 4 before the pod's own MTU exchange) is answered before the
+    new stream's first DATA, and closes it (step 10 review). A tail gap has idx = nextIdx, n = head - nextIdx, t0 = the
     last kept sample's t, t1 = the t of that STATUS's ticks_now (unwrapped and mapped like a
     sample); if the epoch never emitted, t0 = t1 = null. Then nextIdx = head. Every closing
     STATUS counts `stopped` and raises event `stopped` (`stop` / `sleep`); going_to_sleep also
@@ -380,6 +385,12 @@ vectors that prove it.
   - **Lost tail.** A new epoch starting while the old epoch's stream is open (the pod slept or
     reset while disconnected) records a `lost-tail` gap in the old epoch from nextIdx to its
     latest STATUS head, `lower_bound: true` (the phone can't know how far the pod got).
+  - **Owed tail.** A reboot epoch (a woken or reset pod) that never streamed (no nextIdx, not
+    open) but had a STATUS still owes everything from index 0, its pickup: when a new epoch
+    replaces it, or at `finish()`, it records a tail gap idx 0, n = its latest STATUS head,
+    t0 = t1 = null, `lower_bound: true` (`stop-tail` at finish if a STOP was pending, else
+    `lost-tail`), then nextIdx = head. Without it, a link that drops between a woken pod's
+    STREAM_FROM(new boot, 0) and its first DATA would lose the pickup uncounted (step 10 review).
 - **pkt_seq**: kept per epoch, starting undefined. For every non-stale DATA frame of an open
   stream (fully duplicated ones included): a RESYNC frame or an undefined prev just sets prev.
   Otherwise pkt_seq must equal `(prev + 1) & 0xFFFF`; if not, count one `pkt_seq_gaps` and add
@@ -396,7 +407,8 @@ vectors that prove it.
   (`stop_timed_out()`): fault `stop timed out`, and the stream **stays open**, so a late
   stream_stopped still closes it exactly. `finish()` (the app ends the session or tears the link
   down) closes a still-open stream with a tail up to the latest STATUS head, `lower_bound:
-  true`: kind `stop-tail` if a STOP was pending, else `lost-tail`.
+  true`: kind `stop-tail` if a STOP was pending, else `lost-tail` (and records an owed tail, see
+  Closing).
 - **Counters** (all start at 0): samples, bad, pre_info, ignored, stale, stale_stops,
   after_close, dupes, t_backwards, pkt_seq_gaps, pkt_seq_lost, reconnects, epochs,
   clock_clamped, stopped. **Faults** (strings, in order): another pod, bad INFO (proto or

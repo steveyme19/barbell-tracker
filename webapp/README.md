@@ -66,14 +66,18 @@ Bluetooth headphones off, they starve the scan (D28).
 | `calib.js` | 6-face accelerometer calibration (D23), ported from `analysis/calib.py` |
 | `lv.js` | load-velocity profile + e1RM (D22), ported from `analysis/lv.py` |
 | `store.js` | session history in IndexedDB: a small record per session + each set's raw samples (history list, resume after the app was killed) |
-| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`) and `PodWebSource` (the pod over Web Bluetooth) |
+| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`) and `PodWebSource` (the pod over Web Bluetooth; reconnects by itself after a dropout, a reset or a sleep) |
+| `gaps.js` | the set cards' data-gap flags from the pod's decoder (a dropout longer than its ring, a restart, a link that never came back) |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
 | `fileio.js` | read phyphox CSV/zip, write CSV |
 | `plot.js` | tiny canvas plotter |
 | `test/parity.mjs` | checks `reps.js` against `reps.py` |
-| `test/pod.mjs` | checks `PodStream` against `podlink.py` (31 simulator scenarios, bit for bit) |
-| `test/pod_web.mjs` | `PodWebSource`'s failure paths against a fake Bluetooth device |
+| `test/pod.mjs` | checks `PodStream` against `podlink.py` (36 simulator scenarios, bit for bit) |
+| `test/pod_web.mjs` | `PodWebSource`'s failure and reconnect paths against a fake Bluetooth device that behaves like Chrome |
+| `test/gaps.mjs` | `gaps.js` on made-up sets |
 | `test/pod_browser.mjs` | bench: the real pod in real Chrome over the DevTools protocol (`--reps` for hand reps) |
+| `test/pod_reconnect.mjs` | bench: dropouts, a reset and a sleep in real Chrome (`--hands-free` with `analysis/usb_clock.py`) |
+| `test/cdp.mjs` | the DevTools-protocol client and Chrome launcher the two bench scripts share |
 
 ## Architecture (decision D4)
 

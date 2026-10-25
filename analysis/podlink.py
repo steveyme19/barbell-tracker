@@ -132,6 +132,8 @@ class PodStream:
         self.cmd_seq = 0
         self.cmd = None                     # the current STREAM command
         self.stop = None                    # a pending STOP: {"head", "timed_out"}
+        self.stale_due = 0                  # STOPs a later STREAM command overtook: their stream_stopped
+                                            # may still come, and closes nothing (section 7, Stop)
         self.gaps = []
         self.faults = []
         self.stats = {"samples": 0, "bad": 0, "pre_info": 0, "ignored": 0, "stale": 0,
@@ -163,16 +165,26 @@ class PodStream:
             return ep.last_t
         return self.last_t if self.last_t is not None else t1
 
+    def _owed(self, ep, kind):
+        """A woken (reboot) epoch that never streamed still owes everything from index 0 up to the
+        last head the phone heard: a lower-bound tail with no time (section 7, Closing)."""
+        if ep.is_reboot and not ep.open and ep.next_idx is None and ep.status is not None and ep.status["head"] > 0:
+            self._gap(ep, kind, ep.status["head"], 0, None, None, lower_bound=True)
+            ep.next_idx = ep.status["head"]
+
     def _new_epoch(self, info, is_reboot):
         old = self.ep
         if old is not None and old.open:
             # the pod slept or reset while disconnected: count what we know, a lower bound
             self._close(old, old.status["head"] if old.status else old.next_idx, old.status_t64,
                         "lost-tail", lower_bound=True)
+        elif old is not None:
+            self._owed(old, "lost-tail")
         ep = Epoch(info, is_reboot)
         self.epochs.append(ep)
         self.ep = ep
         self.stop = None
+        self.stale_due = 0
         self.stats["epochs"] += 1
         self.on_event("epoch", {"boot_id": ep.boot_id, "reboot": is_reboot})
         return ep
@@ -230,7 +242,9 @@ class PodStream:
         ep = self.ep
         if ep is not None and f["boot_id"] == ep.boot_id:
             # same boot: the epoch continues. Keep what a boot_mismatch would have to roll back.
+            # Nothing the pod queued for the old link can still come (it drops it at the disconnect).
             self.stats["reconnects"] += 1
+            self.stale_due = 0
             ep.snap = (ep.status, ep.status_t64, ep.ref32, ep.ref64, list(ep.win), ep.wall_base)
             return
         self._new_epoch(f, is_reboot=ep is not None)
@@ -277,9 +291,12 @@ class PodStream:
             self.on_event("sleep", SLEEP_REASONS.get(f["sleep_reason"], "?"))
         elif f["flags"] & S_STREAM_STOPPED:
             cmd = self.cmd
-            if cmd is not None and not cmd["started"] and ep.open and ep.open_seq != cmd["seq"]:
+            if cmd is not None and not cmd["started"] and ep.open and ep.open_seq != cmd["seq"] and self.stale_due > 0:
                 # the end of a stream the phone already replaced (STOP then Start): the new
-                # STREAM_FROM fetches those samples again, so record nothing
+                # STREAM_FROM fetches those samples again, so record nothing. Only an overtaken STOP
+                # gets this answer: after a reconnect, a STOP the phone sends on the new link can be
+                # answered before the new stream's first DATA, and that one closes the stream.
+                self.stale_due -= 1
                 self.stats["stale_stops"] += 1
             else:
                 self._close(ep, f["head"], t64, "stop-tail")
@@ -301,6 +318,7 @@ class PodStream:
         first_frame = not cmd["started"]
         if first_frame:
             cmd["started"] = True
+            self.stale_due = 0              # DATA and STATUS come in order (D28): no stale stop is left
             ep.snap = None                  # this boot answered: nothing left to roll back
             had_idx = ep.next_idx is not None
             cmd["resync_skip"] = cmd["op"] == OP_STREAM_LIVE and had_idx
@@ -383,6 +401,8 @@ class PodStream:
         if self.ignoring or self.need_info:
             return None
         ep = self.ep
+        if self.stop is not None:
+            self.stale_due += 1             # its stream_stopped may still come: the old stream's end
         self.stop = None                    # a STREAM command cancels a pending STOP wait
         self.cmd_seq = (self.cmd_seq + 1) & 0xFF
         if ep is not None and ep.next_idx is not None:
@@ -424,9 +444,11 @@ class PodStream:
         """The session is over (the app ends it or tears the link down). A stream still open
         gets a lower-bound tail up to the last head the phone heard."""
         ep = self.ep
+        kind = "stop-tail" if self.stop is not None else "lost-tail"
         if ep is not None and ep.open:
-            kind = "stop-tail" if self.stop is not None else "lost-tail"
             self._close(ep, ep.status["head"] if ep.status else None, ep.status_t64, kind, lower_bound=True)
+        elif ep is not None:
+            self._owed(ep, kind)
         self.stop = None
 
     def wall_at(self, t):

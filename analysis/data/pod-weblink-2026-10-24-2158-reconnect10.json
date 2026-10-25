@@ -1,0 +1,136 @@
+{
+ "name": "BarPod-E26C",
+ "serial": 1106187551,
+ "bootId": 1170030117,
+ "odr": 208,
+ "ringN": 8192,
+ "accelLsb": 0.0023928226437419653,
+ "gyroLsb": 0.03500000014901161,
+ "perPacket": 16,
+ "intervalMs": 15,
+ "volts": 4.171,
+ "podLost": 0,
+ "battLow": false,
+ "lost": 8508,
+ "gaps": 2,
+ "faults": [],
+ "stats": {
+  "samples": 18330,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 2,
+  "epochs": 3,
+  "clock_clamped": 0,
+  "stopped": 2
+ },
+ "linked": true,
+ "asleep": null,
+ "sleepMode": null,
+ "reconnects": 4,
+ "epochs": 3,
+ "linkEvents": [
+  {
+   "at": 1792893516298,
+   "kind": "lost"
+  },
+  {
+   "at": 1792893528440,
+   "kind": "back",
+   "tries": 1
+  },
+  {
+   "at": 1792893543483,
+   "kind": "lost"
+  },
+  {
+   "at": 1792893605931,
+   "kind": "back",
+   "tries": 1
+  },
+  {
+   "at": 1792893622920,
+   "kind": "lost"
+  },
+  {
+   "at": 1792893625446,
+   "kind": "back",
+   "tries": 1
+  },
+  {
+   "at": 1792893637777,
+   "kind": "asleep",
+   "reason": "command"
+  },
+  {
+   "at": 1792893652131,
+   "kind": "back",
+   "tries": 2
+  }
+ ],
+ "epochList": [
+  {
+   "bootId": 2120675617,
+   "reboot": false,
+   "firstT": 0,
+   "tOffset": -6929.218719482422,
+   "wallBase": 1792886573146.6052,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 1477191,
+   "podLost": 4959,
+   "missedDrdy": 0
+  },
+  {
+   "bootId": 1955463737,
+   "reboot": true,
+   "firstT": 117.51271264648403,
+   "tOffset": 117.50941674804653,
+   "wallBase": 1792893619864.843,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 3721,
+   "podLost": 0,
+   "missedDrdy": 0
+  },
+  {
+   "bootId": 1170030117,
+   "reboot": true,
+   "firstT": 147.97616577148403,
+   "tOffset": 147.97268676757778,
+   "wallBase": 1792893650328.113,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 431,
+   "podLost": 0,
+   "missedDrdy": 0
+  }
+ ],
+ "gapList": [
+  {
+   "kind": "overflow",
+   "n": 4959,
+   "idx": 1466697,
+   "t0": 41.055633544921875,
+   "t1": 64.62750244140625,
+   "boot_id": 2120675617
+  },
+  {
+   "kind": "lost-tail",
+   "n": 3549,
+   "idx": 1477192,
+   "t0": 90.9320068359375,
+   "t1": 107.80203247070312,
+   "boot_id": 2120675617,
+   "lower_bound": true
+  }
+ ],
+ "mtu": null
+}

@@ -857,6 +857,55 @@ def sc_stop_final_then_sleep():
                          "sleep event": lambda: None if ("sleep", "command") in b.events else "no sleep(command) event"}}
 
 
+def sc_reconnect_stop_before_data():
+    # a same-boot reconnect on a link whose MTU the phone never exchanges (Android Chrome): no
+    # DATA until the pod's own exchange 1 s in. End right away: the pod caps the drain (n_max < 4)
+    # and its stream_stopped comes before the new stream's first DATA. It answers this STOP, so
+    # it closes the stream (no stale stop, no 'stop timed out')
+    b = Bench("reconnect-stop-before-data", seed=43, native_mtu=False)
+    b.run(3000); b.connect(); b.run(5000)
+    b.disconnect(); b.run(2000)
+    b.connect(); b.run(100)
+    b.stop(); b.run(4000); b.finish()
+    p = b.pods[0]; ep = b.stream.epochs[0]
+    return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
+               "gaps": {"stop-tail": lambda got: len(got) == 1 and got[0] > 0},
+               "stats": {"reconnects": 1, "stopped": 1, "stale_stops": 0}}
+
+
+def sc_wake_drop_before_data():
+    # the pod sleeps and wakes; the phone reconnects (INFO, STATUS, STREAM_FROM(new boot, 0)) but
+    # the link drops before any DATA, and the session ends: the pickup it was owed is a counted
+    # lower-bound tail from index 0, not silently missing
+    b = Bench("wake-drop-before-data", seed=44)
+    b.run(3000); b.connect(); b.run(5000)
+    b.pod_sleep(1); b.run(3000)
+    b.wake(boot_id=0x2044); b.run(4000)
+    b.connect(); b.disconnect()
+    b.run(1000); b.finish()
+    p1 = b.pods[0]; e1, e2 = b.stream.epochs
+    owed = e2.status["head"]
+    return b, {"ranges": [(e1, first_cmd(p1), p1.drain_heads[-1][1]), (e2, 0, owed)],
+               "gaps": {"lost-tail": lambda got: got == [owed]}, "stats": {"epochs": 2}}
+
+
+def sc_wake_drop_then_reset():
+    # the same, but the pod restarts again before the phone gets back: the new epoch closes the
+    # owed one with its lower-bound tail, and the third boot streams from 0 as usual
+    b = Bench("wake-drop-then-reset", seed=45)
+    b.run(3000); b.connect(); b.run(5000)
+    b.pod_sleep(1); b.run(3000)
+    b.wake(boot_id=0x2045); b.run(4000)
+    b.connect(); b.disconnect(); b.run(2000)
+    b.wake(boot_id=0x3045); b.run(2000)
+    b.connect(); b.run(6000); b.stop(); b.run(3000); b.finish()
+    p1, p2, p3 = b.pods
+    e1, e2, e3 = b.stream.epochs
+    owed = e2.status["head"]
+    return b, {"ranges": [(e1, first_cmd(p1), p1.drain_heads[-1][1]), (e2, 0, owed), (e3, 0, last_drain(p3))],
+               "gaps": {"lost-tail": lambda got: got == [owed]}, "stats": {"epochs": 3, "stopped": 2}}
+
+
 def sc_imu_restart():
     b = Bench("imu-restart-and-miss", seed=8, mtu=73)
     b.run(3000); b.connect(); b.run(3000)
@@ -1194,7 +1243,8 @@ SCENARIOS = [sc_clean, sc_scale, sc_reconnect_rewind, sc_overflow, sc_lap, sc_pk
              sc_stop_timeout_finish, sc_lost_tail,
              sc_lost_tail_catchup,
              sc_same_boot_id, sc_boot_mismatch, sc_other_pod, sc_held_data, sc_clock_step,
-             sc_after_close, sc_round_tie, sc_stop_then_sleep, sc_stop_final_then_sleep]
+             sc_after_close, sc_round_tie, sc_stop_then_sleep, sc_stop_final_then_sleep,
+             sc_reconnect_stop_before_data, sc_wake_drop_before_data, sc_wake_drop_then_reset]
 
 
 def run_all(write=True, quiet=False):

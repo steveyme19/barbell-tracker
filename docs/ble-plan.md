@@ -200,6 +200,56 @@
       waited. Now `bleTick()` runs in the wait; the next dry run read ticks 42598, head 273;
     - the `# ble sleep` line said "STATUS out" after a link loss or with DATA off;
     - check_sleep.py crashed on an empty file and failed a run stopped with Ctrl+C.
+- **Step 10 done** (2026-10-24, laptop Chrome; Android Chrome still open): `PodWebSource` reconnects
+  by itself (0.5, 1, 2, 4 s, then every 5 s; a connect that hangs is cancelled after 10 s) with the
+  same PodStream: STREAM_FROM the next index, or index 0 of a pod that slept or reset (a new epoch,
+  t still rising). Banners for link lost / asleep (with the hint the sleep reason calls for) /
+  battery low; the rest timer runs on the pod's wall clock through an outage. Set-card flags
+  ("data gap 22.0 s at 0:10: reps near it unreliable", "pod restarted at", "link lost at") in
+  `webapp/gaps.js`, kept with the set and in session.csv's notes; `link.json` at every set save and
+  at the end (the app), `barDebug.link()` (both); the footer counts reconnects and epochs.
+  - Bench (`webapp/test/pod_reconnect.mjs --hands-free`, real Chrome, the real pod), all PASS: a
+    10 s outage mid-session lost nothing (one reconnect); a 60 s outage gave one overflow gap of
+    4960 samples, exactly the rise of the pod's own lost_overflow, and link.json lists it; a
+    watchdog reset (bench `h`) gave a new epoch with t still rising, placed **26 ms** from the
+    truth; the `w` dry run (the step 9 prologue, then a reset) showed "Pod asleep (command)" and
+    came back by itself as a new boot 14 s later, sleep-tail 0, placed **11 ms** from the truth;
+    End's STOP handshake exact, and podlink.py replays the browser's capture to the same 19,843
+    samples. The truth is `analysis/usb_clock.py`: per boot, the lowest (PC time - t_us) over the
+    pod's USB lines (1 ms resolution, better than a stopwatch). pod_browser.mjs (step 6) passes on
+    the shared `test/cdp.mjs`.
+  - **Changed against this plan** (your call, to keep it hands-free): drops are deliberate
+    disconnects (`barDebug.podOutage`, as in step 7) rather than laptop Bluetooth off; the reset is
+    the watchdog, not the button; the sleep is the `w` dry run, not the SLEEP op plus a pickup (step
+    9 proved those 6 times). Not run: reps through an outage (one set, not split), a card flagged on
+    a real set and the next set detected after a wake; those wait for step 13's real sets, and
+    `webapp/test/gaps.mjs` covers the flag rules on made-up sets.
+  - **Found by the bench:** the first run's reset check failed by exactly 4294.967 s: the pod
+    prints t_us as a u32 (it wraps every 71.6 min) and that boot was 2 h old. A bug in the truth
+    tool, not the decoder (placed 6 ms off once unwrapped); usb_clock counts wraps now and the check
+    compares modulo one wrap. The reset 8 s after the 60 s outage cut the ring's catch-up short:
+    3288 samples, a counted lower-bound lost-tail, as designed.
+  - Review (4 lenses, 2 skeptics each; 22 findings, about 15 distinct, 2 refuted), all fixed:
+    - **decoder rules (P1: podlink.py first, then PodStream, docs/ble.md 7):** a STOP answered
+      before a reconnect's first DATA was taken for a stale stop (a false "stop timed out"): stale now
+      needs a STOP a later command overtook (`stale_due`). A woken pod whose STREAM_FROM(new boot, 0)
+      never started lost its pickup uncounted: an owed tail from index 0. 3 new scenarios (36), each
+      shown to fail on the old rule; pod.mjs 36/36 bit for bit;
+    - End during a reconnect's setup sent no STOP although the link was up (the pod kept its hold); a
+      going_to_sleep during a setup was cleared by a false "back"; a decoder request during the
+      connection order wrote a second STREAM command; a connect landing after End stayed connected; a
+      late read added an epoch after finish();
+    - flags: a set cut off by a link that never came back got none; the window added the lead-in and
+      trail-out twice; "at" went stale after a rename; restarts were tested as a point, not an
+      interval. The rest timer jumped back while a backlog drained; the footer said reconnecting
+      after End; the asleep banner said "bump the bar" when only USB wakes it;
+    - the fake device reused characteristic objects across connects and its disconnect() fired
+      nothing, so two checks passed vacuously: it now behaves like Chrome (new objects per link, old
+      ones reject, disconnect fires the event and cancels a pending connect). pod_web.mjs has 15
+      tests; each of 8 fixes, undone alone, fails one.
+  - Open: real radio-off (laptop Bluetooth off: a system setting); Android Chrome (the Pixel run);
+    an End while the link is fully down can't send STOP, so the pod keeps its hold up to 30 min (the
+    spec's accepted fallback).
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
