@@ -1,7 +1,7 @@
 // UI wiring: source -> session tracker (sets.js) -> rep algorithm -> UI (decision D4).
 // Session mode: start once, lift, and the tracker finds each set and the rest between.
-import { PhoneSource, NativeSensorSource, ReplaySource, PodWebSource } from "./sources.js";
-import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles, recordInBackground, vibrateNative } from "./native.js";
+import { PhoneSource, NativeSensorSource, ReplaySource, PodSource, PodWebSource, PodNativeSource } from "./sources.js";
+import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles, recordInBackground, askNotifications, vibrateNative } from "./native.js";
 import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { gapsNear, gapText } from "./gaps.js";
@@ -53,7 +53,10 @@ let wakeLock = null;
 let drawQueued = false;
 let sourceName = "";
 let sourceKind = "phone";     // sticky: "phone" or "pod" (localStorage "source")
-let podDevice = null;         // the pod picked with Connect pod (a page reload needs one more tap)
+let podDevice = null;         // the browser: the pod picked with Connect pod (a page reload needs one more tap)
+let podName = "";             // the app: the last pod its plugin connected to (it remembers the pod itself)
+let podPickNew = false;       // the app: the next Start picks the nearest pod instead of the saved one
+let ending = false;           // End is waiting for the source to stop (the pod's STOP handshake)
 let starting = false;         // a source is starting (the pod takes 1 to 10 s): no other session meanwhile
 
 // ---------- incoming data ----------
@@ -116,7 +119,9 @@ function scheduleAnalysis(lastMs = 0) {
 // ---------- tracker events ----------
 
 function onSet(set) {
-  set.index = session.sets.length;               // continues the count after a resume
+  // continues the count after a resume, past every stored index (a restore can skip a set: its
+  // index must not be reused, or the new set overwrites its CSV and stored samples)
+  set.index = session.sets.reduce((m, s) => Math.max(m, s.index + 1), 0);
   set.wallStart = session.t0Wall + set.startT * 1000;
   set.wallEnd = session.t0Wall + set.endT * 1000;
   const prev = session.sets[session.sets.length - 1];
@@ -135,9 +140,12 @@ function onSet(set) {
   buzz([100, 80, 100]);                                  // a set finished
   addSetCard(set);
   for (const s of session.sets) if (s !== set) fillSetCard(s);   // a new point for their profiles
-  if (session.autosave) saveSet(set).then(saveSummary).then(saveLink).catch((err) => showError(`Couldn't save: ${err.message}`));
-  if (session.persist) {
-    putSetSamples(session.id, set.index, set.samples, set.tAbs).then(persistSession)
+  // the saves belong to this session and source, whatever the app shows by the time they run
+  const ses = session, src = source;
+  if (ses.autosave) saveSet(set, ses).then(() => saveSummary(ses)).then(() => saveLink(ses, src))
+    .catch((err) => showError(`Couldn't save: ${err.message}`));
+  if (ses.persist) {
+    putSetSamples(ses.id, set.index, set.samples, set.tAbs).then(() => persistSession(ses))
       .catch((err) => showError(`Couldn't store the set: ${err.message}`));
   }
   render();
@@ -157,6 +165,7 @@ function newSession({ autosave, persist = false, from = null }) {
   if (from) {
     // picking up a stored session: same id, folder and sets, a new tracker
     session = sessionFromRecord(from, { autosave, persist });
+    session.part += 1;                               // a new part: its own pod.json / link.json
   } else {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, "0");
@@ -164,7 +173,7 @@ function newSession({ autosave, persist = false, from = null }) {
     // seconds in the id/folder: two sessions in the same minute must not overwrite each other
     const id = `session-${stamp}${pad(d.getSeconds())}`;
     session = { id, stamp, date: stamp.slice(0, 10), startedAt: d, folder: id,
-      autosave, persist, ended: false, sets: [] };
+      autosave, persist, ended: false, sets: [], part: 1 };
   }
   tracker = new SessionTracker({
     liftFor: () => seg?.lift ?? lift,
@@ -183,7 +192,7 @@ function newSession({ autosave, persist = false, from = null }) {
 
 async function startSession(from = null) {
   const pod = sourceKind === "pod";
-  if (pod && !podDevice) {
+  if (pod && !podDevice && !native) {
     showError("Tap Connect pod first (after a page reload the browser asks once more).");
     return;
   }
@@ -191,10 +200,23 @@ async function startSession(from = null) {
     showError(pod ? "Bluetooth needs HTTPS (or localhost)." : "Motion sensors need HTTPS. Open the GitHub Pages link on your phone.");
     return;
   }
-  if (running || starting) return;
+  if (running || starting || ending) return;
   starting = true;
   $("resumeBar").hidden = true;
   for (const id of ["startBtn", "podBtn", "phoneBtn", "fileInput", "calBtn"]) $(id).disabled = true;
+  // Screen-off recording (RecordingService) and the screen-on flag, from the tap on: Android
+  // only allows starting the service while the app is in front, and a resume's restore and the
+  // pod's connect can take seconds (the connect up to 30 s), so a phone locked meanwhile must not
+  // stall the start. Refused: the session still runs with the screen on. A pod session leaves the
+  // notification prompt for after its connect.
+  let fgsError = "";
+  if (native) {
+    keepScreenOn(true).catch(() => {});
+    recordInBackground(true, { ask: !pod }).catch((err) => {
+      fgsError = `Screen-off recording didn't start, keep the screen on this session. (${err.message})`;
+      showError(fgsError);
+    });
+  }
   if (from) {
     newSession({ autosave: native, persist: true, from });
     await restoreSets(from);
@@ -202,10 +224,13 @@ async function startSession(from = null) {
     newSession({ autosave: native, persist: true });
   }
   if (pod) {
-    // The pod: raw counts scaled by its INFO, no phone calibration (D27, until roadmap 1.3).
-    source = new PodWebSource(onSample, podDevice, { onEvent: onPodEvent, capture: Boolean(window.barDebug?.podCapture) });
-    sourceName = `pod ${source.name}`;
-    $("hint").textContent = "Connecting to the pod…";
+    // The pod: raw counts scaled by its INFO, no phone calibration (D27, until roadmap 1.3). In
+    // the app, the PodLink plugin (it finds and remembers the pod itself, and keeps the link with
+    // the screen off); in a browser, Web Bluetooth.
+    const opts = { onEvent: onPodEvent, capture: Boolean(window.barDebug?.podCapture) };
+    source = native ? new PodNativeSource(onSample, { ...opts, any: podPickNew }) : new PodWebSource(onSample, podDevice, opts);
+    sourceName = native ? "pod" : `pod ${source.name}`;
+    $("hint").textContent = native ? "Connecting to the pod… (the first time, allow Nearby devices)" : "Connecting to the pod…";
   } else {
     // In the Android app, the native plugin gives full-rate sensors (A2). Same samples.
     sourceName = native ? "phone (native)" : "phone";
@@ -218,6 +243,10 @@ async function startSession(from = null) {
     await mine.start();
   } catch (err) {
     starting = false;
+    if (native) {
+      recordInBackground(false).catch(() => {});
+      keepScreenOn(false).catch(() => {});
+    }
     for (const id of ["startBtn", "podBtn", "phoneBtn", "fileInput"]) $(id).disabled = false;
     showSource();
     if (from) $("resumeBar").hidden = false;       // the resume offer stays: try again
@@ -231,14 +260,22 @@ async function startSession(from = null) {
   session.ended = false;
   persistSession();
   askPersist();
-  if (pod) $("hint").textContent = "";
+  if (pod) {
+    $("hint").textContent = "";
+    if (fgsError) showError(fgsError);              // the connect's hint covered it: it still holds
+    sourceName = `pod ${source.name}`;                // the app's plugin knows the name only now
+    if (native) {
+      podName = source.name;
+      podPickNew = false;
+      try { localStorage.setItem("podName", podName); } catch { /* storage blocked */ }
+      showSource();
+      askNotifications().catch(() => {});             // after Nearby devices, never at the same time
+    }
+  }
   // What the samples were scaled with, next to the set files, so the raw readings can be recovered.
-  if (pod && session.autosave) saveFile(session.folder, "pod.json", JSON.stringify(source.linkInfo(), null, 1)).catch(() => {});
-  else if (cal && session.autosave) saveFile(session.folder, "calibration.json", JSON.stringify(cal, null, 1)).catch(() => {});
+  if (pod && session.autosave) saveFile(session.folder, partName("pod"), JSON.stringify(source.linkInfo(), null, 1)).catch(() => {});
+  else if (cal && session.autosave) saveFile(session.folder, partName("calibration"), JSON.stringify(cal, null, 1)).catch(() => {});
   begin();
-  // Screen-off recording. Android only allows starting it while the app is in front (you
-  // just tapped Start, so it is). If it's refused, the session still runs with the screen on.
-  if (native) recordInBackground(true).catch((err) => showError(`Screen-off recording didn't start, keep the screen on this session. (${err.message})`));
   if (!pod) {
     setTimeout(() => {
       if (running && nSamples === 0) showError("No sensor data. Open this page on your phone (laptops have no motion sensor).");
@@ -246,7 +283,7 @@ async function startSession(from = null) {
   }
 }
 
-// What the pod's stream reports while it runs. A lost link reconnects by itself (PodWebSource):
+// What the pod's stream reports while it runs. A lost link reconnects by itself (both pod sources):
 // the banner says so, and the set cards flag any data it couldn't get back.
 function onPodEvent(kind, info) {
   if (kind === "fault") showError(`Pod: ${info}.`);
@@ -260,7 +297,7 @@ const WAKE_HINT = { idle: "bump the bar to wake it", "lid-down": "bump the bar t
 /** The banner above the big card: the pod's link down (reconnecting), asleep, or battery low. */
 function showPodBanner() {
   const b = $("podBanner");
-  const L = running && source instanceof PodWebSource ? source.linkInfo() : null;
+  const L = running && source instanceof PodSource ? source.linkInfo() : null;
   let text = "";
   if (L && !L.linked && L.asleep) {
     // "command": our SLEEP op says which (mode 1 = IMU off); a USB s / o doesn't, assume motion
@@ -279,7 +316,7 @@ function showPodBanner() {
 
 /** The flags for a set that just closed, from the pod's decoder (nothing for the phone). */
 function setGaps(set) {
-  if (!(source instanceof PodWebSource) || !tracker || tracker.t0 === null) return [];
+  if (!(source instanceof PodSource) || !tracker || tracker.t0 === null) return [];
   return gapsNear(set, { gaps: source.stream.gaps, epochs: source.stream.epochs, odr: source.stream.ep?.odr ?? 208,
     t0: tracker.t0, lastT: source.stream.last_t, endedLinkDown: source.closed && source.linkLost });
 }
@@ -288,6 +325,13 @@ function setGaps(set) {
 
 async function connectPod() {
   if (running || starting) return;
+  // the app: nothing to pick, the plugin finds the saved pod at Start. Tapped again while the pod is
+  // the source: the next Start picks the nearest pod instead (a new or second pod).
+  if (native) {
+    if (sourceKind === "pod") podPickNew = !podPickNew;
+    setSourceKind("pod");
+    return;
+  }
   if (!window.isSecureContext) { showError("Bluetooth needs HTTPS (or localhost)."); return; }
   try {
     podDevice = await PodWebSource.pick();           // the browser's chooser: needs this click
@@ -309,8 +353,9 @@ function setSourceKind(kind) {
 
 function showSource() {
   const pod = sourceKind === "pod";
-  $("podBtn").textContent = pod && podDevice ? `Pod: ${podDevice.name}` : "Connect pod";
-  $("podBtn").classList.toggle("on", pod && Boolean(podDevice));
+  const name = native ? (podPickNew ? "the nearest one" : podName) : podDevice?.name;
+  $("podBtn").textContent = pod && name ? `Pod: ${name}` : pod && native ? "Pod" : "Connect pod";
+  $("podBtn").classList.toggle("on", pod && (native || Boolean(podDevice)));
   $("phoneBtn").hidden = !pod;
   // The 6-face calibration is the phone's (D23); the pod's comes with roadmap 1.3.
   $("calBtn").disabled = pod && !calRun;
@@ -318,7 +363,7 @@ function showSource() {
 }
 
 async function startReplay(file) {
-  if (running || starting) return;
+  if (running || starting || ending) return;
   let rec;
   try {
     rec = await parseRecording(file.name, await file.arrayBuffer());
@@ -353,29 +398,41 @@ function begin() {
 async function endSession() {
   if (!running) return;
   running = false;
-  await source?.stop();        // native source: wait for its last batch
+  ending = true;               // no new session or a past one opened until End's saves are done
+  try {
+    await finishSession(session, source);
+  } finally {
+    ending = false;
+  }
+}
+
+async function finishSession(ses, src) {
+  try {
+    await src?.stop();         // native source: wait for its last batch
+  } catch { /* the source is gone either way: still close the session */ }
   clearTimeout(analyzeTimer);
   clearInterval(tickTimer);
   tracker.finish();            // a set still in progress gets closed (and saved)
   live = null;
-  $("startBtn").disabled = false;
   $("endBtn").disabled = true;
-  $("fileInput").disabled = false;
-  $("podBtn").disabled = false;
-  $("phoneBtn").disabled = false;
-  showSource();                // Calibrate again (phone source only)
   wakeLock?.release().catch(() => {});
   wakeLock = null;
   if (native) {
     keepScreenOn(false).catch(() => {});
     recordInBackground(false).catch(() => {});
   }
-  if (session.autosave && session.sets.length) await saveSummary().catch(() => {});
-  if (session.autosave) await saveLink().catch(() => {});
-  if (source instanceof PodWebSource) session.podLink = source.linkJSON();   // barDebug.link() after the end
+  if (ses.autosave && ses.sets.length) await saveSummary(ses).catch(() => {});
+  if (ses.autosave) await saveLink(ses, src).catch(() => {});
+  if (src instanceof PodSource) ses.podLink = src.linkJSON();   // barDebug.link() after the end
   showPodBanner();
-  session.ended = true;
-  if (session.persist) await persistSession();
+  ses.ended = true;
+  if (ses.persist) await persistSession(ses);
+  // only now: a Start or a past session opened during the saves above would cross them
+  $("startBtn").disabled = false;
+  $("fileInput").disabled = false;
+  $("podBtn").disabled = false;
+  $("phoneBtn").disabled = false;
+  showSource();                // Calibrate again (phone source only)
   render();
   renderHistory();
 }
@@ -385,30 +442,32 @@ async function endSession() {
 const SET_FIELDS = ["index", "exercise", "load", "rpe", "file", "restBefore", "wallStart", "wallEnd",
   "lift", "nReps", "bestMcv", "lastMcv", "velLoss", "avgRom", "rpeEst", "gaps"];
 
-function sessionRecord() {
+function sessionRecord(ses = session) {
   return {
-    id: session.id, stamp: session.stamp, date: session.date, folder: session.folder,
-    startedAtMs: session.startedAt.getTime(), ended: Boolean(session.ended), autosave: session.autosave,
-    sets: session.sets.map((s) => Object.fromEntries(SET_FIELDS.map((k) => [k, s[k] ?? null]))),
+    id: ses.id, stamp: ses.stamp, date: ses.date, folder: ses.folder, parts: ses.part ?? 1,
+    startedAtMs: ses.startedAt.getTime(), ended: Boolean(ses.ended), autosave: ses.autosave,
+    sets: ses.sets.map((s) => Object.fromEntries(SET_FIELDS.map((k) => [k, s[k] ?? null]))),
   };
 }
 
-function persistSession() {
-  if (!session?.persist) return Promise.resolve();
-  return putSession(sessionRecord()).catch((err) => showError(`Couldn't store the session: ${err.message}`));
+function persistSession(ses = session) {
+  if (!ses?.persist) return Promise.resolve();
+  return putSession(sessionRecord(ses)).catch((err) => showError(`Couldn't store the session: ${err.message}`));
 }
 
 function sessionFromRecord(rec, { autosave, persist }) {
   return { id: rec.id, stamp: rec.stamp, date: rec.date, folder: rec.folder, startedAt: new Date(rec.startedAtMs),
-    autosave, persist, ended: rec.ended, sets: [] };
+    autosave, persist, ended: rec.ended, sets: [], part: rec.parts ?? 1 };
 }
 
 // Load a stored session's sets back in: raw samples from the store, re-analyzed (same
 // pipeline, so the same reps), cards rebuilt. Rest and wall times come from the record.
 async function restoreSets(rec) {
+  const ses = session;
   $("setList").innerHTML = "";
   for (const r of rec.sets) {
     const raw = await getSetSamples(rec.id, r.index);
+    if (session !== ses) return;              // the app moved on (Start, another past session)
     if (!raw) continue;
     const set = { ...r, samples: raw.samples, tAbs: raw.tAbs, restored: true };
     const { res, used, reps } = analyzeSet(set.samples, set.exercise);
@@ -420,7 +479,7 @@ async function restoreSets(rec) {
 }
 
 async function viewSession(rec) {
-  if (running || starting) return;
+  if (running || starting || ending) return;
   session = sessionFromRecord(rec, { autosave: native && rec.autosave, persist: true });
   session.viewing = true;
   tracker = null;
@@ -504,17 +563,17 @@ function setFileName(set) {
 // CSV field: quoted if it has a comma, quote or newline in it (exercise names are typed).
 const csvField = (x) => (/[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x));
 
-async function saveSet(set) {
-  const { uri } = await saveFile(session.folder, set.file, toCSV(set.samples));
+async function saveSet(set, ses = session) {
+  const { uri } = await saveFile(ses.folder, set.file, toCSV(set.samples));
   return uri;
 }
 
-function summaryCSV() {
+function summaryCSV(ses = session) {
   const head = "set,date,start,file,exercise,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv," +
     "vel_loss_pct,avg_rom_cm,rep_mcvs,to_failure,mount,paused_lockout,notes";
-  const rows = session.sets.map((s, k) => {
-    const start = new Date(session.startedAt.getTime() + s.startT * 1000).toTimeString().slice(0, 8);
-    return [k + 1, session.date, start, s.file, csvField(s.exercise), s.lift, csvField(s.load), s.nReps, csvField(s.rpe),
+  const rows = ses.sets.map((s, k) => {
+    const start = new Date(ses.startedAt.getTime() + s.startT * 1000).toTimeString().slice(0, 8);
+    return [k + 1, ses.date, start, s.file, csvField(s.exercise), s.lift, csvField(s.load), s.nReps, csvField(s.rpe),
       s.rpeEst ? (s.rpeEst[0] === 5 ? `<=${s.rpeEst[1]}` : `${s.rpeEst[0]}-${s.rpeEst[1]}`) : "",
       s.restBefore === null ? "" : Math.round(s.restBefore),
       s.bestMcv.toFixed(3), s.lastMcv.toFixed(3), Math.round(s.velLoss * 100), (s.avgRom * 100).toFixed(1),
@@ -523,15 +582,18 @@ function summaryCSV() {
   return [head, ...rows].join("\n") + "\n";
 }
 
-async function saveSummary() {
-  return (await saveFile(session.folder, "session.csv", summaryCSV())).uri;
+async function saveSummary(ses = session) {
+  return (await saveFile(ses.folder, "session.csv", summaryCSV(ses))).uri;
 }
 
 // link.json next to the set files: the pod's link story (epochs, gaps, reconnects; P2).
-async function saveLink() {
-  if (!(source instanceof PodWebSource) || !session?.autosave) return null;
-  return (await saveFile(session.folder, "link.json", JSON.stringify(source.linkJSON(), null, 1))).uri;
+async function saveLink(ses = session, src = source) {
+  if (!(src instanceof PodSource) || !ses?.autosave) return null;
+  return (await saveFile(ses.folder, partName("link", ses), JSON.stringify(src.linkJSON(), null, 1))).uri;
 }
+
+// A resumed session runs in parts, each with its own source: pod.json, then pod-2.json, ...
+const partName = (base, ses = session) => (ses.part > 1 ? `${base}-${ses.part}.json` : `${base}.json`);
 
 function download(name, text) {
   const a = document.createElement("a");
@@ -705,7 +767,7 @@ function render() {
   let now = tracker?.now ?? 0;
   // The pod's samples carry wall time (t follows it across outages and epochs), so the rest keeps
   // counting while the link is down or the pod sleeps, and doesn't jump back while a backlog drains.
-  if (running && source instanceof PodWebSource && session?.t0Wall != null) now = Math.max(now, (Date.now() - session.t0Wall) / 1000);
+  if (running && source instanceof PodSource && session?.t0Wall != null) now = Math.max(now, (Date.now() - session.t0Wall) / 1000);
   const liveReps = live?.reps ?? [];
   let state = "idle";
   let restFrom = null;
@@ -778,7 +840,7 @@ function render() {
   $("liveCard").hidden = state !== "set";
   if (state === "set") drawHeight();
   showPodBanner();
-  if (running && source instanceof PodWebSource && source.linkLost) updateFooter();   // no samples come to call it
+  if (running && source instanceof PodSource && source.linkLost) updateFooter();   // no samples come to call it
 }
 
 // ---------- drawing ----------
@@ -821,12 +883,13 @@ function drawLive() {
 
 function updateFooter() {
   let rate = "--";
-  if (source instanceof PodWebSource) {
-    // pod BarPod-1A2B · 211 Hz · 16/pkt · 45 ms · lost 0 · gaps 0 · 3.95 V
+  if (source instanceof PodSource) {
+    // pod BarPod-1A2B · 211 Hz · 16/pkt · MTU 247 · 45 ms · lost 0 · gaps 0 · 3.95 V (MTU: the app only)
     const n = recent.length;
     const L = source.linkInfo();
     const bits = [n > 10 ? `${Math.round((n - 1) / (recent[n - 1].t - recent[0].t))} Hz` : "--"];
     if (L.perPacket !== null) bits.push(`${L.perPacket}/pkt`);
+    if (L.mtu) bits.push(`MTU ${L.mtu}`);
     if (L.intervalMs) bits.push(`${Math.round(L.intervalMs)} ms`);
     bits.push(`lost ${L.lost}`, `gaps ${L.gaps}`, `reconnects ${L.reconnects}`, `epochs ${L.epochs}`);
     if (!L.linked && running) bits.push(L.asleep ? "asleep" : "reconnecting");
@@ -983,6 +1046,7 @@ $("calReset").addEventListener("click", () => {
 });
 try { cal = JSON.parse(localStorage.getItem("calibration") || "null"); } catch { cal = null; }
 try { sourceKind = localStorage.getItem("source") === "pod" ? "pod" : "phone"; } catch { /* storage blocked */ }
+try { podName = localStorage.getItem("podName") || ""; } catch { /* storage blocked */ }
 showCal();
 $("vlTarget").addEventListener("change", (e) => setVlTarget(e.target.value));
 try { recents = JSON.parse(localStorage.getItem("recentExercises") || "[]"); } catch { recents = []; }
@@ -1012,15 +1076,15 @@ window.barDebug = {
   summary: () => (session ? summaryCSV() : ""),
   calRun: () => calRun,
   podCapture: false,          // true before Start: keep the pod's frames for downloadPodCapture()
-  pod: () => (source instanceof PodWebSource ? { ...source.linkInfo(), gapList: source.stream.gaps,
+  pod: () => (source instanceof PodSource ? { ...source.linkInfo(), gapList: source.stream.gaps,
     nextIdx: source.stream.ep?.next_idx ?? null, lastIdx: source.stream.ep?.last_idx ?? null,
     head: source.stream.ep?.status?.head ?? null } : null),
   podCaptureData: () => (source?.capture ? { csv: source.captureCSV(), samples: source.capture.samples } : null),
   // link.json now (or as the last pod session ended); a radio outage of ms (drop + no reconnect
   // meanwhile); the SLEEP op (mode 0 wake on motion, 1 IMU off)
-  link: () => (source instanceof PodWebSource ? source.linkJSON() : session?.podLink ?? null),
+  link: () => (source instanceof PodSource ? source.linkJSON() : session?.podLink ?? null),
   podOutage: (ms) => (running && source instanceof PodWebSource ? source.outage(ms) : false),
-  podSleep: (mode = 0) => (running && source instanceof PodWebSource ? source.sleepPod(mode) : Promise.reject(new Error("no pod session"))),
+  podSleep: (mode = 0) => (running && source instanceof PodSource ? source.sleepPod(mode) : Promise.reject(new Error("no pod session"))),
   downloadLink: () => { const l = window.barDebug.link(); if (l) download(`link-${session?.stamp ?? "x"}.json`, JSON.stringify(l, null, 1)); },
   // The capture in make_fake_pod.py's vector format: analysis/podlink.py replays it.
   downloadPodCapture: () => { if (source?.capture) download(`pod-capture-${session?.stamp ?? "x"}.csv`, source.captureCSV()); },

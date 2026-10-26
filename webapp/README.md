@@ -66,7 +66,7 @@ Bluetooth headphones off, they starve the scan (D28).
 | `calib.js` | 6-face accelerometer calibration (D23), ported from `analysis/calib.py` |
 | `lv.js` | load-velocity profile + e1RM (D22), ported from `analysis/lv.py` |
 | `store.js` | session history in IndexedDB: a small record per session + each set's raw samples (history list, resume after the app was killed) |
-| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`) and `PodWebSource` (the pod over Web Bluetooth; reconnects by itself after a dropout, a reset or a sleep) |
+| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`), `PodSource` (the link logic both pod sources share: epochs, outages, the STOP handshake, link.json), `PodWebSource` (the pod over Web Bluetooth; reconnects by itself after a dropout, a reset or a sleep) and `PodNativeSource` (the app: the pod over `PodLinkPlugin`, which reconnects by itself, also with the screen off) |
 | `gaps.js` | the set cards' data-gap flags from the pod's decoder (a dropout longer than its ring, a restart, a link that never came back) |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
 | `fileio.js` | read phyphox CSV/zip, write CSV |
@@ -74,6 +74,7 @@ Bluetooth headphones off, they starve the scan (D28).
 | `test/parity.mjs` | checks `reps.js` against `reps.py` |
 | `test/pod.mjs` | checks `PodStream` against `podlink.py` (36 simulator scenarios, bit for bit) |
 | `test/pod_web.mjs` | `PodWebSource`'s failure and reconnect paths against a fake Bluetooth device that behaves like Chrome |
+| `test/pod_native.mjs` | `PodNativeSource` against a fake `PodLinkPlugin` (start, reconnects, a sleep, End mid-reconnect, a retried write) |
 | `test/gaps.mjs` | `gaps.js` on made-up sets |
 | `test/pod_browser.mjs` | bench: the real pod in real Chrome over the DevTools protocol (`--reps` for hand reps) |
 | `test/pod_reconnect.mjs` | bench: dropouts, a reset and a sleep in real Chrome (`--hands-free` with `analysis/usb_clock.py`) |

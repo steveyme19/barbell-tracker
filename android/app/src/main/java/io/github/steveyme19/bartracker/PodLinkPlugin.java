@@ -65,9 +65,10 @@ import java.util.UUID;
  *   disconnect(): the last batch out, then disconnect and close.
  * Events:
  *   "pod" { f: [base64 frame, ...], w: [arrival, SystemClock.elapsedRealtime() ms, ...] }, ~50 ms batches
- *   "podState" { state: connecting | ready | lost | closed, status, mtu, link }
+ *   "podState" { state: connecting | linking | ready | lost | closed, status, mtu, link }
  * A link that drops without disconnect() is reconnected with autoConnect (it waits for the pod by
- * itself, screen off too); the connection order runs again and "ready" (with a new link number)
+ * itself, screen off too); "linking" says its link is up and the order runs (End waits for it, so
+ * its STOP reaches the pod), then "ready" (with a new link number)
  * says JS can write its STREAM command (CCCDs don't persist without bonding). Bluetooth switched
  * off counts as a drop, and the reconnect waits until it's back on. A link that goes 5 s without a
  * frame is dead whatever Android says (the pod sends a STATUS every second).
@@ -471,6 +472,7 @@ public class PodLinkPlugin extends Plugin {
             h.removeCallbacks(connectTimeout);
             Log.i(TAG, "connected " + g.getDevice().getAddress());
             step = Step.DISCOVER;
+            if (pending == null) state("linking", 0);   // a reconnect's link is up: its order runs
             if (!g.discoverServices()) dropped(GATT_ERROR);
             return;
         }

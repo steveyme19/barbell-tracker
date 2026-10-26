@@ -16,75 +16,19 @@
 //      run the connection order again and say "ready"; the new boot streams from index 0
 //   5. STOP, disconnect(); adb logcat -s PodLink shows the MTU and the DATA CCCD write
 
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { adb, page, install, sendToPod, sleep } from "./webview.mjs";
 
 const arg = (k, d) => process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=").slice(1).join("=") ?? d;
 const SECONDS = Number(arg("seconds", "20"));
 const INSTALL = process.argv.includes("--install");
 const DROP = process.argv.includes("--drop");
-const APP = "io.github.steveyme19.bartracker";
-const PORT = 9334;
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PYTHON = process.env.PYTHON || join(HERE, "..", "analysis", ".venv", "Scripts", "python.exe");
-const sdkAdb = join(process.env.LOCALAPPDATA ?? "", "Android", "Sdk", "platform-tools", "adb.exe");
-const adb = (...args) => execFileSync(existsSync(sdkAdb) ? sdkAdb : "adb", args, { encoding: "utf8" }).trim();
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let ok = true;
 const check = (good, msg) => { console.log(`${good ? "PASS" : "FAIL"}  ${msg}`); ok &&= Boolean(good); };
 const note = (msg) => console.log(`      ${msg}`);
 
-async function page() {
-  let pid = "";
-  for (let i = 0; i < 40 && !pid; i++) { try { pid = adb("shell", "pidof", APP); } catch { /* not up yet */ } if (!pid) await sleep(250); }
-  if (!pid) throw new Error("Bar Tracker isn't running on the phone.");
-  adb("forward", `tcp:${PORT}`, `localabstract:webview_devtools_remote_${pid}`);
-  let pages = [];
-  for (let i = 0; i < 40 && !pages.length; i++) {
-    try { pages = (await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()).filter((p) => p.type === "page"); } catch { /* WebView starting */ }
-    if (!pages.length) await sleep(250);
-  }
-  if (!pages.length) throw new Error("No WebView page to inspect (a debug build?).");
-  const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
-  await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
-  let id = 0;
-  const waiting = new Map();
-  ws.onmessage = (m) => { const d = JSON.parse(m.data); waiting.get(d.id)?.(d); waiting.delete(d.id); };
-  const js = (expr) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (d) => (d.result?.exceptionDetails ? rej(new Error(d.result.exceptionDetails.exception?.description ?? "page error"))
-      : res(d.result?.result?.value)));
-    ws.send(JSON.stringify({ id: n, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true } }));
-  });
-  return { js, close: () => { ws.close(); adb("forward", "--remove", `tcp:${PORT}`); } };
-}
-
-// The pod reads a bench command only while a host holds its port open (loop() checks Serial
-// first), so stay open until it answers: "# sleeping: ..." (up to 3 s).
-function sendToPod(cmd) {
-  const code = ["import serial, time, serial.tools.list_ports as lp",
-    "port = next(p.device for p in lp.comports() if '2886' in p.hwid)",
-    "s = serial.Serial(port, 115200, timeout=0.3); s.reset_input_buffer(); time.sleep(0.3); s.write(b'" + cmd + "')",
-    "t0 = time.time()",
-    "while time.time() - t0 < 3:",
-    "    ln = s.readline().decode('ascii', 'ignore').strip()",
-    "    if ln.startswith('# sleeping'): print(ln); break",
-    "s.close()"].join("\n");
-  const r = spawnSync(PYTHON, ["-c", code], { encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`couldn't send ${cmd} to the pod over USB: ${r.stderr.slice(-300)}`);
-  return r.stdout.trim();
-}
-
 async function main() {
-  if (INSTALL) {
-    note(adb("install", "-r", join(HERE, "app", "build", "outputs", "apk", "debug", "app-debug.apk")).split("\n").at(-1));
-    adb("shell", "am", "force-stop", APP);
-    adb("shell", "am", "start", "-n", `${APP}/.MainActivity`);
-    await sleep(3000);
-  }
+  if (INSTALL) note(`installed: ${await install()}`);
   adb("logcat", "-c");
   const { js, close } = await page();
   try {

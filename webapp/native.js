@@ -10,9 +10,16 @@ export function isNativeApp() {
 
 const plugins = () => window.Capacitor.Plugins;
 
-/** Keep recording with the screen off (foreground service + wake lock), or stop. */
-export async function recordInBackground(on) {
-  await plugins().BarSensors.record({ on });
+/** Keep recording with the screen off (foreground service + wake lock), or stop. ask: false
+ * leaves the notification prompt for later (askNotifications), e.g. before the pod's Nearby
+ * devices prompt: Android cancels a second prompt that comes while one is up. */
+export async function recordInBackground(on, { ask = true } = {}) {
+  await plugins().BarSensors.record({ on, ask });
+}
+
+/** The "Recording session" notification's permission (Android 13+), asked once. */
+export async function askNotifications() {
+  await plugins().BarSensors.askNotifications();
 }
 
 /** Vibrate [on, off, on, ...] ms, natively (works with the screen off). */

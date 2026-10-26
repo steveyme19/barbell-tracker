@@ -149,7 +149,7 @@ can check it on the phone.
 - **If you lock the phone yourself mid-session**, Capacitor pauses the WebView: JS
   timers stop (rest timer display, live analysis), but sensor batches still arrive as
   events, so sets are still found and saved. Everything catches up when you wake it.
-  A screen-off foreground service is still "Later".
+  (Since 2026-10-17 RecordingService keeps the session running with the screen off, below.)
 - Testing over USB with the phone locked: timer-paced replay doesn't run (frozen
   timers). Use the all-at-once replay, set `barDebug.autosaveReplays = true` to
   exercise the save path, and use a plugin round trip as the clock.
@@ -161,8 +161,10 @@ can check it on the phone.
 
 - `RecordingService.java`: a foreground service (type `health`, needs
   HIGH_SAMPLING_RATE_SENSORS, which we declare) plus a partial wake lock (4 h cap), with a
-  "Recording session" notification (POST_NOTIFICATIONS asked once on Android 13+). Started
-  by Start session, stopped by End session (`BarSensors.record`).
+  "Recording session" notification (POST_NOTIFICATIONS asked once on Android 13+; a pod session
+  asks after the pod's connect: Android cancels a second permission prompt that comes while Nearby
+  devices is up). Started at the Start tap, before a pod's connect (which can take 30 s, and the
+  phone may be locked by then), stopped by End session (`BarSensors.record`).
 - Android only lets an app start it while the app is in front. Over USB with the phone
   locked it's refused (`mAllowStartForeground false`); the session then still runs, with a
   message to keep the screen on.
@@ -188,7 +190,7 @@ Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
   and `PodNativeSource` in sources.js. Java is a dumb pipe: it connects, subscribes and hands
   raw frames to JS in batches (base64, every 50 ms); it never parses them. The one decoder is
   the `PodStream` in sources.js. Reconnects with `autoConnect` work with the screen off while
-  RecordingService keeps the process alive (to be checked, step 12 of the plan).
+  RecordingService keeps the process alive (checked 2026-10-25, step 12, below).
 - **Not** `@capacitor-community/bluetooth-le` (named here before): Kotlin, needs a bundler
   (P3), one event per notification, reconnects from JS.
 - Permissions: Android 13+ only (`BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`),
@@ -203,19 +205,34 @@ Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
   mtu, link, wallMs, elapsedMs}`. `write({b, link?})` (base64, CTRL with response, queued; a command
   computed for an earlier link is refused), `reread()` (INFO and STATUS again, for the decoder's
   need-info), `disconnect()`. Events `pod {f: [base64], w: [elapsedRealtime ms]}` every ~50 ms and
-  `podState {state: connecting|ready|lost|closed, status, mtu, link}`. An unrequested drop
-  reconnects with autoConnect and runs the chain again ("ready" with link + 1); JS answers with its
-  command. Bluetooth switched off counts as a drop (Android can drop the client without a callback:
+  `podState {state: connecting|linking|ready|lost|closed, status, mtu, link}`. An unrequested drop
+  reconnects with autoConnect and runs the chain again ("linking" once its link is up, then "ready"
+  with link + 1); JS answers with its command. Bluetooth switched off counts as a drop (Android can drop the client without a callback:
   an adapter-state receiver, and a 5 s no-frame watchdog, since the pod sends a STATUS every second);
   the reconnect waits until it's back on.
   Check it on the phone: `node android/podlink_check.mjs --install [--drop]` (the frames also go
   through the app's own PodStream; `--drop` makes the pod sleep-and-reset over USB to test the
   reconnect). Passed on the Pixel 9 Pro XL 2026-10-25: mtu 247, 13.2 frames/s, 210.7 samples/s with
-  0 gaps, a reconnect by itself in 19 s. `PodNativeSource` (the app's source on top of it) is step 12.
+  0 gaps, a reconnect by itself in 19 s.
   A debug build's Capacitor logs every event at verbose level: read logcat early, the 256 KiB buffer
   wraps in minutes.
+- **`PodNativeSource`** (step 12, 2026-10-25): the app's pod source on the plugin, sharing the link
+  logic (epochs, outages reported once, the STOP handshake, link.json) with `PodWebSource` through
+  `PodSource`. The pod button picks the pod: the saved one, or after a second tap the nearest one
+  next Start ("Pod: the nearest one"). At "ready" after a reconnect it sends the decoder's command
+  for that link (a failed write on a live link is tried again, 1, 2, 4 s, then every 5 s); End during
+  a reconnect still gets its STOP to the pod (or the pod keeps its session hold): during the
+  plugin's order ("linking") it waits for "ready", at most 2 s. Each part of a resumed session
+  writes its own `pod-<k>.json` / `link-<k>.json`. Test without a phone: `node webapp/test/pod_native.mjs`.
+  On the phone: `node android/pod_session_check.mjs --install` (a session, the screen off 25 s, the
+  pod's `w` with the screen dark, End, the files, the capture replayed through podlink.py, a second
+  session; the screen-off step locks the phone, so unlock it when it asks; `--two` = only two short
+  sessions back to back). Passed on the Pixel 2026-10-25: 210.6 samples/s with the page hidden; the
+  pod asleep and back as a new boot by itself in 14.9 s with the screen still dark, nothing lost;
+  STOP answered; link.json + pod.json saved; replay 9,762 = 9,762 samples; two sessions back to back.
+  Plugin events (the frames) do reach the hidden page; only `requestAnimationFrame` stops, so the
+  footer doesn't redraw while dark.
 
 ## Later
 
-- Recording with the screen off (foreground service).
 - Play Store: signing key, app bundle, store listing.

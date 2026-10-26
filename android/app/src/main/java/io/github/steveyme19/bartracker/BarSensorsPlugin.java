@@ -100,23 +100,38 @@ public class BarSensorsPlugin extends Plugin implements SensorEventListener {
     }
 
     /** Keep the screen on during a set (A3). { on: true } sets the window flag, false clears it. */
-    /** { on: true } starts RecordingService (session keeps running with the screen off), false stops it. */
+    /**
+     * { on: true } starts RecordingService (session keeps running with the screen off), false stops it.
+     * ask: false skips the notification prompt (a pod session asks for Nearby devices next, and
+     * Android cancels a second permission prompt that comes while one is up: askNotifications() later).
+     */
     @PluginMethod
     public void record(PluginCall call) {
         boolean on = Boolean.TRUE.equals(call.getBoolean("on", true));
         Context ctx = getContext();
         Intent svc = new Intent(ctx, RecordingService.class);
-        // Android 13+: the "Recording session" notice needs this (asked once; recording works either way)
-        if (on && Build.VERSION.SDK_INT >= 33 && getActivity() != null
-                && ContextCompat.checkSelfPermission(ctx, "android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            getActivity().requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 7);
-        }
+        if (on && Boolean.TRUE.equals(call.getBoolean("ask", true))) askForNotifications();
         try {
             if (on) ContextCompat.startForegroundService(ctx, svc);
             else ctx.stopService(svc);
             call.resolve();
         } catch (Exception e) {
             call.reject("Couldn't " + (on ? "start" : "stop") + " background recording: " + e.getMessage());
+        }
+    }
+
+    /** The "Recording session" notification's permission (Android 13+; asked once, recording works either way). */
+    @PluginMethod
+    public void askNotifications(PluginCall call) {
+        askForNotifications();
+        call.resolve();
+    }
+
+    private void askForNotifications() {
+        Context ctx = getContext();
+        if (Build.VERSION.SDK_INT >= 33 && getActivity() != null
+                && ContextCompat.checkSelfPermission(ctx, "android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            getActivity().requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 7);
         }
     }
 

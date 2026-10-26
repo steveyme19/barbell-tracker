@@ -286,6 +286,48 @@
       retried silently instead of "lost"; the scan could silently swap the saved pod for another one
       in range; podState could pass frames that arrived before it (the going_to_sleep STATUS after
       "lost"); a null name on a direct connect; names not tied to their pod.
+- **Step 12, the app source done and checked hands-free** (2026-10-25, the Pixel 9 Pro XL; the
+  hands-on soak still open): `PodSource` in `webapp/sources.js` (the link logic both pod sources
+  share, moved out of PodWebSource: request guards, epochs, outages reported once, the STOP
+  handshake, link.json, the capture) and `PodNativeSource` on PodLinkPlugin; app.js picks it in the
+  app. `webapp/test/pod_native.mjs` (a fake PodLinkPlugin, 17 cases) and `android/pod_session_check.mjs`
+  (the app itself, driven over adb and CDP).
+  - On the phone (all PASS): a session from the app (footer 210 Hz, 16/pkt, MTU 247, lost 0); the
+    screen off 25 s: 210.6 samples/s with the page hidden; the pod's `w` with the screen dark: "Pod
+    asleep (command)", then back by itself as a new boot 14.9 s later, still dark, nothing lost; End:
+    STOP answered, link.json (reconnects 1, epochs 2, events asleep back) and pod.json saved; the
+    app's capture through podlink.py: 9,762 = 9,762 samples, 0 = 0 gaps; two sessions back to back.
+    So the plan's fallback (a Java-side resume write) isn't needed: plugin events reach the hidden
+    page, only `requestAnimationFrame` stops.
+  - The first run's second session hung at "Connecting": it started behind the keyguard after the
+    foreground service had stopped, and Android only starts it with the app in front. Now
+    RecordingService and keepScreenOn start at the Start tap, before the pod's connect.
+  - Review (find plus 2 skeptics, 14 findings, 10 held), all fixed: End during the plugin's
+    reconnect (after "ready", before the command) sent no STOP, so the pod kept its session hold;
+    resume() could say "back" after a going_to_sleep and didn't retry a failed write; the
+    notification prompt collided with Nearby devices on a fresh install (now asked after the
+    connect); a resumed session overwrote pod.json / link.json (now `pod-2.json`, ...); opening a
+    past session during End's STOP crashed End; no way to pick a new pod (a second tap on the pod
+    button). Testing the fixes found one more: End during resume()'s 1 s retry wait let its command
+    go after the STOP (now resume() sends nothing once stopping). A wait-for-resume in stop() turned
+    out redundant with that (the plugin writes in call order) and went.
+  - Recheck of the fixes (3 lenses, 2 skeptics each; 6 held, 1 split, 2 refuted), all fixed: End
+    cleared its busy flag before its own saves, so a Start or a history tap in that gap wrote the
+    ended pod's link.json into the other session and stored that one half restored (now End holds
+    the flag and every save is bound to its own session); resume() gave up after 3 failed writes on
+    a live link, which then stayed "reconnecting" for good (no new "ready" comes for a link that
+    stays up: now it keeps trying, 1, 2, 4 s, then every 5 s); End during the plugin's connection
+    order sent no STOP (JS couldn't see the order: the plugin now says "linking", and End waits for
+    "ready", at most 2 s); a restore still running when Start came pushed past sets into the new
+    session; after a resume that skipped a stored set, a new set reused its index and overwrote its
+    CSV (P2); calibration.json wasn't per part; a pod start wiped the "screen-off recording didn't
+    start" warning. 17 fake-plugin cases; mutation check: each of the 21 guards undone alone fails
+    a test. The app-side fixes ran in the browser on replayed sessions (End, history, set indexes);
+    the restore race itself couldn't be forced from outside the page. The phone runs above used the
+    build before this recheck: the soak installs the new one.
+  - **Still open (hands-on):** the 35-45 min locked soak with the walk-aways, a BLE SLEEP plus
+    pickup, test sets buzzed while dark, one set against a USB log (compare_ble_usb.py), and Pixel
+    Chrome with the screen off for 1 min (D12).
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
@@ -686,7 +728,7 @@ This meets endSession's "flushed before resolve" contract.
 **Other methods and events.**
 - `write({b})` writes CTRL with response.
 - Handle both `onCharacteristicChanged` overloads and both `onCharacteristicRead` overloads. **The API 33 byte[] overloads don't call super**, or frames would be delivered twice.
-- Event `pod {f: [base64], w: [elapsedRealtime ms]}`, coalesced every 50 ms. Event `podState {state: connecting|ready|lost|closed, status, mtu}`.
+- Event `pod {f: [base64], w: [elapsedRealtime ms]}`, coalesced every 50 ms. Event `podState {state: connecting|linking|ready|lost|closed, status, mtu}` ("linking": a reconnect's link is up, its order runs; added in step 12).
 - Status 133: close and retry up to 3 times, 500 ms apart.
 - **Reconnect:** on an unrequested disconnect, emit `lost`, `close()`, then `connectGatt(ctx, true /*autoConnect*/, ...)`. That works with the screen off. Rerun the chain (CCCDs don't persist without bonding) and emit `ready`. JS answers with `write(command())`. JS keeps running with the screen off because RecordingService (health FGS + wake lock) keeps the process alive, which is how the hidden runLive buzzes work today. Step 12 checks this; if it fails, the fallback is a Java-side resume write with a vector test.
 - No `requestConnectionPriority` call; it would override the pod's request.
