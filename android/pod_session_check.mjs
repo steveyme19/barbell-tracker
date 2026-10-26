@@ -21,7 +21,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adb, page, install, sendToPod, sleep } from "./webview.mjs";
+import { adb, page, install, sendToPod, sleep, ensureFront } from "./webview.mjs";
 import { replayCapture, worstDiff } from "../webapp/test/cdp.mjs";
 
 const arg = (k, d) => process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=").slice(1).join("=") ?? d;
@@ -38,24 +38,6 @@ async function until(js, expr, ms, what) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) { if (await js(expr)) return Date.now() - t0; await sleep(500); }
   throw new Error(`timed out waiting for ${what}`);
-}
-
-/** Start must be tapped with the app in front (Android starts the screen-off service only then),
- * so wake the phone, bring the app up, and wait for it to be unlocked if it isn't. */
-async function ensureFront() {
-  // mCurrentFocus names the activity in full (io.github...bartracker/io.github...bartracker.MainActivity)
-  const front = () => /io\.github\.steveyme19\.bartracker\/\S*MainActivity/.test(adb("shell", "dumpsys", "window").match(/mCurrentFocus=.*/)?.[0] ?? "");
-  adb("shell", "input", "keyevent", "KEYCODE_WAKEUP");
-  adb("shell", "am", "start", "-n", "io.github.steveyme19.bartracker/.MainActivity");
-  await sleep(1500);
-  if (front()) return;
-  console.log(">>> UNLOCK the phone (the app should be on screen)");
-  const t0 = Date.now();
-  while (!front()) {
-    if (Date.now() - t0 > 180000) throw new Error("the app never came to the front (phone locked?)");
-    await sleep(1000);
-  }
-  await sleep(1000);
 }
 
 async function session(js, n) {

@@ -23,6 +23,24 @@ export async function install() {
   return out;
 }
 
+/** Start needs the app in front (Android starts the screen-off service only then), so wake the
+ * phone, bring the app up, and wait (3 min) for it to be unlocked if the keyguard is up. */
+export async function ensureFront() {
+  // mCurrentFocus names the activity in full (io.github...bartracker/io.github...bartracker.MainActivity)
+  const front = () => /io\.github\.steveyme19\.bartracker\/\S*MainActivity/.test(adb("shell", "dumpsys", "window").match(/mCurrentFocus=.*/)?.[0] ?? "");
+  adb("shell", "input", "keyevent", "KEYCODE_WAKEUP");
+  adb("shell", "am", "start", "-n", `${APP}/.MainActivity`);
+  await sleep(1500);
+  if (front()) return;
+  console.log(">>> UNLOCK the phone (the app should be on screen)");
+  const t0 = Date.now();
+  while (!front()) {
+    if (Date.now() - t0 > 180000) throw new Error("the app never came to the front (phone locked?)");
+    await sleep(1000);
+  }
+  await sleep(1000);
+}
+
 /** The app's page over CDP: { js(expr), close() }. js awaits promises and returns values. */
 export async function page(port = 9334) {
   let pid = "";

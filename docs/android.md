@@ -178,6 +178,10 @@ can check it on the phone.
   session removed both. The buzz played its pattern but was `ignored_for_settings`: the
   phone had **Use vibration & haptics** off (Settings > Sound & vibration), which drops
   every app's vibration. Turn it on for the set and velocity-loss buzzes.
+- Checked 2026-10-25 with the switch on (`adb shell settings get system vibrate_on` reads it;
+  0 = off): no session and the phone locked, Android drops the buzz as `ignored_background`;
+  a session running (RecordingService) and the screen off, it plays (`finished`). Android's
+  verdict on each buzz: `adb shell dumpsys vibrator_manager`, "Recent vibrations".
 
 ## A4. Bluetooth to the XIAO (roadmap 1.4 / 4.1)
 
@@ -232,6 +236,15 @@ Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
   STOP answered; link.json + pod.json saved; replay 9,762 = 9,762 samples; two sessions back to back.
   Plugin events (the frames) do reach the hidden page; only `requestAnimationFrame` stops, so the
   footer doesn't redraw while dark.
+- **The soak** (ble-plan step 12): the pod on the laptop's USB the whole time, recorded by
+  `python analysis/usb_clock.py <dir>/clock.json --samples=<dir>/usb` (every sample and each boot's
+  clock: the truth). The app's session in parts, the phone on USB only for each command:
+  `node android/soak.mjs start` (unlocked; the session with the capture on), `status`, `sleep` (the
+  BLE SLEEP op), `end` (End, then the app's files, the capture, the buzz log and Android's vibration
+  history into `analysis/data/soak-<stamp>/`). Then `python analysis/check_soak.py
+  analysis/data/soak-<stamp> <dir>/clock.json`: the capture replays bit-exact, each epoch matches
+  the USB samples (compare_ble_usb.py), each woken epoch's placement, each outage with its backlog
+  and what it lost, the buzzes played with the screen off, the process and its service survived.
 
 ## Later
 

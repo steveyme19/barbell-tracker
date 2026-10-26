@@ -543,7 +543,12 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && running && !native) keepAwake();
 });
 
+// barDebug.buzzes(): when each buzz went out and whether the screen was off (the step 12 soak's check)
+const buzzLog = [];
+
 function buzz(pattern) {
+  buzzLog.push({ at: Date.now(), hidden: document.hidden, pattern });
+  if (buzzLog.length > 500) buzzLog.shift();
   if (native) { vibrateNative(pattern).catch(() => {}); return; }   // works with the screen off
   try { navigator.vibrate?.(pattern); } catch { /* no vibration */ }
 }
@@ -1076,6 +1081,7 @@ window.barDebug = {
   summary: () => (session ? summaryCSV() : ""),
   calRun: () => calRun,
   podCapture: false,          // true before Start: keep the pod's frames for downloadPodCapture()
+  buzzes: () => buzzLog.slice(),
   pod: () => (source instanceof PodSource ? { ...source.linkInfo(), gapList: source.stream.gaps,
     nextIdx: source.stream.ep?.next_idx ?? null, lastIdx: source.stream.ep?.last_idx ?? null,
     head: source.stream.ep?.status?.head ?? null } : null),

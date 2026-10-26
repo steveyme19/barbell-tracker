@@ -325,9 +325,23 @@
     a test. The app-side fixes ran in the browser on replayed sessions (End, history, set indexes);
     the restore race itself couldn't be forced from outside the page. The phone runs above used the
     build before this recheck: the soak installs the new one.
+  - The soak's tools (2026-10-25): `android/soak.mjs` (start | status | sleep | end), `usb_clock.py
+    --samples` (the pod's USB stream kept per boot: the truth for every sample, not just one set),
+    `analysis/check_soak.py`, and a buzz log in the app (`barDebug.buzzes()`). A dry run (a `w`
+    reset) passed every check but the buzzes (no sets): the capture replays bit-exact, both epochs
+    match the USB samples (|dt| <= 1 us), the woken epoch placed within 40 ms, the sleep lost 0.
+    Review (2 lenses, 2 skeptics each; 1 held, 5 refuted): gaps were blamed on outages by their
+    samples' time, so a flap at the edge of range before the long walk-away would take the blame for
+    its loss (a false FAIL), and a short drop while still catching up was judged by its own length.
+    Now a gap goes to the outage whose reconnect revealed it, and "nothing may be lost" is judged by
+    the backlog the ring had to hold; `check_soak.py --selftest` plays both flaps on the simulator
+    (the old rule fails the first).
+  - Buzzes: the Pixel's master "Use vibration & haptics" was off (every app's vibration dropped);
+    with it on and a session running, a buzz with the screen off plays (`finished`); with no session
+    and the phone locked it doesn't (`ignored_background`).
   - **Still open (hands-on):** the 35-45 min locked soak with the walk-aways, a BLE SLEEP plus
-    pickup, test sets buzzed while dark, one set against a USB log (compare_ble_usb.py), and Pixel
-    Chrome with the screen off for 1 min (D12).
+    pickup and test sets, all against the USB truth; then Pixel Chrome with the screen off for
+    1 min (D12). A first try (2026-10-25 23:08) stopped before its first set.
 
 ## 0. Corrections from the spec audit (2026-10-19)
 
