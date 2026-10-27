@@ -84,17 +84,19 @@ session to session (from app exports, D30), on depth (ROM, cm), the velocity pro
 of the normalized profiles) and tempo. **Tempo is the eccentric's duration**: the
 concentric's is speed, which fatigue is supposed to cut, so it stays out (the self-test
 holds a 35% slower concentric of the same shape to 0% tempo and 0.003 profile). The
-lowering is the run of moving down nearest the rep that drops at least half its ROM, so a
-box sit's wobble, a settle at lockout or the pod handled after the set can't stand in for
-it; before the rep for squat and bench, after it for a deadlift, and for a stack or a free
-weight whichever side the data shows (D35). Sets compare by their typed exercise name, not
+lowering is the run of moving down nearest the rep that drops at least half its ROM (a
+short stop partway down doesn't cut it), so a box sit's wobble, a settle at lockout or the
+pod handled after the set can't stand in for it. Which side of the rep it's on, the set's
+two ends say (a lead-in descent, a last lowering), the profile only when they agree: a
+Romanian deadlift lowers first, a pin squat rises first (D35). Sets compare by their typed exercise name, not
 the tracking profile (every unnamed exercise is "machine" or "free"). Stored sets go
 through the closed-set filter first (D31). With no Smith-machine floor yet every deviation
 is shown, none judged; `--floor-depth/tempo/profile` flags those over 2x it. `--selftest`
 plants the deliberate faults above (5 cm short, a mid-rep hitch, a slower descent): each
 stands out on its own measure by 100x or more, and the slower descent reads its true 35%
-next to a box sit, a deadlift settle and post-set handling. Path deviations wait for
-orientation on real bar data (0.3, D33).
+next to a box sit, a deadlift settle and post-set handling, on a Romanian deadlift, a pin
+squat and a row with a hinge; every threshold is pinned by exact-number checks. Path
+deviations wait for orientation on real bar data (0.3, D33).
 
 ## 3. Depth check
 
@@ -119,7 +121,8 @@ and after it, at least 10% of the rep's peak below the lower of those two peaks,
 depth; the set card shows each rep's and the set's median ("Sticks at ~41% of the way up,
 3 of 5 reps"). Known answer: `make_fake_reps.py sticking` (2 light reps, 3 with a dip,
 found within 0.2% of the ROM, and 3 on the rule's edges: an 8% dip, a 12% one, a deep one
-at 93% of the ROM), which fails if either setting moves. No smooth fake reads one; three
+at 93% of the ROM, and 3 more: 6.5%, 13%, 87%), which holds STICK_PROM to about 0.08-0.12
+and the range's ends to 0.065-0.13 and 0.87-0.93. No smooth fake reads one; three
 real sets do, none a barbell grind (two hand-held phone files, the lat raise's odd last
 rep: D34). The 10% is provisional until real heavy reps (roadmap 2.x). Not yet: the trend
 over weeks (5.5).
@@ -182,14 +185,18 @@ Only if v1 isn't good enough: add features like velocity loss % and first-rep MC
 is small, so no machine learning.
 
 **Built in Python** (roadmap 5.4, `analysis/rpe.py`, D36), reading app exports (D30): steps
-2 to 6 above. A set to failure is one with "Your RPE" 10 (the app has no failure mark yet).
-Per exercise name: RIR = (MCV - your MCV at failure) / the MCV per rep in reserve, the same
-two numbers v0 guesses, so a fit can replace them. Leave one session out, near failure
-(RIR 0-3) and further; the fit's mean residual per load (step 3's "one line across
-loads?"); each normal set's range next to your call. `--selftest`: a synthetic squatter
-with a known line and day-to-day offsets, through the raw-signal pipeline; it fails if a
-set the fit saw leaks into its check, if the labels are off by one, or if RPE 8.5 counts
-as failure. Waits for your sets to failure.
+2 to 6 above. A set to failure is one with "Your RPE" 10 (the app has no failure mark yet);
+the attempt that failed onto the safeties isn't counted, and a set whose grinder sank and
+split isn't labeled. Per exercise name: RIR from MCV by least squares predicts; your MCV at
+failure and per rep in reserve (the two numbers v0 guesses, so a fit can replace them) come
+from MCV on RIR, unbiased by MCV noise. Leave one session out, near failure (RIR 0-3) and
+further, naming any session the others can't check; step 3's "one line across loads?"
+within a session that took 2+ loads to failure (across days a load is also its day); each
+normal set's range on the 5..10 scale next to your call. `--selftest`: a synthetic squatter
+with a known line and day-to-day offsets, through the raw-signal pipeline, and exact checks
+of each piece; it fails if a rep, a set or a session the fit saw leaks into its check, if the
+labels are off by one, or if any of the review's fixes is undone. Waits for your sets to
+failure.
 
 ## 6. Data to start collecting now
 

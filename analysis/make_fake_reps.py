@@ -73,16 +73,19 @@ if "lifts" in sys.argv:
 def sticking_set(seed=5, rom=0.40):
     """A paused bench set for the sticking point (analytics.md section 4, roadmap 5.3): 2 light reps
     (a smooth press, no dip), then 3 heavy ones whose speed dips to 40% of the peak partway up and
-    picks up again. Then 3 that pin the rule's edges (STICK_PROM 10%, STICK_RANGE 10-90%): a dip
-    8% deep (not one), 12% deep (one), and a deep one at 93% of the ROM (outside the range, not
-    one). Pauses on the chest and at lockout anchor every rep. Returns the recording and, per rep,
-    the dip's true place as a fraction of the ROM (None where no sticking point should be found)."""
+    picks up again. Then 6 that pin the rule's edges (STICK_PROM 10%, STICK_RANGE 10-90%): a dip
+    8% deep (not one), 12% deep (one), a deep one at 93% of the ROM and one at 6.5% (outside the
+    range, not one), and ones at 13% and 87% (inside, one each). So STICK_PROM is held to 0.08-0.12,
+    the range's ends to 0.065-0.13 and 0.87-0.93. Pauses on the chest and at lockout anchor every
+    rep. Returns the recording and, per rep, the dip's true place as a fraction of the ROM (None
+    where no sticking point should be found)."""
     r = np.random.default_rng(seed)
     ease = lambda n: 0.5 - 0.5 * np.cos(np.pi * np.arange(n) / n)
     z, truth = [np.full(int(1.5 * FS), rom)], []
     # (concentric s, dip centre in u, its depth, its width, whether it's a sticking point)
     spec = [(0.8, None, 0, 0, False), (0.9, None, 0, 0, False), (1.8, 0.45, 0.6, 0.07, True), (2.1, 0.45, 0.6, 0.07, True),
-            (2.4, 0.5, 0.6, 0.07, True), (1.8, 0.45, 0.20, 0.07, False), (1.8, 0.45, 0.25, 0.07, True), (1.8, 0.80, 0.8, 0.04, False)]
+            (2.4, 0.5, 0.6, 0.07, True), (1.8, 0.45, 0.20, 0.07, False), (1.8, 0.45, 0.25, 0.07, True), (1.8, 0.80, 0.8, 0.04, False),
+            (1.8, 0.19, 0.8, 0.04, False), (1.8, 0.25, 0.6, 0.04, True), (1.8, 0.75, 0.6, 0.04, True)]
     for k, (up, dip_at, amp, w, sticks) in enumerate(spec):
         z += [rom - rom * ease(int(1.1 * FS)), np.zeros(int(0.5 * FS))]          # down, pause on the chest
         n = int(up * FS)
@@ -96,7 +99,7 @@ def sticking_set(seed=5, rom=0.40):
         if not sticks:
             truth.append(None)
         else:
-            near = np.abs(u - dip_at) < 0.15                                      # the dip, not the ends
+            near = np.abs(u - dip_at) < 2 * w                                     # the dip, not the rep's slow ends
             i = np.flatnonzero(near)[np.argmin(v[near])]
             truth.append(float(x[i] / rom))
     z.append(np.full(int(2 * FS), rom))

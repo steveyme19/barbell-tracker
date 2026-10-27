@@ -452,24 +452,32 @@ found within 0.2% of the ROM and no smooth fake reads one. Three real sets do, n
 barbell grind: hand-held phone files 2123 (rep 3, 50% deep at 16%) and 2206 (rep 2, 11.7% deep,
 just over the line), and the lat raise's rep 7 (39% deep at 42%, the set's odd rep: 2.6 s, its
 profile 0.56 off the median). *Amended 2026-10-27 (review):* the known answer didn't pin either
-setting (any STICK_PROM up to 0.45 passed) or the rep count. It now holds 3 more reps on the rule's
-edges, each failing its own mutation: an 8% dip reads none (fails at STICK_PROM 0.02), a 12% dip
-reads one (fails at 0.13), a deep dip at 93% of the ROM reads none (fails at STICK_RANGE 0.05-0.95);
-and the rep count must match. The set card's "~41%" is a true median now (an even count averaged
-the two middle reps' places; it took the higher).
+setting (any STICK_PROM up to 0.45 passed) or the rep count. It now holds 6 more reps on the rule's
+edges: an 8% dip reads none and a 12% dip one; deep dips at 6.5% and 93% of the ROM read none, ones
+at 13% and 87% read one; and the rep count must match. Changed in both languages, each setting fails
+outside a bracket: STICK_PROM about 0.08-0.12, STICK_RANGE's ends 0.065-0.13 and 0.87-0.93 (the
+third review found the lower end and a narrowed upper end unpinned by the first 3). The set card's
+"~41%" is a true median now (an even count averaged the two middle reps' places; it took the higher).
 
 **D35 (2026-10-27): consistency's tempo is the lowering: the run of moving down nearest the rep
-that drops at least half its ROM, timed at its own 3%; sets compare by exercise name.**
+that drops at least half its ROM, timed at its own 3%; the set's two ends say which side it's on;
+sets compare by exercise name.**
 - consistency.py `eccentric()`: the gap next to the concentric splits into runs where the bar
-  moves down faster than ECC_STOP (0.03) x the gap's peak downward speed. The lowering is the run
-  nearest the rep whose drop is at least half the rep's ROM (none: the run holding the peak), then
-  timed at 3% of its own peak.
-- Which side: squat and bench lower first, a deadlift rises first, by name; a stack or a free
-  weight goes either way (a curl or OHP rises, an RDL or lunge lowers), so the data says: did the
-  bar come down over half the first rep's ROM to its start?
+  moves down faster than ECC_STOP (0.03) x the gap's peak downward speed; runs dropping under
+  ECC_PIECE (0.10 x ROM) are wobbles, settles and bobs, and pieces split by a stop under ECC_JOIN
+  (0.5 s) with no rise in it (ECC_RISE, 0.02 x ROM) are one lowering. The lowering is the one nearest
+  the rep that drops ECC_FAR (0.5 x ROM) or more (none: the run holding the peak), timed at 3% of
+  its own peak.
+- Which side (`lowers_first()`): the lead (the bar came down over half the first rep's ROM to its
+  start) and the tail (a last lowering after the last rep, landing within LAND, 0.25 x ROM, of that
+  rep's start). One without the other decides; both or neither, the profile does (squat and bench
+  lower first, the rest rise first). Not the name alone: a Romanian deadlift is tracked as a
+  deadlift but lowers first, a pin squat as a squat but rises first. Not one end alone: a bent-over
+  row's hinge from the hang is a lead too.
 - Set to set and session to session group by the typed exercise name, trimmed, any case (the LV
   profile's sameName), not the tracking profile; unnamed sets fall back to "(profile)". A session in
-  two exports counts once.
+  two exports counts once, the copy from the newest export (its "exported" time), whatever order the
+  files are named in: names, loads, RPE and "Not a set" can change after an older export.
 *Why:* the night review ran 001b081 on the real files. The old rule (the run nearest the
 concentric) timed a box sit's bottom wobble (squat 2131: 0.08 s for a 1.46 s descent, tempo +624%)
 and a deadlift's settle at lockout (0.028 s for 3.05 s, -98%). The reviewer's fix (the run holding
@@ -480,27 +488,57 @@ every stack and free rep against the previous rep's lowering (the lat raise's re
 pre-set noise). Every unnamed exercise is "machine" or "free" (D21), so a curl was held against an
 OHP. Real files now: squat 2131 +19/+5/0/-2/-7%, 2134 -1/+26/+4/-4/0%, the deadlift +58/-9/-2/+12/0%
 (rep 1's lowering really is 3 s), the lat raise -8/0/-16/-19/+14/+7/+4%.
+*Amended 2026-10-27 (third review):* the side was by name for the big three and by the lead alone
+otherwise (a Romanian deadlift, a pin squat and a bent-over row each read every rep against its
+neighbour's lowering); a 0.1 s hesitation partway down timed only the piece past half the ROM (a
+slower descent read -19%); the first copy of a session on the command line won (the oldest, in
+date order). The real files' numbers above didn't change: the squats are decided by their lead,
+the deadlift by its tail, the lat raise (whose odd last rep's lowering lands 0.40 ROM off) by its
+profile.
 *Guarded by* consistency.py --selftest: a 35% slower descent must read 35 +/- 5% in a squat with a
-box sit's wobble, a deadlift with a settle, a stack handled after its last rep and an unnamed
-free weight lowered first, and a curl and an OHP at one load must not mix. Each old rule (nearest
-run, peak run, `!= "deadlift"`, by profile) and a data rule stuck on "rises first" fails it.
+box sit's wobble, a deadlift with a settle, a stack handled after its last rep, an unnamed free
+weight lowered first, a Romanian deadlift, a pin squat and a row with a hinge, and +44% when it also
+stops 0.1 s partway; a curl and an OHP at one load must not mix; a session's newest copy must win
+in either file order. Then each part on exact numbers: the near lowering of 0.6 ROM between a 0.4
+and a 0.8 one, both sides; a lowering split by a stop; a 1 1/4 squat's quarter kept apart by its
+rise; 7 side cases. Each old rule and 16 mutations (every threshold moved either way, the choice
+or the tie-break swapped, joining off, the copy in file order) fail it.
 
 **D36 (2026-10-27): RPE v1 (Python) labels reps from sets with "Your RPE" 10, fits per exercise
 name, and is only ever checked on sessions it wasn't fit on.**
 - analysis/rpe.py: a set to failure (Your RPE >= 10, or a `toFailure` mark if a set ever has one)
-  labels rep k of N with N - k in reserve. RIR = a + b x MCV by least squares per exercise (typed
-  name, like consistency.py), reported as v0's two numbers: the MCV at RIR 0 and per rep in
-  reserve. Needs 2+ sets to failure and a line that slopes up.
+  labels rep k of N with N - k in reserve. The attempt that failed onto the safeties isn't a rep
+  (the last rep goes when, on heights without the leveling, it rose under 0.8 x the one before and
+  the bar came to rest below the start); a set with a rep under 0.8 x its median ROM (a grinder that
+  sank 5+ cm and split) isn't labeled, and the report says so.
+- Per exercise (typed name, like consistency.py): RIR = a + b x MCV by least squares predicts; the
+  reported pair, the MCV at RIR 0 and per rep in reserve (v0's two numbers), is MCV on RIR, since
+  the labels are exact and the noise is in MCV (the predictor inverted reads the MCV at failure low:
+  0.227 for a true 0.25 at 0.04 m/s of noise). Needs 2+ sets to failure and a line that slopes up.
 - Validation: leave one session out, mean absolute error in reps, near failure (RIR 0-3) and
-  further. A normal set's range: its last rep's RPE +/- that error (at least 0.5), half points,
-  clamped to 5..10. The fit's mean residual per load answers "one line across loads?".
+  further; a session is checked only when the others alone give a line (one set per session: 3+
+  sessions), and the report names those that aren't. A normal set's RPE is on the 5..10 scale,
+  its range +/- that error (at least 0.5; +/- 1 until there is one), the ends to half points.
+- One line across loads: each load's mean residual within the sessions that took 2+ loads to
+  failure, the session's own mean taken off (across days, a load's residual is also its day's
+  offset); "can't tell yet" otherwise. Loads by number ("225" and "225.0" are one).
 *Why:* analytics.md section 5's Model v1. Your RPE 10 because the app has no failure mark and
 RPE 10 means 0 reps left, which is the label; a separate "to failure" box would be more objective
 (an attempted rep that failed), so the code already reads one. Leave one session out because reps
-in one set are near copies and day-to-day shifts are the error that matters: the self-test's
-held-out error (0.23 reps) sits above the fit's own residual (0.20), which an in-sample check
-would report. *Open:* the to-failure box in the app; whether one line fits every load (needs real
-sets at 3+ loads).
+in one set are near copies and day-to-day shifts are the error that matters.
+*Amended 2026-10-27 (review of 0682e14, 13 findings, 0 refuted):* the failed attempt was a rep and
+shifted every label (the most likely real set to failure, safeties set); the pair was the predictor
+inverted; validation skipped sessions silently and gave a wrong reason; the bias averaged estimates
+off the 5..10 scale (one warm-up dragged it by points); the width rounded under the error; the
+per-load residuals were day offsets; the self-test's leak guard only caught a fully in-sample check.
+*Guarded by* rpe.py --selftest: the raw-signal squatter (now with a failed attempt on the safeties,
+a second set to failure in one session, a split grinder, a set called 9.5 and a warm-up called 5)
+recovers 0.241 / 0.0452 from 44 labels, its held-out errors must equal leave one session out
+recomputed independently (0.21 reps), 10 of 10 ranges hold the truth; plus exact checks of the
+pair under noise, the width, the clamp, loads by number and the per-load rule. 15 mutations (leave
+one rep or set out, in-sample, labels +/-1, RPE 9 as failure, the failed attempt kept, a split set
+labeled, each fix undone) fail it. *Open:* the to-failure box in the app; whether one line fits
+every load (needs 2+ loads to failure in one session).
 
 ## Proposed (say yes or no)
 

@@ -28,7 +28,7 @@ const defaults = [
   "analysis/data/fake_reps_nopause.csv",
   "analysis/data/fake_reps_drift.csv",
   "analysis/data/fake_bench_grinder.csv",
-  "analysis/data/fake_bench_sticking.csv",   // 2 light, 3 sticking, 3 on the rule's edges: known answers (5.3)
+  "analysis/data/fake_bench_sticking.csv",   // 2 light, 3 sticking, 6 on the rule's edges: known answers (5.3)
   "analysis/data/fake_bench.csv",
   "analysis/data/fake_squat.csv",
   "analysis/data/fake_deadlift.csv",

@@ -13,6 +13,7 @@ here can differ from the live one in the 7th significant digit).
 
 import base64
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +28,15 @@ HEADER = ('"Time (s)","Acceleration x (m/s^2)","Acceleration y (m/s^2)","Acceler
 
 def column(c):
     return np.frombuffer(base64.b64decode(c["b64"]), dtype=DTYPES[c["type"]])
+
+
+def exported_at(path):
+    """When the export was made (its ISO "exported" time, "" if it has none), from the file's first
+    bytes: the app writes format, version and exported before the sessions (export.js), so a file of
+    hundreds of MB isn't parsed for it."""
+    with open(path, "rb") as f:
+        m = re.search(rb'"exported"\s*:\s*"([^"]*)"', f.read(4096))
+    return m.group(1).decode() if m else ""
 
 
 def load(path):

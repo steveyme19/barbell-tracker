@@ -45,18 +45,42 @@ def profile(x, v, rep):
     return np.interp(STEPS, frac[keep], v[s:e + 1][keep]) / rep["mcv"]
 
 
-ECC_STOP = 0.03                        # the eccentric ends where its speed is under this x its peak (D32's idea)
+ECC_STOP = 0.03       # a lowering's ends: where its speed is under this x its peak (D32's idea)
+ECC_PIECE = 0.10      # x ROM: moving down less than this is a wobble, a settle, a bob, never a lowering's piece
+ECC_JOIN = 0.5        # s: pieces of one lowering split by a shorter stop, with no rise in it, are one lowering
+ECC_RISE = 0.02       # x ROM: ... "no rise": the bar comes back up no more than this between them
+ECC_FAR = 0.5         # x ROM: a lowering takes the bar down at least this much
+LAND = 0.25           # x ROM: a rises-first set's last lowering lands this close to its last rep's start
+
+
+def lowerings(v, x, t, lo, hi, rom):
+    """The candidate lowerings in v[lo:hi + 1], as (first, last) from lo, in time order: the runs in
+    which the bar moves down faster than ECC_STOP x the stretch's peak downward speed and drops at
+    least ECC_PIECE x rom. A stop shorter than ECC_JOIN partway down, with no rise in it (a
+    hesitation, a slowdown), splits one lowering into pieces: those are joined back."""
+    seg = v[lo:hi + 1]
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], (seg < ECC_STOP * seg.min()).astype(np.int8), [0]])))
+    out = []
+    for a, b in zip(edges[::2], edges[1::2] - 1):
+        if x[lo + a] - x[lo + b] < ECC_PIECE * rom:
+            continue
+        p = out[-1][1] if out else None
+        if p is not None and t[lo + a] - t[lo + p] < ECC_JOIN and x[lo + p:lo + a + 1].max() - x[lo + p] <= ECC_RISE * rom:
+            out[-1] = (out[-1][0], b)
+        else:
+            out.append((a, b))
+    return out
 
 
 def eccentric(v, x, t, rep, before, after, lowers_first):
     """The lowering's duration: in the gap before the concentric when the lift lowers first (squat,
-    bench), after it when it rises first (deadlift, a stack). The gap splits into runs of moving
-    down (faster than ECC_STOP x its peak downward speed); the lowering is the one nearest the rep
-    that takes the bar down at least half the rep's ROM, else the one holding the peak. Drift in a
-    pause at the top, a wobble in a bottom pause or box sit, a settle at lockout, a walkout's bobs
-    and the pod handled after the last rep (often faster than the lowering) are runs of their own,
-    apart from it and short of that drop, so none can stand in for the lowering or stretch it. It's
-    timed at its own threshold, ECC_STOP x its own peak. None if there's no descent."""
+    bench), after it when it rises first (deadlift, a stack). Of the gap's lowerings (above), the one
+    nearest the rep that takes the bar down at least ECC_FAR x the rep's ROM, else the run holding
+    the gap's peak downward speed. Drift in a pause at the top, a wobble in a bottom pause or box
+    sit, a settle at lockout, a walkout's bobs and the pod handled after the last rep (often faster
+    than the lowering) are runs of their own, apart from it and short of that drop, so none can
+    stand in for the lowering or stretch it; a short stop partway down doesn't cut it. Timed at its
+    own threshold, ECC_STOP x its own peak. None if there's no descent."""
     if lowers_first:
         lo, hi = before, rep["start"]
     else:
@@ -66,16 +90,14 @@ def eccentric(v, x, t, rep, before, after, lowers_first):
     seg = v[lo:hi + 1]
     if seg.min() >= 0:
         return None
-    edges = np.flatnonzero(np.diff(np.concatenate([[0], (seg < ECC_STOP * seg.min()).astype(np.int8), [0]])))
-    runs = list(zip(edges[::2], edges[1::2] - 1))           # (first, last) sample of each run, in time order
-    far = [(a, b) for a, b in runs if x[lo + a] - x[lo + b] >= 0.5 * rep["rom"]]
+    far = [(a, b) for a, b in lowerings(v, x, t, lo, hi, rep["rom"]) if x[lo + a] - x[lo + b] >= ECC_FAR * rep["rom"]]
     if far:
         a, b = far[-1] if lowers_first else far[0]
-        k = a + int(np.argmin(seg[a:b + 1]))                # the lowering's own peak speed
     else:
-        k = int(np.argmin(seg))
+        a = b = int(np.argmin(seg))
+    k = a + int(np.argmin(seg[a:b + 1]))                    # the lowering's own peak speed
     moving = seg < ECC_STOP * seg[k]                        # seg[k] < 0: "faster down than 3% of the peak"
-    i = j = k
+    i, j = a, b
     while i > 0 and moving[i - 1]:
         i -= 1
     while j + 1 < len(moving) and moving[j + 1]:
@@ -84,16 +106,26 @@ def eccentric(v, x, t, rep, before, after, lowers_first):
 
 
 def lowers_first(r, reps):
-    """Whether each concentric comes after its lowering (the set starts at lockout). By name for
-    the big three; a stack or a free weight can go either way (a curl or an OHP rises first, an RDL
-    or a lunge lowers first), so for those the data says: did the bar come down most of the first
-    rep's ROM to its start?"""
-    if r["lift"] in ("squat", "bench"):
-        return True
-    if r["lift"] == "deadlift":
-        return False
-    s0 = reps[0]["start"]
-    return bool(r["x"][:s0 + 1].max() - r["x"][s0] > 0.5 * reps[0]["rom"])
+    """Whether each concentric comes after its lowering. The set's two ends say: a lift that lowers
+    first came down to its first rep's start (the lead), one that rises first has a last lowering
+    after its last rep that lands back at that rep's start (the tail). Not the name alone (a
+    Romanian deadlift is tracked as a deadlift but lowers first, a pin squat as a squat but rises
+    first), and not one end alone (a bent-over row's hinge from the hang comes down to the first
+    rep's start too). When the ends agree, or neither shows, the profile decides: squat and bench
+    lower first, the rest rise first (a curl, an OHP, a row, a stack)."""
+    x, v, t = r["x"], r["v"], r["t"]
+    first, last = reps[0], reps[-1]
+    s0, e = first["start"], last["end"]
+    lead = bool(x[:s0 + 1].max() - x[s0] >= ECC_FAR * first["rom"])
+    tail = False
+    if len(v) - e > 3 and v[e:].min() < 0:
+        for a, b in lowerings(v, x, t, e, len(v) - 1, last["rom"]):
+            if x[e + a] - x[e + b] >= ECC_FAR * last["rom"]:
+                tail = bool(abs(x[e + b] - x[last["start"]]) <= LAND * last["rom"])
+                break
+    if lead != tail:
+        return lead
+    return r["lift"] in ("squat", "bench")
 
 
 def rep_features(r):
@@ -158,11 +190,12 @@ def analyze_csv(path):
 
 def sessions_from_exports(paths):
     """[(session record, [(set meta, analyze result)])] from app exports, oldest first. A session in
-    more than one export (Export all is cumulative) counts once, the first copy, as the app's Import
-    does: a second copy would be its own baseline."""
+    more than one export (Export all is cumulative) counts once, or it would be its own baseline:
+    the copy from the newest export, whatever the order the files are named in, since a past
+    session's names and loads can be edited after an older export."""
     import sessions as S
     out, seen = [], set()
-    for p in paths:
+    for p in sorted(paths, key=S.exported_at, reverse=True):
         for s in S.load(p):
             if s["record"]["id"] in seen:
                 continue
@@ -258,9 +291,12 @@ def selftest():
     slower descent. Each must stand out on its own measure. And fatigue, a slower concentric of the
     same shape, must not count as inconsistent: it's speed (velocity loss), not tempo or shape.
     Then the slower descent again where a moment of moving down that isn't the lowering sits next to
-    it (a box sit's wobble, a deadlift's settle at lockout), and on lifts that rise first (a deadlift,
-    a stack) or lower first with no name to say so (an RDL): rep 3 must stand out every time. Last,
-    sets are grouped by exercise name, not by the profile every unnamed exercise shares."""
+    it (a box sit's wobble, a deadlift's settle at lockout), on lifts that rise first (a deadlift, a
+    stack, a pin squat, a row with a hinge) or lower first whatever the name says (an RDL, a
+    Romanian deadlift), and split by a stop partway down: rep 3 must measure its true size every
+    time. Then eccentric() and lowers_first() on exact numbers, every threshold in reach of a case.
+    Last, a session in two exports counts once (its newest copy), and sets are grouped by exercise
+    name, not by the profile every unnamed exercise shares."""
     import contextlib
     import io
     FS, G, ROM = 400, 9.81, 0.55
@@ -272,14 +308,19 @@ def selftest():
         n = int(dur * FS)
         return base - d / 2 * (1 - np.cos(2 * np.pi * np.arange(n) / n))
 
-    def lift_set(fault, seed, lift="squat", top=True, box=False, settle=False, handle=False, rom=ROM):
+    def lift_set(fault, seed, lift="squat", top=True, box=False, settle=False, handle=False, rom=ROM,
+                 hinge=0.0, stop=False, raw=False):
         """5 reps, rep 3 carrying the fault. top: starts standing and lowers first (a squat, an
         RDL); else starts at the bottom and rises first (a deadlift, a stack, a curl). box: a 1.5 s
         box sit at the bottom with 3 wobble dips (-0.03 to -0.07 m/s); settle: a 1 mm dip as the bar
         settles at lockout (-0.04 m/s); handle: after the set the pod is picked up 4 cm and dropped
-        back, faster (-1.0 m/s) than any lowering."""
+        back, faster (-1.0 m/s) than any lowering; hinge: a rises-first set starts this much higher
+        and comes down to the first rep's start (a bent-over row from the hang); stop: rep 3's
+        lowering stops 0.1 s at 40% of the way down. raw: (t, a) instead of the analysis."""
         rng = np.random.default_rng(seed)
-        z = [np.full(int(2 * FS), rom if top else 0.0)]
+        z = [np.full(int(2 * FS), rom if top else hinge)]
+        if hinge and not top:
+            z += [hinge * (1 - ease(int(0.8 * FS))), np.full(int(0.5 * FS), 0.0)]
         for k in range(5):
             depth = rom - (0.05 if fault == "depth" and k == 2 else 0.0)
             up = 1.0 * (1.35 if fault == "fatigue" and k == 2 else 1.0)
@@ -295,6 +336,10 @@ def selftest():
             if settle:
                 rise.append(dip(rom, 0.001, 0.08))
             lower = [rom - depth * ease(int(down * FS))]
+            if stop and k == 2:
+                mid = rom - 0.4 * depth
+                lower = [rom - 0.4 * depth * ease(int(0.4 * down * FS)), np.full(int(0.1 * FS), mid),
+                         mid - 0.6 * depth * ease(int(0.6 * down * FS))]
             if box:
                 b = np.full(int(0.2 * FS), low)
                 lower += [np.full(int(0.25 * FS), low), dip(low, 0.002, 0.2), b, dip(low, 0.003, 0.2), b,
@@ -310,7 +355,7 @@ def selftest():
         z = np.concatenate(z)
         t = np.arange(len(z)) / FS
         a = G + np.gradient(np.gradient(z, t), t) + 0.03 * rng.standard_normal(len(t))
-        return R.analyze(t, a, lift)
+        return (t, a) if raw else R.analyze(t, a, lift)
 
     def stands_out(name, r, key, want=None, tol=0.0):
         """Rep 3 is the worst by 3x, and when the fault has a known size (a 35% slower descent, a
@@ -345,6 +390,105 @@ def selftest():
     ok &= stands_out("tempo, a stack (rises first, by the data), the pod handled after it",
                      lift_set("tempo", 6, "machine", top=False, handle=True), "tempo_pct", 35, 5)
     ok &= stands_out("tempo, a free weight lowered first (an RDL, by the data)", lift_set("tempo", 7, "free"), "tempo_pct", 35, 5)
+    # the third review: the name and one end can each mislead; a stop partway down splits the lowering
+    ok &= stands_out("tempo, a Romanian deadlift (tracked as a deadlift, lowers first)", lift_set("tempo", 11, "deadlift"),
+                     "tempo_pct", 35, 5)
+    ok &= stands_out("tempo, a pin squat (tracked as a squat, rises first)", lift_set("tempo", 12, "squat", top=False),
+                     "tempo_pct", 35, 5)
+    ok &= stands_out("tempo, a bent-over row whose hinge from the hang comes down to rep 1's start",
+                     lift_set("tempo", 13, "free", top=False, hinge=0.28, rom=0.30), "tempo_pct", 35, 5)
+    ok &= stands_out("tempo, a squat whose slower descent stops 0.1 s partway", lift_set("tempo", 14, stop=True),
+                     "tempo_pct", ((1.35 * 1.1 + 0.1) / 1.1 - 1) * 100, 5)
+
+    # eccentric()'s parts, each pinned on exact speeds: one gap holding a near run that drops 0.4 of
+    # the ROM, the slow lowering (0.6, 2 s) and a fast far run (0.8), apart by rises; then a lowering
+    # in two pieces split by a 0.1 s stop, and a 1 1/4 squat's quarter (a rise between: not joined).
+    # Each answer is the lowering at its own 3%: a sine-speed move of T lasts T (1 - 2 asin(0.03) / pi).
+    def vel(drop, dur):
+        n = int(dur * FS)
+        return -np.pi * drop / (2 * dur) * np.sin(np.pi * np.arange(n) / n)
+    hold = lambda d: np.zeros(int(d * FS))
+    own = lambda T: T * (1 - 2 * np.arcsin(ECC_STOP) / np.pi)
+
+    def ecc_known(name, window, want, first):
+        conc = [-vel(0.5, 1.0)]                                       # the rep: 0.5 m up in 1 s
+        parts = (window + conc + [hold(0.5)]) if first else ([hold(0.5)] + conc + window)
+        v = np.concatenate(parts)
+        n_before = sum(len(p) for p in window) if first else int(0.5 * FS)
+        rep = {"start": n_before, "end": n_before + len(conc[0]) - 1, "rom": 0.5}
+        t = np.arange(len(v)) / FS
+        x = np.concatenate([[0.0], np.cumsum(v)[:-1] / FS])
+        got = eccentric(v, x, t, rep, 0, len(v) - 1, first)
+        good = got is not None and abs(got - want) < 0.01
+        print(f"{'PASS' if good else 'FAIL'}  eccentric's known answer, {name}: "
+              f"{'none' if got is None else f'{got:.3f}'} s, want {want:.3f} s")
+        return good
+
+    gap = [hold(0.5), vel(0.2, 0.2), -vel(0.2, 0.5), hold(0.5), vel(0.3, 2.0), hold(0.5), -vel(0.4, 1.0), hold(0.5),
+           vel(0.4, 0.5), hold(0.5)]
+    ok &= ecc_known("the near lowering of 0.6 ROM, rising first", gap, own(2.0), False)
+    ok &= ecc_known("the near lowering of 0.6 ROM, lowering first", gap[::-1], own(2.0), True)
+    ok &= ecc_known("a lowering split by a 0.1 s stop", [hold(0.5), vel(0.15, 0.6), hold(0.1), vel(0.15, 0.6), hold(0.5)],
+                    1.3 - (0.6 - own(0.6)), False)
+    ok &= ecc_known("a 1 1/4 squat's descent, not its quarter (0.25 s apart: the rise keeps them apart)",
+                    [hold(0.5), vel(0.5, 1.2), hold(0.05), -vel(0.125, 0.2), vel(0.125, 0.4), hold(0.1)], own(1.2), True)
+
+    # lowers_first()'s ends and its tie-break, on exact heights: (profile, the lead-in drop as a
+    # fraction of the ROM, where the last lowering lands above rep 1's start as a fraction, or None
+    # for no last lowering, the side)
+    def side(lift, lead, land):
+        moves = [(lead * 0.5, 0.5), (0.0, 0.8), (0.0, 0.5), (0.5, 1.0), (0.5, 0.5)]
+        if land is not None:
+            moves += [(land * 0.5, 1.0), (land * 0.5, 0.5)]
+        xs, marks, h = [], [], lead * 0.5
+        for to, d in moves:
+            n = int(d * FS)
+            marks.append(sum(len(q) for q in xs))
+            xs.append(h + (to - h) * ease(n))
+            h = to
+        x = np.concatenate(xs)
+        t = np.arange(len(x)) / FS
+        v = np.gradient(x, t)
+        return lowers_first({"lift": lift, "x": x, "v": v, "t": t}, [{"start": marks[3], "end": marks[4] - 1, "rom": 0.5}])
+
+    for lift, lead, land, want, why in (("machine", 0.3, None, False, "a small lead-in, no last lowering: the profile"),
+                                        ("machine", 0.7, None, True, "a lead-in, no last lowering"),
+                                        ("machine", 0.7, 0.1, False, "both ends: the profile (a row's hinge)"),
+                                        ("machine", 0.7, 0.4, True, "a last lowering landing 0.4 ROM off isn't one"),
+                                        ("squat", 0.0, 0.0, False, "a pin squat: no lead-in, a last lowering"),
+                                        ("deadlift", 0.7, None, True, "a Romanian deadlift: a lead-in, no last lowering"),
+                                        ("squat", 0.7, 0.1, True, "both ends, a squat: the profile")):
+        got = side(lift, lead, land)
+        good = got == want
+        ok &= good
+        print(f"{'PASS' if good else 'FAIL'}  which side, {why}: {lift} reads {'lowers' if got else 'rises'} first")
+
+    # a session in two exports: the newest copy, whichever order the files are named in
+    import base64
+    import json
+    import shutil
+    import tempfile
+    t_a, a_a = lift_set(None, 15, raw=True)
+    col = lambda arr, typ: {"type": typ, "b64": base64.b64encode(np.asarray(arr, "<f8" if typ == "f64" else "<f4").tobytes()).decode()}
+    def entry(sid, ms, name):
+        st = {"index": 0, "n": len(t_a), "tAbs": col(t_a, "f64"),
+              "cols": {"t": col(t_a, "f64"), "ax": col(0 * a_a, "f32"), "ay": col(0 * a_a, "f32"), "az": col(a_a, "f32"),
+                       "gx": col(0 * a_a, "f32"), "gy": col(0 * a_a, "f32"), "gz": col(0 * a_a, "f32")}}
+        return {"record": {"id": sid, "startedAtMs": ms, "sets": [{"index": 0, "exercise": name, "lift": "squat", "load": 225}]},
+                "sets": [st]}
+    tmp = Path(tempfile.mkdtemp(prefix="consistency-selftest-"))
+    try:
+        mon, wed = tmp / "bartracker-export-2026-10-20.json", tmp / "bartracker-export-2026-10-22.json"
+        for p, when, ses in ((mon, "2026-10-20T10:00:00.000Z", [entry("A", 1, "")]),
+                             (wed, "2026-10-22T10:00:00.000Z", [entry("A", 1, "Back squat"), entry("B", 2, "Back squat")])):
+            p.write_text(json.dumps({"format": "bartracker-sessions", "version": 1, "exported": when, "sessions": ses}), encoding="utf-8")
+        orders = [sessions_from_exports(o) for o in ([mon, wed], [wed, mon])]
+        good = all([s[0]["id"] for s in got] == ["A", "B"] and got[0][1][0][0]["exercise"] == "Back squat" for got in orders)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok &= good
+    print(f"{'PASS' if good else 'FAIL'}  a session in two exports counts once, its newest copy (the name typed since), "
+          f"in either file order")
     # by exercise: a curl and an OHP share the "free" profile and the load, but aren't one exercise
     curl = lambda s: lift_set(None, s, "free", top=False, rom=0.35)
     ohp = lambda s: lift_set(None, s, "free", top=False, rom=0.50)
