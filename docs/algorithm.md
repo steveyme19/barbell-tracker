@@ -369,6 +369,19 @@ this problem. The one exception is `V_ZERO` = 1e-9 m/s: "zero" means within roun
 A drift-corrected window ends at v = 0 only up to ±1e-17, and Python and JS round it
 with opposite signs, which moved a rep end by a sample (D14). 1e-9 m/s biases nothing.
 
+**Pauses that aren't stills (D32).** A hold at lockout or on the chest that's too short
+(under 0.25 s) or too shaky to be a still isn't an anchor, so v there is left-over drift:
+true 0, read a hair above it. "First v = 0" then ran through the whole pause and the rep
+took it in: on the fake session's 0.25 s holds, 7 of 20 reps read 5 to 24% low, and up
+to half too low on known curves. Now the search starts where v <= 3% of the rep's own
+peak (`V_STOP_FRAC`) and **walks on while v keeps falling**: to v = 0 when it gets there,
+which is the same boundary as before (no threshold bias, unlike a plain 3% threshold at
++1 to +6%), or to where the pause's drift floor begins. If the drift is over 3% of the
+peak, the walk can't see the plateau and the boundary is today's. Bar and stack lifts at
+`WALK_MIN_FS` = 150 Hz or more: hand-held phone tests and Chrome's jittery 60 Hz stay as
+they were. Numbers: `analysis/demos/boundary_pauses.py`; the fake session's true MCVs
+are a known answer in parity.mjs (worst -2.3%).
+
 **Grinder stalls.** On a max-effort rep the bar can nearly stop at the sticking point,
 or even sink a little before it keeps going. Velocity crosses zero, which could split
 one rep into two. §7's wiggle filter handles it: a sink shorter than 5 cm isn't a

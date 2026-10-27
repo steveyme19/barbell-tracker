@@ -51,6 +51,13 @@ COAST_DV = 0.1          # m/s: speed change on both sides that marks a coast
 STILL_MAX_HUMP = 0.12   # m/s: velocity can't rise and fall more than this inside a still period (D15)
 MIN_ROM = 0.05          # m: smaller up/down moves are wiggles, not reps
 V_ZERO = 1e-9           # m/s: "not moving up". Drift-corrected anchors are 0 up to roundoff (±1e-17)
+V_STOP_FRAC = 0.03      # a rep's start and end are looked for where v is at or under this x the rep's
+                        # own peak, then walked on while v keeps falling: to v = 0 when it gets there
+                        # (the same boundary as before), or to where a pause too short or shaky to be a
+                        # still begins, its leftover drift reading a hair above 0 (it used to be swallowed
+                        # into the rep: MCV up to half too low, D32). Bar and stack lifts; 0 = off
+WALK_MIN_FS = 150.0     # Hz: the walk needs v smooth near zero. Chrome's 60 Hz with its jittery
+                        # timestamps wobbles there, and it stopped short (the same squats, D32)
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
 BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
 LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve (lockouts only)
@@ -317,8 +324,10 @@ def turning_points(x, min_move):
     return lows, highs
 
 
-def find_reps(x, v, t, windows, bottom_ref=None):
-    """One rep per bottom-to-top move. Boundaries come from v = 0, never a threshold.
+def find_reps(x, v, t, windows, bottom_ref=None, stop_frac=0.0):
+    """One rep per bottom-to-top move. Boundaries come from v = 0, never a threshold position:
+    stop_frac (V_STOP_FRAC) only says where to start looking, then the boundary is walked to v = 0, or
+    to the start of a stop whose drift keeps v just above it (D32).
 
     bottom_ref: the usual bottom height when the lift has one (bench chest, deadlift floor,
     machine stack). A rep may then start from a stop near that height even if the move
@@ -332,13 +341,20 @@ def find_reps(x, v, t, windows, bottom_ref=None):
             continue
         hi = later[0]
         seg = np.arange(lo, hi + 1)
+        vz = max(V_ZERO, stop_frac * v[seg].max())
         # start: last moment the bar wasn't moving up while still near the bottom
         base = x[lo] if bottom_ref is None else max(x[lo], bottom_ref)
-        cand = seg[(v[seg] <= V_ZERO) & (x[seg] <= base + MIN_ROM)]
+        cand = seg[(v[seg] <= vz) & (x[seg] <= base + MIN_ROM)]
         start = cand[-1] if len(cand) else lo
+        if len(cand):                        # back to v = 0, or to where a stop's drift floor ends
+            while start > lo and v[start] > V_ZERO and v[start - 1] < v[start]:
+                start -= 1
         # end: first moment it stops moving up once it's near the top
-        cand = seg[(seg > start) & (v[seg] <= V_ZERO) & (x[seg] >= x[hi] - MIN_ROM)]
+        cand = seg[(seg > start) & (v[seg] <= vz) & (x[seg] >= x[hi] - MIN_ROM)]
         end = cand[0] if len(cand) else hi
+        if len(cand):                        # on to v = 0, or to where a pause's drift floor begins
+            while end < hi and v[end] > V_ZERO and v[end + 1] < v[end]:
+                end += 1
         rom = x[end] - x[start]
         dur = t[end] - t[start]
         flags = []
@@ -486,7 +502,9 @@ def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
     v, windows = velocity_between_anchors(a, t, fs, runs)
     v = level_heights(a, t, v, windows, lift)
     x = integrate(v, t)
-    reps = find_reps(x, v, t, windows, usual_bottom(x, lift))
+    # the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
+    walk = lift != "phone" and fs >= WALK_MIN_FS
+    reps = find_reps(x, v, t, windows, usual_bottom(x, lift), V_STOP_FRAC if walk else 0.0)
     return dict(t=t, fs=fs, g=g, a=a, runs=runs, v=v, x=x, windows=windows, reps=reps,
                 ignored=n_candidates - len(runs), lift=lift, mount=mount, noise=noise)
 

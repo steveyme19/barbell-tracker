@@ -392,6 +392,29 @@ no threshold can tell from a real single: that needs a "not a set" control on th
 Both cases are in parity.mjs with their known answers (the bug was shared by Python and JS, so
 their agreement alone couldn't catch it), plus 7 known answers for the rack filter itself.
 
+**D32 (2026-10-26): a rep's start and end walk past a too-short pause's drift: look where v <=
+3% of the rep's peak, then walk on while v keeps falling (to v = 0, or to the pause's start).**
+- `find_reps` (reps.py) / `findReps` (reps.js): V_STOP_FRAC = 0.03, for lifts other than "phone"
+  and data at WALK_MIN_FS = 150 Hz or more. 0 restores the old boundaries exactly.
+*Problem:* a hold at lockout or on the chest under 0.25 s (or shaky) isn't a still, so v there is
+left-over drift a hair above 0, and "first v = 0" ran through the pause: the rep's duration took
+it in. The repo's own fake session (0.25 s holds): 7 of 20 reps 5 to 24% low against the truth.
+Known curves (demos/boundary_pauses.py): -8 to -50% with +0.005 m/s of drift. Quentin's pod set:
+rep 5 read 0.186 m/s with a 0.43 s lockout hold in it (the bar moved 5.4 mm).
+*Why the walk and not a threshold:* section 8 rules out a velocity threshold (a fixed one biases
+grinders: +19% at 0.05 m/s, demos/threshold_bias.py), and a relative one (3% of the peak) still
+biases every clean rep +1 to +6%. The walk only uses 3% to know where to start looking; the
+boundary is the real zero when v reaches it, so a clean rep, a sticking dip and a lockout stall
+come out exactly as before. Where it can't help (drift over 3% of the peak) it gives today's
+boundary. On the parity files every change on bar data is a pause: the bar moved 0 to 5.4 mm
+between the two boundaries.
+*Limits:* hand-held phone tests keep the old rule (their tremor looks like a pause), and so does
+data under 150 Hz: on Chrome's 60 Hz with its jittery timestamps the walk stopped short (the same
+squats read +34% against the native 402 Hz recording). Phase 3's video is the real check.
+*Review this one:* it changes MCV (the main number) on paused reps, made overnight from synthetic
+truth plus the parity files; the pod and native recordings support it, but no real paused set
+with a reference exists yet.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

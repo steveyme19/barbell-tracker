@@ -21,6 +21,9 @@ export const SETTINGS = {
   STILL_MAX_HUMP: 0.12,  // m/s: velocity can't rise and fall more than this inside a still period (D15)
   MIN_ROM: 0.05,         // m: smaller up/down moves are wiggles, not reps
   V_ZERO: 1e-9,          // m/s: "not moving up". Drift-corrected anchors are 0 up to roundoff (±1e-17)
+  V_STOP_FRAC: 0.03,     // look for a rep's start/end where v <= this x its peak, then walk on while v
+                         // keeps falling: to v = 0, or to where a too-short pause's drift floor begins (D32)
+  WALK_MIN_FS: 150,      // Hz: the walk needs v smooth near zero; Chrome's 60 Hz wobbles there (D32)
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
   LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve (lockouts only)
@@ -455,18 +458,28 @@ export function usualBottom(x, S = SETTINGS) {
  * machine): a rep may start from a stop near it even if the move began lower, which
  * cuts a setup move off the first rep. See find_reps() in reps.py.
  */
-export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null) {
+export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopFrac = 0) {
   const { lows, highs } = turningPoints(x, S.MIN_ROM);
   const reps = [];
   for (const lo of lows) {
     const hi = highs.find((h) => h > lo);
     if (hi === undefined) continue;
+    let segMax = -Infinity;
+    for (let i = lo; i <= hi; i++) segMax = Math.max(segMax, v[i]);
+    const vz = Math.max(S.V_ZERO, stopFrac * segMax);
     const base = bottomRef === null ? x[lo] : Math.max(x[lo], bottomRef);
-    let start = lo;
-    for (let i = lo; i <= hi; i++) if (v[i] <= S.V_ZERO && x[i] <= base + S.MIN_ROM) start = i;
+    let start = lo, found = false;
+    for (let i = lo; i <= hi; i++) if (v[i] <= vz && x[i] <= base + S.MIN_ROM) { start = i; found = true; }
+    if (found) {                       // back to v = 0, or to where a stop's drift floor ends
+      while (start > lo && v[start] > S.V_ZERO && v[start - 1] < v[start]) start--;
+    }
     let end = hi;
+    found = false;
     for (let i = start + 1; i <= hi; i++) {
-      if (v[i] <= S.V_ZERO && x[i] >= x[hi] - S.MIN_ROM) { end = i; break; }
+      if (v[i] <= vz && x[i] >= x[hi] - S.MIN_ROM) { end = i; found = true; break; }
+    }
+    if (found) {                       // on to v = 0, or to where a pause's drift floor begins
+      while (end < hi && v[end] > S.V_ZERO && v[end + 1] < v[end]) end++;
     }
     const rom = x[end] - x[start];
     const dur = t[end] - t[start];
@@ -537,7 +550,9 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
   const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
   levelHeights(a, t, v, windows, S);
   const x = integrate(v, t);
-  const reps = findReps(x, v, t, windows, S, usualBottom(x, S));
+  // the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
+  const walk = lift !== "phone" && fs >= S.WALK_MIN_FS;
+  const reps = findReps(x, v, t, windows, S, usualBottom(x, S), walk ? S.V_STOP_FRAC : 0);
   return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length, lift, mount, noise };
 }
 

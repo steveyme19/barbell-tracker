@@ -101,19 +101,24 @@ for (const [file, forced] of files) {
 // The JS tracker is fed one sample at a time, like the live app. It has to find the
 // same sets as Python working on the whole file: same start/end and rest (within
 // 0.01 s), same rep count, reps within the usual tolerance, same RPE estimate. A third entry
-// is the known answer (reps per set): both sides sharing a bug is what it catches (D31).
+// is the known answer (reps per set), a fourth each rep's true MCV (within MCV_TRUTH): both
+// sides sharing a bug is what they catch (D31, D32).
+const MCV_TRUTH = 0.05;               // relative
+const FAKE_SESSION_MCV = [0.8, 0.85, 0.9, 1.0, 1.15].map((up) => 0.55 / up);   // make_fake_session.py: ROM / UPS
 const sessions = [
-  ["analysis/data/fake_session_squat.csv", ["squat"]],
+  // a 0.25 s hold at lockout after every rep, too short for a still: swallowed into the rep, 7 of
+  // these 20 reps read 5 to 24% low before D32
+  ["analysis/data/fake_session_squat.csv", ["squat"], [5, 5, 5, 5], Array(4).fill(FAKE_SESSION_MCV)],
   ["analysis/data/fake_session_squat.csv", ["machine"]],      // same motion as a weight-stack machine (D19)
   ["analysis/data/fake_session_joined.csv", ["squat", "phone"]],
   ["analysis/data/fake_session_joined.csv", ["free"]],        // hand-held moves: the gyro says free (D21)
   ["analysis/data/bar-machine-2026-10-17-1334-set01-lat-raise.csv", ["free"]],   // the gyro says machine (D21)
   // the phone picked up off the bar 4 s after the last rerack, End tapped while it moves (D31)
-  ["analysis/data/fake_session_squat_handled.csv", ["squat"], [5, 5, 5, 5]],
+  ["analysis/data/fake_session_squat_handled.csv", ["squat"], [5, 5, 5, 5], Array(4).fill(FAKE_SESSION_MCV)],
   // the real pod, hand reps, then the pod handled before the set closed: a 2 m "rep 6" (D31)
   ["analysis/data/bar-deadlift-2026-10-23-1857-set01.csv", ["deadlift"], [5]],
 ];
-for (const [rel, lifts, expect] of process.argv.length > 2 ? [] : sessions) {
+for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : sessions) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
   const buf = readFileSync(file);
@@ -144,8 +149,17 @@ for (const [rel, lifts, expect] of process.argv.length > 2 ? [] : sessions) {
   if (expect && JSON.stringify(js.map((s) => s.reps.length)) !== JSON.stringify(expect)) {
     problems.push(`known answer: reps per set ${JSON.stringify(expect)}, got ${JSON.stringify(js.map((s) => s.reps.length))}`);
   }
+  let worstTruth = 0;
+  if (truth) js.forEach((s, k) => s.reps.forEach((r, j) => {
+    const want = truth[k]?.[j];
+    if (want === undefined) return;
+    const err = (r.mcv - want) / want;
+    if (Math.abs(err) > Math.abs(worstTruth)) worstTruth = err;
+    if (Math.abs(err) > MCV_TRUTH) problems.push(`known answer: set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(3)} vs true ${want.toFixed(3)} (${(err * 100).toFixed(1)}%)`);
+  }));
+  const truthNote = truth ? `, MCV vs truth worst ${(worstTruth * 100).toFixed(1)}%` : "";
   if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
-  else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}`);
+  else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}${truthNote}`);
 }
 
 // ---------- the rack filter's ends (analysis/sets.py drop_rack_moves vs webapp/sets.js) ----------
