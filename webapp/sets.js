@@ -13,6 +13,8 @@ export const SET_SETTINGS = {
   TRAIL: 2.0,       // s: still after the last active block
   RACK_FRAC: 0.5,   // reps at either end shorter than this x median ROM = rack moves
   RACK_MIN_ROM: 0.12, // m: an end rep shorter than this is a rack move / stack bump (not phone tests)
+  RACK_MAX_ROM: { squat: 1.0, bench: 0.8, deadlift: 1.0 },   // m: an end "rep" above this is the sensor handled (D31)
+  RACK_MAX_FRAC: 2.0, // an end rep over this x the median of the set's OTHER reps is handling too
   // RPE v0, uncalibrated (analytics.md section 5): RIR = (last MCV - v1RM) / DV_PER_REP
   V1RM: { squat: 0.23, bench: 0.10, deadlift: 0.14 },
   DV_PER_REP: { squat: 0.04, bench: 0.035, deadlift: 0.04 },
@@ -25,15 +27,31 @@ function median(xs) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-/** Unrack/rerack bumps at the ends of a set are small "reps". Drop them. */
+/** The ends of a set that aren't reps. Too big first: handling the sensor (one huge end "rep").
+ * Then too small: unrack/rerack bumps. The small floor comes from what's left, so a 2 m pickup
+ * can't lift the median and push a real single under it. */
 export function dropRackMoves(reps, lift) {
+  if (!reps.length) return reps;
+  const cap = S.RACK_MAX_ROM[lift] ?? Infinity;
+  const big = (r, others) => r.rom > cap || (others.length > 0 && r.rom > S.RACK_MAX_FRAC * median(others.map((o) => o.rom)));
+  let a = 0, b = reps.length;
+  while (b > a && big(reps[b - 1], reps.slice(a, b - 1))) b--;
+  while (a < b && big(reps[a], reps.slice(a + 1, b))) a++;
+  reps = reps.slice(a, b);
   if (!reps.length) return reps;
   let floor = lift !== "phone" ? S.RACK_MIN_ROM : 0;   // bar or stack, not hand-held
   if (reps.length >= 2) floor = Math.max(floor, S.RACK_FRAC * median(reps.map((r) => r.rom)));
-  let a = 0, b = reps.length;
+  a = 0; b = reps.length;
   while (a < b && reps[a].rom < floor) a++;
   while (b > a && reps[b - 1].rom < floor) b--;
   return reps.slice(a, b);
+}
+
+/** A closed set's reps: the anchored ones, rack moves and handling off the ends. A closed set
+ * always has TRAIL s of still after its last active block, so a rep with no end anchor only
+ * happens when motion ran up to the cut: the sensor handled, or End tapped mid-move (D31). */
+export function closedSetReps(reps, lift) {
+  return dropRackMoves(reps.filter((r) => !r.flags.includes("no end anchor")), lift);
 }
 
 /** [low, high] RPE (5 to 10, half steps) from the last rep's MCV, or null. Uncalibrated v0. */
@@ -158,8 +176,8 @@ export class SessionTracker {
     const res = analyze(samples.map((x) => x.t), magnitude(samples.map((x) => x.ax), samples.map((x) => x.ay),
       samples.map((x) => x.az)), { ...SETTINGS, LIFT: named }, imuOf(samples));
     const lift = res.error ? named : res.lift;            // the name, or what the sensor saw (D21)
-    const reps = res.error ? [] : dropRackMoves(res.reps, lift);
-    if (!reps.length) { this.onDrop(); return; }          // plates, a bump: not a set
+    const reps = res.error ? [] : closedSetReps(res.reps, lift);
+    if (!reps.length) { this.onDrop(); return; }          // plates, a bump, the sensor handled: not a set
     const set = { ...setSummary(lift, reps, tAbs), reps, samples, tAbs, analysis: res, index: this.sets.length };
     const prev = this.sets[this.sets.length - 1];
     set.restBefore = prev ? set.startT - prev.endT : null;

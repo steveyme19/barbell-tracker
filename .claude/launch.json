@@ -4,8 +4,8 @@
     {
       "name": "webapp",
       "runtimeExecutable": "py",
-      "runtimeArgs": ["-3", "-m", "http.server", "8765", "--bind", "127.0.0.1"],
-      "port": 8765
+      "runtimeArgs": ["-3", "webapp/serve.py", "8766"],
+      "port": 8766
     }
   ]
 }

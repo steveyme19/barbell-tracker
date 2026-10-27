@@ -12,6 +12,10 @@ Usage:
     python make_fake_session.py          # writes data/fake_session_squat.csv, prints the truth
     python make_fake_session.py joined   # real 402 Hz app sets joined by 60 s of real
                                          # still noise: data/fake_session_joined.csv
+    python make_fake_session.py handled  # the same 4 squat sets, then 4 s after the last
+                                         # rerack the phone is picked up off the bar (up 0.5 m)
+                                         # and held while End is tapped: must stay 4 x 5 reps
+                                         # (D31): data/fake_session_squat_handled.csv
 """
 
 import sys
@@ -112,7 +116,12 @@ for k in range(4):
             hold(20, 0); move(0.6, 0, RACK_LIFT); walk(1.5, RACK_LIFT); move(0.5, RACK_LIFT, 0); hold(20, 0)
         lead = 0.6 + 2.0 + 1.5 + 1.1         # unrack + walkout + settle + first descent
         hold(RESTS[k] - spent - (now() - reps[-1][1] - spent) - lead, 0)
-hold(8, 0)                                   # end of session
+if "handled" in sys.argv:
+    hold(4, 0)                               # racked, then picked up before the set closes
+    move(0.6, 0, 0.5)                        # off the bar to look at it
+    walk(3.0, 0.5)                           # held in the hand (End tapped while it moves)
+else:
+    hold(8, 0)                               # end of session
 
 zz = np.concatenate(z)
 t = np.arange(len(zz)) / FS
@@ -120,7 +129,7 @@ az = np.gradient(np.gradient(zz, t), t)
 wander = 0.04 * np.sin(2 * np.pi * t / 47) + 0.02 * np.sin(2 * np.pi * t / 7.3)    # slow bias drift
 sig = G + az + 0.03 + wander + NOISE * r.standard_normal(len(t))
 zeros = np.zeros_like(t)
-out = Path(__file__).parent / "data" / "fake_session_squat.csv"
+out = Path(__file__).parent / "data" / ("fake_session_squat_handled.csv" if "handled" in sys.argv else "fake_session_squat.csv")
 pd.DataFrame({"Time (s)": t, "Acceleration x (m/s^2)": zeros, "Acceleration y (m/s^2)": zeros,
               "Acceleration z (m/s^2)": sig, "Absolute acceleration (m/s^2)": sig}).to_csv(out, index=False)
 

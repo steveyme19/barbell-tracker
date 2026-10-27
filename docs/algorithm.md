@@ -489,6 +489,15 @@ top of sections 5 to 10 finds the sets (`analysis/sets.py`, ported to
    set before a real rep.
    **A guess until real bar sessions exist** (roadmap 2.x): walkouts and reracks may
    look different on a real bar.
+   **The sensor handled** (D31): unclipping the pod, or picking up the phone, before the
+   set's 15 s of quiet is up adds one huge end "rep" (1.98 m on a real pod set). End reps
+   over a per-lift cap (squat and deadlift 1.0 m, bench 0.8 m) or over 2x the median of
+   the set's other reps go first; the small-rep floor is then taken from what's left. And a
+   closed set keeps only anchored reps: it always has 2 s of still after its last active
+   block, so a rep with no end anchor only comes from motion running up to the cut (the
+   sensor carried, End tapped mid-move). The live view keeps the rep in progress.
+   Moving the pod to another bar can still make an anchored, normal-looking phantom set:
+   no threshold tells it from a real single.
 5. **Rest** = first rep start of a set minus the last rep end of the set before. Live,
    the app shows the rest timer 3 s after the last rep (provisional: more reps within
    15 s and it's still the same set).
@@ -501,7 +510,10 @@ The live app only ever analyzes the set in progress, and during rest it keeps a 
 seconds of samples, so an hour-long session costs the same per pass as one set.
 
 Known-answer test: `make_fake_session.py` (4 squat sets with unrack, walkout, rerack,
-plates, a 10 s breather, and an unrack + rerack with no reps): 4 sets, rests exact. Real
+plates, a 10 s breather, and an unrack + rerack with no reps): 4 sets, rests exact.
+`make_fake_session.py handled`: the same, then the phone picked up 4 s after the last
+rerack and held while End is tapped: still 4 x 5 reps (it gave the last set a 6th rep at
+0.17 m/s, velocity loss 72%, before D31). Real
 data: two real 402 Hz sets joined with real still noise give the same reps as each file
 alone (ROM within 0.4 cm, MCV within 0.001 m/s).
 

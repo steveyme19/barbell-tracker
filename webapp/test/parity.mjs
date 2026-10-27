@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { parseRecording } from "../fileio.js";
 import { analyze, magnitude, liftFromName, SETTINGS } from "../reps.js";
-import { SessionTracker, formatTime } from "../sets.js";
+import { SessionTracker, formatTime, dropRackMoves } from "../sets.js";
 import { fitProfile } from "../lv.js";
 import { fitCalibration } from "../calib.js";
 
@@ -100,15 +100,20 @@ for (const [file, forced] of files) {
 // ---------- session mode (analysis/sets.py vs webapp/sets.js) ----------
 // The JS tracker is fed one sample at a time, like the live app. It has to find the
 // same sets as Python working on the whole file: same start/end and rest (within
-// 0.01 s), same rep count, reps within the usual tolerance, same RPE estimate.
+// 0.01 s), same rep count, reps within the usual tolerance, same RPE estimate. A third entry
+// is the known answer (reps per set): both sides sharing a bug is what it catches (D31).
 const sessions = [
   ["analysis/data/fake_session_squat.csv", ["squat"]],
   ["analysis/data/fake_session_squat.csv", ["machine"]],      // same motion as a weight-stack machine (D19)
   ["analysis/data/fake_session_joined.csv", ["squat", "phone"]],
   ["analysis/data/fake_session_joined.csv", ["free"]],        // hand-held moves: the gyro says free (D21)
   ["analysis/data/bar-machine-2026-10-17-1334-set01-lat-raise.csv", ["free"]],   // the gyro says machine (D21)
+  // the phone picked up off the bar 4 s after the last rerack, End tapped while it moves (D31)
+  ["analysis/data/fake_session_squat_handled.csv", ["squat"], [5, 5, 5, 5]],
+  // the real pod, hand reps, then the pod handled before the set closed: a 2 m "rep 6" (D31)
+  ["analysis/data/bar-deadlift-2026-10-23-1857-set01.csv", ["deadlift"], [5]],
 ];
-for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
+for (const [rel, lifts, expect] of process.argv.length > 2 ? [] : sessions) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
   const buf = readFileSync(file);
@@ -136,8 +141,37 @@ for (const [rel, lifts] of process.argv.length > 2 ? [] : sessions) {
     });
     if (JSON.stringify(s.rpeEst) !== JSON.stringify(p.rpe_est)) problems.push(`set ${k + 1} RPE JS ${s.rpeEst} vs Python ${p.rpe_est}`);
   });
+  if (expect && JSON.stringify(js.map((s) => s.reps.length)) !== JSON.stringify(expect)) {
+    problems.push(`known answer: reps per set ${JSON.stringify(expect)}, got ${JSON.stringify(js.map((s) => s.reps.length))}`);
+  }
   if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
   else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}`);
+}
+
+// ---------- the rack filter's ends (analysis/sets.py drop_rack_moves vs webapp/sets.js) ----------
+// Known answers on made-up ROMs (m): handling (too big) goes first, then rack bumps (too small).
+const rackCases = [
+  ["squat", [0.55, 0.55, 0.56, 0.54, 1.98], [0.55, 0.55, 0.56, 0.54]],   // a pickup after the set
+  ["deadlift", [0.55, 1.98], [0.55]],              // a heavy single, then handling: the single stays
+  ["squat", [1.5], []],                            // nothing but handling
+  ["bench", [0.06, 0.42, 0.41, 0.85], [0.42, 0.41]],   // unrack bump, then a 0.85 m pickup (cap 0.8)
+  ["free", [0.9, 0.5, 0.5], [0.9, 0.5, 0.5]],      // 0.9 < 2 x 0.5: a free lift keeps it
+  ["free", [0.5, 0.5, 1.2], [0.5, 0.5]],           // 1.2 > 2 x 0.5: handling
+  ["phone", [0.3, 0.05, 0.3], [0.3, 0.05, 0.3]],   // phone tests: no floor, only the middle anyway
+];
+{
+  const reps = (roms) => roms.map((rom) => ({ rom }));
+  const py = JSON.parse(execFileSync(PYTHON, ["-c", [
+    "import json, sys", "sys.path.insert(0, sys.argv[1])", "import sets",
+    "cases = json.loads(sys.argv[2])",
+    "print(json.dumps([[r['rom'] for r in sets.drop_rack_moves([{'rom': x} for x in roms], lift)] for lift, roms, _ in cases]))",
+  ].join("\n"), path.join(ROOT, "analysis"), JSON.stringify(rackCases)], { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
+  const bad = rackCases.filter(([lift, roms, want], k) => {
+    const js = dropRackMoves(reps(roms), lift).map((r) => r.rom);
+    return JSON.stringify(js) !== JSON.stringify(want) || JSON.stringify(py[k]) !== JSON.stringify(want);
+  });
+  if (bad.length) { failures++; console.log(`FAIL rack filter: ${bad.map(([l, r, w]) => `${l} ${JSON.stringify(r)} -> want ${JSON.stringify(w)}`).join("; ")}`); }
+  else console.log(`PASS rack filter: ${rackCases.length} known answers, Python and JS (handling off the ends first, then rack bumps)`);
 }
 
 // ---------- load-velocity profile (analysis/lv.py vs webapp/lv.js) ----------

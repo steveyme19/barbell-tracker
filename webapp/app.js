@@ -3,10 +3,10 @@
 import { PhoneSource, NativeSensorSource, ReplaySource, PodSource, PodWebSource, PodNativeSource } from "./sources.js";
 import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles, recordInBackground, askNotifications, vibrateNative } from "./native.js";
 import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
-import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
+import { SessionTracker, setSummary, dropRackMoves, closedSetReps, formatTime, formatRpe } from "./sets.js";
 import { gapsNear, gapText } from "./gaps.js";
 import { parseRecording, toCSV } from "./fileio.js";
-import { askPersist, putSession, listSessions, putSetSamples, getSetSamples, getSessionData, deleteSession,
+import { askPersist, putSession, getSession, listSessions, putSetSamples, getSetSamples, getSessionData, deleteSession,
   importSessions, COLS } from "./store.js";
 import { toExport, fromExport } from "./export.js";
 import { fitProfile } from "./lv.js";
@@ -97,10 +97,13 @@ function runLive() {
     { ...SETTINGS, LIFT: named }, imuOf(samples));
   const used = res.error ? named : res.lift;        // the name, or what the sensor saw (D21)
   const reps = res.error ? [] : dropRackMoves(res.reps, used);
-  live = { res, reps, tAbs, lift: used };
+  // Velocity loss over the reps a still has locked in: a provisional last rep is half a concentric
+  // on raw drift (35% live on a set whose card ends at 0%), and the buzz fires once per set.
+  const locked = reps.filter((r) => !r.flags.includes("no end anchor"));
+  live = { res, reps, tAbs, lift: used, velLoss: locked.length >= 2 ? setSummary(used, locked, tAbs).velLoss : null };
   if (reps.length && !buzzed) { buzz(150); buzzed = true; }   // a set started
-  // Velocity-loss stop: last rep vs best rep in this set, same number the card shows.
-  if (reps.length >= 2 && !vlAlerted && overTarget(setSummary(used, reps, tAbs).velLoss)) {
+  // Velocity-loss stop: last locked rep vs best rep in this set, the number the card will show.
+  if (live.velLoss !== null && !vlAlerted && overTarget(live.velLoss)) {
     buzz([400, 120, 400]);
     vlAlerted = true;
   }
@@ -205,6 +208,9 @@ async function startSession(from = null) {
   if (running || starting || ending) return;
   starting = true;
   $("resumeBar").hidden = true;
+  // A calibration still collecting would keep listening to the session's sensors, and its end
+  // (BarSensors.stop) would cut the session's data off unnoticed: cancel it, and wait for the stop.
+  if (calRun) await stopCalibration("Calibration cancelled: a session started.");
   for (const id of ["startBtn", "podBtn", "phoneBtn", "fileInput", "calBtn"]) $(id).disabled = true;
   // Screen-off recording (RecordingService) and the screen-on flag, from the tap on: Android
   // only allows starting the service while the app is in front, and a resume's restore and the
@@ -220,6 +226,7 @@ async function startSession(from = null) {
     });
   }
   if (from) {
+    from = (await getSession(from.id).catch(() => null)) ?? from;   // edits since the offer appeared
     newSession({ autosave: native, persist: true, from });
     await restoreSets(from);
   } else {
@@ -454,7 +461,9 @@ function sessionRecord(ses = session) {
 
 function persistSession(ses = session) {
   if (!ses?.persist) return Promise.resolve();
-  return putSession(sessionRecord(ses)).catch((err) => showError(`Couldn't store the session: ${err.message}`));
+  // the history list (and historyCache, which the load-velocity profiles read) follows the edit
+  return putSession(sessionRecord(ses)).then(() => { if (!running && !starting && !ending) renderHistory(); })
+    .catch((err) => showError(`Couldn't store the session: ${err.message}`));
 }
 
 function sessionFromRecord(rec, { autosave, persist }) {
@@ -481,6 +490,9 @@ async function restoreSets(rec) {
 }
 
 async function viewSession(rec) {
+  if (running || starting || ending) return;
+  // the stored record, not the one this button was made with (edits since are in the store)
+  rec = (await getSession(rec.id).catch(() => null)) ?? rec;
   if (running || starting || ending) return;
   session = sessionFromRecord(rec, { autosave: native && rec.autosave, persist: true });
   session.viewing = true;
@@ -579,7 +591,8 @@ function summaryCSV(ses = session) {
   const head = "set,date,start,file,exercise,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv," +
     "vel_loss_pct,avg_rom_cm,rep_mcvs,to_failure,mount,paused_lockout,notes";
   const rows = ses.sets.map((s, k) => {
-    const start = new Date(ses.startedAt.getTime() + s.startT * 1000).toTimeString().slice(0, 8);
+    // wall time when known: after a resume startT is on the new part's clock
+    const start = new Date(s.wallStart ?? ses.startedAt.getTime() + s.startT * 1000).toTimeString().slice(0, 8);
     return [k + 1, ses.date, start, s.file, csvField(s.exercise), s.lift, csvField(s.load), s.nReps, csvField(s.rpe),
       s.rpeEst ? (s.rpeEst[0] === 5 ? `<=${s.rpeEst[1]}` : `${s.rpeEst[0]}-${s.rpeEst[1]}`) : "",
       s.restBefore === null ? "" : Math.round(s.restBefore),
@@ -755,7 +768,7 @@ function analyzeSet(s, name) {
   const res = analyze(s.map((x) => x.t), magnitude(s.map((x) => x.ax), s.map((x) => x.ay), s.map((x) => x.az)),
     { ...SETTINGS, LIFT: named }, imuOf(s));
   const used = res.error ? named : res.lift;
-  return { res, used, reps: res.error ? [] : dropRackMoves(res.reps, used) };
+  return { res, used, reps: res.error ? [] : closedSetReps(res.reps, used) };   // a stored set: closed (D31)
 }
 
 async function changeSetExercise(set, name) {
@@ -764,12 +777,17 @@ async function changeSetExercise(set, name) {
   const { res, used, reps } = analyzeSet(set.samples, name);
   if (!reps.length) { showError("No reps with that lift setting; kept the old one."); fillSetCard(set); return; }
   const oldFile = set.file;
+  const oldS = set.startT, oldE = set.endT;
   Object.assign(set, setSummary(used, reps, set.tAbs), { reps, analysis: res, exercise: name });
+  if (set.wallStart != null) { set.wallStart += (set.startT - oldS) * 1000; set.wallEnd += (set.endT - oldE) * 1000; }
   set.file = setFileName(set);
-  const sets = session.sets;
-  for (let k = Math.max(1, set.index); k <= Math.min(set.index + 1, sets.length - 1); k++) {
-    sets[k].restBefore = sets[k].startT - sets[k - 1].endT;
-    fillSetCard(sets[k]);
+  // the rests next to it, in wall time: a resumed session's parts each run on their own clock
+  // (startT restarts at 0), and its array position, not set.index (a restore may skip a set)
+  const sets = session.sets, p = sets.indexOf(set);
+  for (let k = Math.max(1, p); k <= Math.min(p + 1, sets.length - 1); k++) {
+    const a = sets[k - 1], b = sets[k];
+    b.restBefore = a.wallEnd != null && b.wallStart != null ? (b.wallStart - a.wallEnd) / 1000 : b.startT - a.endT;
+    fillSetCard(b);
   }
   fillSetCard(set);
   render();
@@ -863,7 +881,7 @@ function render() {
     state = "ready";
   }
   hero.dataset.state = state;
-  const alert = state === "set" && shown.nReps >= 2 && overTarget(shown.velLoss);
+  const alert = state === "set" && live?.velLoss != null && overTarget(live.velLoss);
   hero.classList.toggle("alert", alert);
 
   const stats = (pairs) => pairs.forEach(([v, l], k) => {
@@ -877,9 +895,9 @@ function render() {
     $("heroLabel").textContent = `${what(shown)} · live`;
     $("heroBig").innerHTML = `${last.mcv.toFixed(2)}<small>m/s</small>`;
     stats([[shown.nReps, "reps"], [(last.rom * 100).toFixed(0), "ROM cm"],
-      [shown.nReps >= 2 ? `${Math.round(shown.velLoss * 100)}%` : "--", "vel. loss"], [formatRpe(shown.rpeEst), "RPE est."]]);
+      [live.velLoss != null ? `${Math.round(live.velLoss * 100)}%` : "--", "vel. loss"], [formatRpe(shown.rpeEst), "RPE est."]]);
     $("heroSub").textContent = alert
-      ? `Velocity loss ${Math.round(shown.velLoss * 100)}%, past your ${vlTarget}%: stop the set.`
+      ? `Velocity loss ${Math.round(live.velLoss * 100)}%, past your ${vlTarget}%: stop the set.`
       : last.flags.includes("no end anchor") ? "Pause at the top to lock the last rep in." : "";
   } else if (state === "rest") {
     $("heroLabel").textContent = `Rest · after ${what(shown)}`;
@@ -1054,7 +1072,7 @@ function finishCalibration() {
 }
 
 function stopCalibration(msg = "") {
-  calSource?.stop();
+  const done = Promise.resolve(calSource?.stop()).catch(() => {});
   calSource = null;
   calRun = null;
   $("calBtn").textContent = "Calibrate";
@@ -1062,16 +1080,28 @@ function stopCalibration(msg = "") {
   showCal();
   showSource();                                    // the pod may have become the source meanwhile
   if (msg) $("calStatus").textContent = msg;
+  return done;
 }
 
 // ---------- next set: exercise + weight (sticky) ----------
+
+// Still lifting the open set? Once its last rep ended REST_AFTER s ago the card says Rest, and the
+// "Next set" fields are for the next one (a finished set is edited on its own card). The set stays
+// open 15 s longer (SET_GAP), so without this a weight typed in rest was written into it. Before
+// any rep (plates going on) edits still apply. The last rep's end, not tracker.quietFor: plate bumps
+// reset quietFor.
+function editsOpenSet() {
+  if (!seg) return false;
+  const reps = live?.reps ?? [];
+  return !reps.length || (tracker?.now ?? 0) - live.tAbs[reps[reps.length - 1].end] < REST_AFTER;
+}
 
 function setExercise(name) {
   exercise = name.trim();                                  // blank: the sensor decides (D21)
   lift = exercise ? liftForExercise(exercise) : "free";
   $("exercise").value = exercise;
   $("profileHint").textContent = hintFor(exercise);
-  if (seg) seg = { ...seg, exercise, lift };         // changed it mid-set: this set too
+  if (editsOpenSet()) seg = { ...seg, exercise, lift };   // changed it mid-set: this set too
   try { localStorage.setItem("exercise", exercise); } catch { /* storage blocked */ }
   render();
 }
@@ -1079,7 +1109,7 @@ function setExercise(name) {
 function setWeight(value) {
   weight = String(value).trim();
   $("weight").value = weight;
-  if (seg) seg.weight = weight;
+  if (editsOpenSet()) seg.weight = weight;
   try { localStorage.setItem("weight", weight); } catch { /* storage blocked */ }
   render();
 }

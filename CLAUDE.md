@@ -32,7 +32,7 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
    cd analysis
    python make_fake_reps.py && python make_fake_reps.py nopause && python make_fake_reps.py drift
    python make_fake_reps.py lifts && python demos/bench_jcurve.py --save
-   python make_fake_session.py && python make_fake_session.py joined
+   python make_fake_session.py && python make_fake_session.py joined && python make_fake_session.py handled
    python make_fake_pod.py
    cd ..
    node webapp/test/parity.mjs

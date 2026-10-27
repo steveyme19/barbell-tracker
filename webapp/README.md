@@ -132,10 +132,13 @@ The empty `.nojekyll` file in the repo root tells Pages to serve files as-is.
 
 - **DeviceMotion and Web Bluetooth both need a secure context**: HTTPS or `localhost`.
   GitHub Pages is HTTPS. A laptop server opened from your phone over Wi-Fi is *not*.
-- For faster phone testing than pushing every time: run `python -m http.server` in the
-  repo root, plug the phone into the laptop over USB, and use Chrome's port forwarding
+- For faster phone testing than pushing every time: run `python webapp/serve.py 8000` in
+  the repo root, plug the phone into the laptop over USB, and use Chrome's port forwarding
   (`chrome://inspect` on the laptop). The phone then loads `localhost:8000/webapp/`,
-  which counts as secure.
+  which counts as secure. `serve.py` is `http.server` that sends `Cache-Control: no-store`:
+  plain `python -m http.server` lets Chrome keep an old copy of one module next to a new
+  copy of another, and app.js then fails to load (a new export, the old file cached). The
+  same can happen on GitHub Pages for a few minutes after a push; a reload fixes it.
 - **DeviceMotion is rate-limited**, typically about 60 Hz in Chrome, with timestamps that
   jitter (a few ms to 40+ ms apart in testing). The app uses the real timestamps, so
   jitter is handled. The footer shows the rate you're actually getting.

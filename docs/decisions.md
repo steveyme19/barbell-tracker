@@ -370,6 +370,28 @@ buffer disconnected, so `digitalRead(INT1)` always read LOW. D26's dry-run "quie
 re-analyzes within about 1e-8 m/s MCV and 1e-6 mm ROM of what the live session showed (measured on
 the fake squat session), same reps.
 
+**D31 (2026-10-26): a closed set drops what handling the sensor adds: end reps too big to be
+reps, and reps with no end anchor.**
+- `drop_rack_moves` (sets.py, dropRackMoves in sets.js) first drops end reps over RACK_MAX_ROM
+  (squat and deadlift 1.0 m, bench 0.8 m) or over RACK_MAX_FRAC = 2x the median of the set's
+  other reps (the only test for machine, free and phone), then the small rack bumps as before,
+  with the floor from the reps that are left.
+- `closed_set_reps` / `closedSetReps`: a closed set (sets.py find_sets, the live tracker's
+  closeSegment, and the app re-analyzing a stored set) keeps only reps with an end anchor. The
+  live view still shows the rep in progress.
+*Why:* a set stays open 15 s after its last rep, and that's when the pod gets unclipped or the
+phone picked up. Quentin's real pod set (bar-deadlift-2026-10-23-1857-set01) read 6 reps, the
+6th 1.98 m at 0.51 m/s with no end anchor: best MCV 0.51 (really 0.24), velocity loss 0%
+(really 21%), RPE <=5 (really 8-10), and that best MCV went into the load-velocity profile. With
+the median taken over all reps, a heavy single followed by handling ([0.55, 1.98] m) even dropped
+the real single as a "rack move". Now 5 reps, 0.24, 21%, 8-10. A closed segment always has 2 s of
+still after its last active block, so an unanchored rep there only comes from motion that ran up
+to the cut.
+*Left open:* moving the pod to another bar can make an anchored phantom set of normal size, which
+no threshold can tell from a real single: that needs a "not a set" control on the set card.
+Both cases are in parity.mjs with their known answers (the bug was shared by Python and JS, so
+their agreement alone couldn't catch it), plus 7 known answers for the rack filter itself.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

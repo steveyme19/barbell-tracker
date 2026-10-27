@@ -11,7 +11,11 @@ How it works (docs/algorithm.md section 12):
      reps.analyze(). No reps = not a set (loading plates, bumping the bar).
   4. Rack moves: unracking lifts the bar a few cm, which can count as a tiny "rep".
      Reps at the start or end of a set under RACK_FRAC of the set's median ROM go, and
-     (except phone tests) anything under RACK_MIN_ROM.
+     (except phone tests) anything under RACK_MIN_ROM. Handling the sensor before the set
+     closes (unclipping the pod, picking up the phone) is the opposite: one huge end "rep",
+     over RACK_MAX_ROM or RACK_MAX_FRAC x the other reps' median, and it goes too. A closed
+     set's rep with no end anchor goes as well: only motion running up to the cut makes one
+     (D31). The live view keeps both, it needs the rep in progress.
   5. Rest = first rep of a set minus the last rep of the set before.
 
 Blocks and segments are defined so a live, sample-by-sample version (webapp/sets.js)
@@ -43,6 +47,10 @@ RACK_FRAC = 0.5     # reps at either end of a set shorter than this x median ROM
 RACK_MIN_ROM = 0.12 # m: a rep at either end shorter than this is a rack move or a stack bump
                     # (an unrack before any real rep, unrack + rerack alone, setting the pin).
                     # Everything but hand-held phone tests (D19)
+RACK_MAX_ROM = {"squat": 1.0, "bench": 0.8, "deadlift": 1.0}   # m: no real rep of these goes
+                    # higher. An end "rep" above it is the sensor being handled (D31)
+RACK_MAX_FRAC = 2.0 # an end rep over this x the median of the set's OTHER reps is handling too
+                    # (the only test for machine, free and phone: a stack or a clean can move ~1 m)
 
 # RPE v0 (uncalibrated, analytics.md section 5): RIR = (last rep MCV - v1RM) / DV_PER_REP.
 # v1RM per lift from the research in section 5. DV_PER_REP is a rough starting guess
@@ -84,7 +92,20 @@ def find_segments(active):
 
 
 def drop_rack_moves(reps, lift):
-    """Unrack/rerack bumps at the ends of a set are small 'reps'. Drop them."""
+    """The ends of a set that aren't reps. Too big first: handling the sensor (one huge end
+    'rep'). Then too small: unrack/rerack bumps. The small floor comes from what's left, so a
+    2 m pickup can't lift the median and push a real single under it."""
+    if not reps:
+        return reps
+    cap = RACK_MAX_ROM.get(lift, np.inf)
+
+    def big(r, others):
+        return r["rom"] > cap or (len(others) > 0 and r["rom"] > RACK_MAX_FRAC * np.median([o["rom"] for o in others]))
+
+    while reps and big(reps[-1], reps[:-1]):
+        reps = reps[:-1]
+    while reps and big(reps[0], reps[1:]):
+        reps = reps[1:]
     if not reps:
         return reps
     floor = RACK_MIN_ROM if lift != "phone" else 0.0       # bar or stack, not hand-held
@@ -95,6 +116,13 @@ def drop_rack_moves(reps, lift):
     while reps and reps[-1]["rom"] < floor:
         reps = reps[:-1]
     return reps
+
+
+def closed_set_reps(reps, lift):
+    """A closed set's reps: the anchored ones, with rack moves and handling off the ends. A
+    closed set always has TRAIL s of still after its last active block, so a rep with no end
+    anchor only happens when motion ran up to the cut: the sensor handled, or End tapped mid-move."""
+    return drop_rack_moves([r for r in reps if "no end anchor" not in r["flags"]], lift)
 
 
 def rpe_estimate(lift, last_mcv):
@@ -139,9 +167,9 @@ def find_sets(t, a_raw, lifts, acc=None, gyro=None):
         except ValueError:
             continue
         lift = r["lift"]                     # the name, or what the sensor saw (D21)
-        reps = drop_rack_moves(r["reps"], lift)
+        reps = closed_set_reps(r["reps"], lift)
         if not reps:
-            continue                         # plates, a bump: not a set
+            continue                         # plates, a bump, the sensor handled: not a set
         s = dict(i0=i0, i1=i1, reps=reps, mount=r["mount"], **set_summary(lift, reps, t[i0:i1 + 1]))
         s["rest_before"] = s["start_t"] - sets[-1]["end_t"] if sets else None
         sets.append(s)
