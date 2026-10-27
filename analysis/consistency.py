@@ -491,23 +491,24 @@ def selftest():
           f"the curl is, by name in any case")
     # set to set and session to session, tempo a set's median lowering: 5 earlier sessions, one Back
     # squat set each, lowering at 1.35, 1.35, 1, 1, 1 x the usual (the last 4 have a median of 1), then
-    # 3 sets at 1, 1, 1.35: set to set and against the baseline both [0, 0, +35]%, from 4 sessions
+    # 4 sets at 1.35, 1, 1, 1.2 (their median 1.1, apart from the first and the last set's):
+    # set to set [+23, -9, -9, +9]%, against the baseline [+35, 0, 0, +20]%, from 4 sessions
     import re
     bs = lambda i, s, p: ({"index": i, "exercise": "Back squat", "load": 225}, lift_set(None, s, pace=p))
     hist = [({"id": f"e{k}"}, [bs(0, 30 + k, p)]) for k, p in enumerate([1.35, 1.35, 1, 1, 1])]
-    now = [({"id": "now"}, [bs(i, 40 + i, p) for i, p in enumerate([1, 1, 1.35])])]
+    now = [({"id": "now"}, [bs(i, 40 + i, p) for i, p in enumerate([1.35, 1, 1, 1.2])])]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         report(hist + now, None)
     tail = buf.getvalue().split("== now", 1)[-1]
     s2s = [float(m) for m in re.findall(r"    set \d: depth .*?tempo\s+([-+]\d+)%", tail)]
     base = re.findall(r"against (\d+) earlier session\(s\) at similar load: depth .*?tempo\s+([-+]\d+)%", tail)
-    want = [0, 0, 35]
-    good = (len(s2s) == 3 and all(abs(a - b) <= 3 for a, b in zip(s2s, want)) and [int(n) for n, _ in base] == [4, 4, 4]
-            and all(abs(float(p) - b) <= 3 for (_, p), b in zip(base, want)))
+    w_s2s, w_base = [100 * (p / 1.1 - 1) for p in (1.35, 1, 1, 1.2)], [35, 0, 0, 20]
+    good = (len(s2s) == 4 and all(abs(a - b) <= 3 for a, b in zip(s2s, w_s2s)) and [int(n) for n, _ in base] == [4] * 4
+            and all(abs(float(p) - b) <= 3 for (_, p), b in zip(base, w_base)))
     ok &= good
     print(f"{'PASS' if good else 'FAIL'}  tempo set to set {s2s} and against 4 earlier sessions {[float(p) for _, p in base]} "
-          f"(from {[int(n) for n, _ in base]}), want [0, 0, +35] each")
+          f"(from {[int(n) for n, _ in base]}), want [+23, -9, -9, +9] and [+35, 0, 0, +20]")
     print("PASS" if ok else "FAIL")
     return ok
 
