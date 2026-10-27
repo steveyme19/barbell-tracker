@@ -181,6 +181,16 @@ Only if v1 isn't good enough: add features like velocity loss % and first-rep MC
 (→ %1RM through the load-velocity profile). Still plain linear regression. The dataset
 is small, so no machine learning.
 
+**Built in Python** (roadmap 5.4, `analysis/rpe.py`, D36), reading app exports (D30): steps
+2 to 6 above. A set to failure is one with "Your RPE" 10 (the app has no failure mark yet).
+Per exercise name: RIR = (MCV - your MCV at failure) / the MCV per rep in reserve, the same
+two numbers v0 guesses, so a fit can replace them. Leave one session out, near failure
+(RIR 0-3) and further; the fit's mean residual per load (step 3's "one line across
+loads?"); each normal set's range next to your call. `--selftest`: a synthetic squatter
+with a known line and day-to-day offsets, through the raw-signal pipeline; it fails if a
+set the fit saw leaks into its check, if the labels are off by one, or if RPE 8.5 counts
+as failure. Waits for your sets to failure.
+
 ## 6. Data to start collecting now
 
 These models are only as good as the logged data, and the data takes months to build

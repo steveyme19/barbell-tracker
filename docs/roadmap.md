@@ -208,5 +208,8 @@ By now `sets_log.csv` has months of sets in it. That's what makes this phase pos
       Python + JS + the set card, D34; the depth line still needs your filmed target-depth squat and a noise floor.)*
 - [ ] **5.4 RPE v1 in Python.** Calibration sets to failure, fit per lift, validate on
       sessions the model never saw (analytics §5). Squat and bench first.
+      *(2026-10-27: `analysis/rpe.py` built, D36: sets with Your RPE 10 label every rep, fit per exercise,
+      leave-one-session-out error, ranges next to your calls; self-tested on a synthetic squatter. Waits for
+      your sets to failure at a few loads.)*
 - [ ] **5.5 Port to the app.** History view, consistency numbers in cm, sticking-point
       trend, RPE as a range. Parity test against Python, same as 0.5.

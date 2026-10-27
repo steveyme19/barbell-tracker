@@ -485,6 +485,23 @@ box sit's wobble, a deadlift with a settle, a stack handled after its last rep a
 free weight lowered first, and a curl and an OHP at one load must not mix. Each old rule (nearest
 run, peak run, `!= "deadlift"`, by profile) and a data rule stuck on "rises first" fails it.
 
+**D36 (2026-10-27): RPE v1 (Python) labels reps from sets with "Your RPE" 10, fits per exercise
+name, and is only ever checked on sessions it wasn't fit on.**
+- analysis/rpe.py: a set to failure (Your RPE >= 10, or a `toFailure` mark if a set ever has one)
+  labels rep k of N with N - k in reserve. RIR = a + b x MCV by least squares per exercise (typed
+  name, like consistency.py), reported as v0's two numbers: the MCV at RIR 0 and per rep in
+  reserve. Needs 2+ sets to failure and a line that slopes up.
+- Validation: leave one session out, mean absolute error in reps, near failure (RIR 0-3) and
+  further. A normal set's range: its last rep's RPE +/- that error (at least 0.5), half points,
+  clamped to 5..10. The fit's mean residual per load answers "one line across loads?".
+*Why:* analytics.md section 5's Model v1. Your RPE 10 because the app has no failure mark and
+RPE 10 means 0 reps left, which is the label; a separate "to failure" box would be more objective
+(an attempted rep that failed), so the code already reads one. Leave one session out because reps
+in one set are near copies and day-to-day shifts are the error that matters: the self-test's
+held-out error (0.23 reps) sits above the fit's own residual (0.20), which an in-sample check
+would report. *Open:* the to-failure box in the app; whether one line fits every load (needs real
+sets at 3+ loads).
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
