@@ -47,6 +47,18 @@ over a 2 s rep. Same lesson as step 0.1: bias and scale are the enemy, not noise
   the device is mounted, it can roll around the bar axis mid-rep.
 - No magnetometer needed. Heading (which way the bar points on the floor) doesn't
   matter for vertical motion. Only tilt does, and accel + gyro is enough for tilt.
+- **Built in Python** (`analysis/orientation.py`, roadmap 0.3's algorithm side, D33):
+  Madgwick's reference IMU update, the gyro bias from the stills, a strong accel pull
+  (beta 0.2) only at a still whose accel agrees with the estimate (within 3 degrees, or a
+  still of 1 s or more), the gyro alone while moving, the trapezoid between gyro samples;
+  then world acceleration, the bar axis from the roll gesture, bar path and tilt (sections
+  11, 12). Stills for it use the accel *vector* and the gyro, not |a| (|a| can't see a slide).
+  On `make_fake_motion.py`'s exact-physics scenarios (a flat lift, the bar tilted and spun
+  mid-lift, a table slide, a diagonal, a J-curve, tilted then spun): attitude within 0.17
+  degrees while moving, vertical moves within 2.3 mm, forward within 5.3 mm, tilt within
+  0.25 degrees (`python orientation.py --selftest`). **Not in the rep pipeline**, and not
+  usable on hand-held data yet: on the 10-23 hand reps its stills and path are off (hand
+  pauses wiggle, no roll gesture in the file, the accel 3% high until 1.3).
 
 ## 3. Lever-arm compensation (only if the IMU is off the bar axis)
 

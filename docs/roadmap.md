@@ -20,7 +20,9 @@ explain why it works. Per-rep processing is specified in
       (algorithm.md §5), integrate still-to-still (§6), find the bottoms as zero
       crossings (§7), get per-rep ROM.
       Also run `analysis/demos/bottom_anchor.py` and explain the result in your own words.
-- [ ] **0.3 Orientation + 2D.** Record accel + gyro together (a phyphox custom
+- [ ] **0.3 Orientation + 2D.** *(2026-10-26: the algorithm side is built and checked on exact-physics fakes,
+      `analysis/orientation.py` + `make_fake_motion.py`, D33; the real-motion tests below still to do.)*
+      Record accel + gyro together (a phyphox custom
       experiment, or an app like Sensor Logger). Implement 6-axis Madgwick in Python,
       rotate acceleration into the world frame, subtract g. Tests:
       - tilt the phone mid-lift, and **roll it around its long axis** mid-lift (like a

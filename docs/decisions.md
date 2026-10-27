@@ -415,6 +415,25 @@ squats read +34% against the native 402 Hz recording). Phase 3's video is the re
 truth plus the parity files; the pod and native recordings support it, but no real paused set
 with a reference exists yet.
 
+**D33 (2026-10-26): how the 6-axis Madgwick (D3) runs: the accelerometer only steers it at a real
+still; while moving, the bias-corrected gyro alone.**
+- analysis/orientation.py: beta = 0.2 at a still (its accel agreeing with the estimate within 3
+  degrees, or a still of 1 s or more), 0 while moving; the gyro bias is the median over the stills;
+  each step turns by the mean of two gyro samples (the trapezoid). Stills come from the accel vector
+  and the gyro, then confirmed per world axis (a mean of ~0, and reps.confirm_still_runs' coast check).
+*Why (all measured on make_fake_motion's exact physics):*
+- Madgwick's correction is beta times a *normalized* gradient: once the true error is under the
+  accel's noise it still pushes at full strength in a noise-picked direction. beta 0.005 while
+  moving added 0.45 degrees over a 1.2 s sleeve spin that the bias-corrected gyro alone tracked to
+  0.04. A scale error after many turns needs roadmap 1.3's gyro calibration, not a pull.
+- The end-point gyro reading lags the attitude by half a sample: 1.4 degrees at 560 deg/s.
+- A steady push (a min-jerk slide's acceleration plateau) reads quiet, so a quietness-only still
+  test called it still: the filter tipped 4.9 degrees and the path zeroed v mid-slide (283 mm off).
+  The agreement gate and the world-axis confirm fixed it (2.7 mm).
+- |a| is blind to horizontal motion (D9's table), so a slide had no still periods at all.
+*Open:* hand-held data (pauses too shaky for the vector test), real bar data (phase 2), and whether
+orientation beats the magnitude for reps.py's vertical (section 4's table) are all still to see.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
