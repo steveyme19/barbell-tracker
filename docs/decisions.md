@@ -348,6 +348,28 @@ buffer disconnected, so `digitalRead(INT1)` always read LOW. D26's dry-run "quie
 "INT1 stays low" re-wake check saw nothing; the settle delay was the real fix. Fixed with
 `pinMode(INT1, INPUT)` before both.
 
+**D30 (2026-10-26): a session exports as one JSON file with its raw sets in base64.**
+- `{ format: "bartracker-sessions", version: 1, exported, sessions: [{ record, sets: [{ index, n,
+  cols: { t, ax, ..., gz }, tAbs }] }] }`: `record` is exactly what IndexedDB keeps (the history
+  list, resume); each column is `{ type: "f64" | "f32", b64 }`, the stored typed array's bytes
+  (little-endian). Writer and reader: `webapp/export.js`; Python: `analysis/sessions.py`.
+- In the app, Export writes `session.json` into the session's own Documents/BarTracker folder,
+  next to its set CSVs; Export all does that for every stored session. In a browser it's a
+  download (one file, or all sessions in one). Import adds sessions not stored yet and leaves one
+  with the same id as it is; an imported session counts as ended (never offered for resume).
+  Delete takes a past session out of IndexedDB only: its files stay.
+*Why:*
+- Bit-exact: re-importing gives the same stored samples, so a past session re-analyzes to the same
+  reps (P2: any session can be re-run with a newer algorithm). Decimal JSON would round, and is
+  2.5x the size (205 kB against 506 kB in webapp/test/export.mjs).
+- One file per session in its own folder: pulling a session folder into analysis/data is then
+  complete, and no 50 MB string crosses the Capacitor bridge for an "export all".
+- The format names itself and its version, so a later change can read old exports or refuse them
+  with a reason instead of misreading them.
+*Note:* the store keeps the sensor readings as float32 (t and tAbs float64), so a past session
+re-analyzes within about 1e-8 m/s MCV and 1e-6 mm ROM of what the live session showed (measured on
+the fake squat session), same reps.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

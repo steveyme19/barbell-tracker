@@ -175,6 +175,11 @@ Session (date, notes)
   one. Exports go into the repo (P2) so Python sees the same data as the app.
 - Same raw file format as everything else, so any session can be re-run with a newer
   algorithm.
+- Built (D30): Export / Export all write the session and its raw sets as JSON
+  (`session.json` in each session's Documents/BarTracker folder in the app, a download in a
+  browser); Import adds them back; Delete takes a past session out of the app.
+  `python analysis/sessions.py <export> [--csv=DIR]` lists an export and writes its sets back
+  out as the app's set CSVs.
 - Cloud sync is a later decision (O6).
 
 ---

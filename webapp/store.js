@@ -73,3 +73,50 @@ export async function getSetSamples(sessionId, index) {
   const samples = Array.from(rec.t, (_, i) => Object.fromEntries(COLS.map((c) => [c, rec[c][i]])));
   return { samples, tAbs: Array.from(rec.tAbs) };
 }
+
+// ---------- export, import, delete (roadmap 5.1; the file format is export.js) ----------
+
+const sessionRange = (id) => IDBKeyRange.bound([id, -Infinity], [id, Infinity]);
+
+/** The session record and every stored set row of it, as typed arrays: what export.js writes. */
+export async function getSessionData(id) {
+  const record = await getSession(id);
+  if (!record) return null;
+  const rows = (await run("sets", "readonly", (s) => s.getAll(sessionRange(id)))) ?? [];
+  return { record, rows };
+}
+
+/** A session and its raw sets out of IndexedDB, in one transaction (both or neither). The CSV
+ * files the app saved in Documents/BarTracker stay: they're the real backup. */
+export async function deleteSession(id) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(["sessions", "sets"], "readwrite");
+    tx.objectStore("sessions").delete(id);
+    tx.objectStore("sets").delete(sessionRange(id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/** Store imported sessions ([{ record, rows }] from export.js) that aren't here yet; one already
+ * stored (same id) is left as it is. Returns { added, skipped } (ids). */
+export async function importSessions(list) {
+  const db = await open();
+  const have = new Set(((await run("sessions", "readonly", (s) => s.getAllKeys())) ?? []));
+  const fresh = list.filter(({ record }) => !have.has(record.id));
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["sessions", "sets"], "readwrite");
+    for (const { record, rows } of fresh) {
+      tx.objectStore("sessions").put(record);
+      for (const r of rows) tx.objectStore("sets").put(r);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+  return { added: fresh.map(({ record }) => record.id), skipped: list.filter(({ record }) => have.has(record.id)).map(({ record }) => record.id) };
+}
+
+export { COLS };

@@ -6,7 +6,9 @@ import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } fr
 import { SessionTracker, setSummary, dropRackMoves, formatTime, formatRpe } from "./sets.js";
 import { gapsNear, gapText } from "./gaps.js";
 import { parseRecording, toCSV } from "./fileio.js";
-import { askPersist, putSession, listSessions, putSetSamples, getSetSamples } from "./store.js";
+import { askPersist, putSession, listSessions, putSetSamples, getSetSamples, getSessionData, deleteSession,
+  importSessions, COLS } from "./store.js";
+import { toExport, fromExport } from "./export.js";
 import { fitProfile } from "./lv.js";
 import { fitCalibration, applyCalibration, CalibrationRun, G_LOCAL } from "./calib.js";
 import { drawPlot } from "./plot.js";
@@ -600,9 +602,9 @@ async function saveLink(ses = session, src = source) {
 // A resumed session runs in parts, each with its own source: pod.json, then pod-2.json, ...
 const partName = (base, ses = session) => (ses.part > 1 ? `${base}-${ses.part}.json` : `${base}.json`);
 
-function download(name, text) {
+function download(name, text, type = "text/csv") {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+  a.href = URL.createObjectURL(new Blob([text], { type }));
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -615,6 +617,73 @@ async function shareSession() {
     await shareFiles([await saveSummary()], `Workout ${session.stamp}`);
   } catch (err) {
     showError(`Couldn't share: ${err.message}`);
+  }
+}
+
+// ---------- export, import, delete (roadmap 5.1; the format: export.js, D30) ----------
+// In the app a session's export is session.json in its own Documents/BarTracker folder, next to its
+// CSVs (a pulled folder is then complete); in a browser it's a download. Import adds what isn't
+// stored yet. Delete takes a past session out of IndexedDB; its files stay (the real backup).
+
+async function exportSessions(ids) {
+  const data = (await Promise.all(ids.map((id) => getSessionData(id)))).filter(Boolean);
+  if (native) {
+    for (const d of data) await saveFile(d.record.folder, "session.json", JSON.stringify(toExport([d], COLS)));
+  } else if (data.length) {
+    const name = data.length === 1 ? `${data[0].record.folder}.json` : `bartracker-export-${new Date().toISOString().slice(0, 10)}.json`;
+    download(name, JSON.stringify(toExport(data, COLS)), "application/json");
+  }
+  return data;
+}
+
+async function exportShown() {
+  if (!session?.sets.length || running || starting || ending) return;
+  try {
+    const done = await exportSessions([session.id]);
+    if (!done.length) { showError("This session isn't stored (a replay?), so there's nothing to export."); return; }
+    showMessage(native ? `Exported to Documents/BarTracker/${session.folder}/session.json` : "Exported.");
+  } catch (err) {
+    showError(`Couldn't export: ${err.message}`);
+  }
+}
+
+async function exportAll() {
+  try {
+    const ids = (await listSessions()).filter((s) => s.sets.length).map((s) => s.id);
+    if (!ids.length) { showError("No stored sessions to export."); return; }
+    const done = await exportSessions(ids);
+    showMessage(native ? `Exported ${done.length} sessions: session.json in each one's Documents/BarTracker folder.`
+      : `Exported ${done.length} sessions.`);
+  } catch (err) {
+    showError(`Couldn't export: ${err.message}`);
+  }
+}
+
+async function importFile(file) {
+  try {
+    // an import is history, not a live session: never offered for resume
+    const list = fromExport(JSON.parse(await file.text()), COLS).map(({ record, rows }) => ({ record: { ...record, ended: true }, rows }));
+    const { added, skipped } = await importSessions(list);
+    showMessage(`Imported ${added.length} session${added.length === 1 ? "" : "s"}` +
+      (skipped.length ? ` (${skipped.length} already here, left as they are).` : "."));
+    renderHistory();
+  } catch (err) {
+    showError(`Couldn't import ${file.name}: ${err.message}`);
+  }
+}
+
+async function deleteShown() {
+  if (!session?.viewing || running || starting || ending) return;
+  if (!confirm(`Delete the session from ${fmtWhen(session.startedAt.getTime())} from the app? Its set files in Documents/BarTracker stay.`)) return;
+  try {
+    await deleteSession(session.id);
+    session = null;
+    $("setList").innerHTML = "";
+    render();
+    renderHistory();
+    showMessage("Session deleted.");
+  } catch (err) {
+    showError(`Couldn't delete: ${err.message}`);
   }
 }
 
@@ -838,6 +907,8 @@ function render() {
   $("clock").textContent = running ? `● ${formatTime(now)}` : "Not recording";
   $("clock").className = `pill ${running ? "live" : ""}`;
   $("sessionBar").hidden = !sets.length;
+  $("exportBtn").hidden = running;
+  $("deleteBtn").hidden = !session?.viewing || running;
   if (sets.length) {
     const reps = sets.reduce((n, s) => n + s.nReps, 0);
     $("sessionSummary").textContent = `${sets.length} set${sets.length === 1 ? "" : "s"} · ${reps} reps`;
@@ -915,6 +986,11 @@ function updateFooter() {
 function showError(msg) {
   $("hint").textContent = msg;
   $("hint").classList.add("err");
+}
+
+function showMessage(msg) {
+  $("hint").textContent = msg;
+  $("hint").classList.remove("err");
 }
 
 function cssVar(name) {
@@ -1040,6 +1116,14 @@ $("podBtn").addEventListener("click", connectPod);
 $("phoneBtn").addEventListener("click", () => setSourceKind("phone"));
 $("endBtn").addEventListener("click", endSession);
 $("shareBtn").addEventListener("click", shareSession);
+$("exportBtn").addEventListener("click", exportShown);
+$("deleteBtn").addEventListener("click", deleteShown);
+$("exportAllBtn").addEventListener("click", exportAll);
+$("importInput").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) importFile(f);
+  e.target.value = "";
+});
 $("exercise").addEventListener("change", (e) => setExercise(e.target.value));
 $("exercise").addEventListener("input", (e) => { $("profileHint").textContent = hintFor(e.target.value); });
 $("weight").addEventListener("change", (e) => setWeight(e.target.value));

@@ -68,12 +68,18 @@
     <section id="sessionBar" class="session-bar" hidden>
       <span id="sessionSummary"></span>
       <button id="shareBtn" class="small">Share</button>
+      <button id="exportBtn" class="small" title="The session with its raw sets, as JSON (re-import it, or read it in Python)">Export</button>
+      <button id="deleteBtn" class="small" hidden>Delete</button>
     </section>
     <section id="setList"></section>
 
     <details class="history" id="history">
       <summary>History</summary>
       <div id="historyList"></div>
+      <div class="history-tools">
+        <button id="exportAllBtn" class="small">Export all</button>
+        <label class="file small">Import<input type="file" id="importInput" accept=".json,application/json"></label>
+      </div>
     </details>
 
     <details class="tools">
