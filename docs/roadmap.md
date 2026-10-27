@@ -202,6 +202,8 @@ By now `sets_log.csv` has months of sets in it. That's what makes this phase pos
       and import (analytics.md §7).
 - [ ] **5.2 Features + consistency in Python.** Analytics §1 and §2 on your logged data,
       using the noise floor from 3.5. Rep to rep, set to set, session to session.
+      *(2026-10-26: `analysis/consistency.py` built and self-tested on planted faults; waits for logged data
+      and the 3.5 noise floor; no path deviations until orientation runs on real bar data.)*
 - [ ] **5.3 Depth line + sticking point.** Analytics §3 and §4. *(2026-10-26: the sticking point is built,
       Python + JS + the set card, D34; the depth line still needs your filmed target-depth squat and a noise floor.)*
 - [ ] **5.4 RPE v1 in Python.** Calibration sets to failure, fit per lift, validate on

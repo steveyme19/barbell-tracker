@@ -79,6 +79,17 @@ purpose, they can't see one you didn't.
 the noise floor and which deviations actually matter in your data, map cm to a score.
 Start with cm.
 
+**Built in Python** (roadmap 5.2, `analysis/consistency.py`): rep to rep, set to set and
+session to session (from app exports, D30), on depth (ROM, cm), the velocity profile (RMS
+of the normalized profiles) and tempo. **Tempo is the eccentric's duration**: the
+concentric's is speed, which fatigue is supposed to cut, so it stays out (the self-test
+holds a 35% slower concentric of the same shape to 0% tempo and 0.003 profile). Stored
+sets go through the closed-set filter first (D31). With no Smith-machine floor yet every
+deviation is shown, none judged; `--floor-depth/tempo/profile` flags those over 2x it.
+`--selftest` plants the deliberate faults above (5 cm short, a mid-rep hitch, a slower
+descent): each stands out on its own measure by 100x or more. Path deviations wait for
+orientation on real bar data (0.3, D33).
+
 ## 3. Depth check
 
 The one "correct" check the sensor can do. Film one squat at exactly your target depth
