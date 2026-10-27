@@ -19,8 +19,11 @@ Android app (best: 400 Hz, auto-save): see `docs/android.md`. Browser: open
    bench / deadlift by name, anything else as a weight-stack machine (phone strapped
    to the top plate). Clip the phone on, tap **Start session**. The screen stays on.
 2. Lift. Hold the bar still for a second before and after each set (racked is fine).
-3. Rest: the card shows the timer. Type the next exercise / weight if it changes, and
-   your RPE on the set card if you like. Wrong name on a set? Fix it on its card.
+3. Rest: the card shows the timer. Type the next exercise / weight if it changes (once
+   the card says Rest it's for the next set, not the one you just did), and your RPE on
+   the set card if you like. Wrong name or weight on a set? Fix it on its card. Not a set
+   at all (the sensor moved to another bar, a warm-up you don't want counted)? **Not a
+   set** in its Reps panel takes it out.
 4. **End session** when you're done.
 
 Saving: the app writes every set to `Documents/BarTracker/session-<stamp>/` as it
@@ -36,10 +39,18 @@ variables at the top of `style.css`; device fonts only, so it works offline.
 History (below the sets): every session is also kept in the app (IndexedDB). Open an old
 one to see or edit it; if the app was killed mid-session, the next start offers **Resume**
 (rest across the gap is timed with the wall clock). The CSVs in Documents stay the real
-backup: browser storage can be wiped.
+backup: browser storage can be wiped. **Export** (on the session) and **Export all** (in
+History) write the session with its raw sets as JSON (D30): in the app `session.json` in
+the session's own folder, in a browser a download. **Import** adds exported sessions back
+(ones already there are left alone); **Delete** takes an opened past session out of the app
+(its files stay). `python analysis/sessions.py <export>` reads one in Python.
 
 Velocity-loss alert: **Stop at loss** (default 20 %, 0 = off). When a set's last rep is that
-much slower than its best, the phone buzzes long-short-long and the card turns red.
+much slower than its best, the phone buzzes long-short-long and the card turns red. It counts
+the reps a pause has locked in, so the buzz comes when you hold the top, not mid-rep.
+
+Sticking point (D34): on a hard rep that slows partway up and picks up again, the set card
+says where ("Sticks at ~41% of the way up, 3 of 5 reps") and the Reps table has each rep's.
 
 Calibration (Tools > Sensor calibration): lay the phone on each of its 6 sides, still for 2 s
 each; it buzzes per side. Live sessions then use corrected acceleration (D23).
@@ -51,8 +62,9 @@ The pod (Chrome on a laptop or Android, https or localhost): tap **Connect pod**
 `BarPod-XXXX` in the browser's list, then **Start session** as usual. The choice sticks
 (**Use the phone** switches back), but after a page reload the browser needs the Connect
 tap once more. The footer shows `pod BarPod-1A2B · 211 Hz · 16/pkt · 45 ms · lost 0 · gaps 0
-· 3.95 V`. Pod data is raw (no phone calibration) until roadmap 1.3. A dropped link ends the
-stream for now (End, then Start); reconnecting by itself is ble-plan step 10. Laptop: turn
+· 3.95 V`. Pod data is raw (no phone calibration) until roadmap 1.3. A dropped link
+reconnects by itself (ble-plan step 10), and in the app also with the screen off (step 12;
+the pod button: the saved pod, tapped again the nearest one next Start). Laptop: turn
 Bluetooth headphones off, they starve the scan (D28).
 
 ## Files
