@@ -46,8 +46,9 @@ the session's own folder, in a browser a download. **Import** adds exported sess
 (its files stay). `python analysis/sessions.py <export>` reads one in Python.
 
 Velocity-loss alert: **Stop at loss** (default 20 %, 0 = off). When a set's last rep is that
-much slower than its best, the phone buzzes long-short-long and the card turns red. It counts
-the reps a pause has locked in, so the buzz comes when you hold the top, not mid-rep.
+much slower than its best, the phone buzzes long-short-long and the card turns red. It skips a
+last rep no pause has locked in yet (half a rep reads slow), so on a no-pause set the buzz comes
+one rep after the crossing.
 
 Sticking point (D34): on a hard rep that slows partway up and picks up again, the set card
 says where ("Sticks at ~41% of the way up, 3 of 5 reps") and the Reps table has each rep's.

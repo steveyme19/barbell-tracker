@@ -98,9 +98,13 @@ def drop_rack_moves(reps, lift):
     if not reps:
         return reps
     cap = RACK_MAX_ROM.get(lift, np.inf)
+    base = RACK_MIN_ROM if lift != "phone" else 0.0       # bar or stack, not hand-held
 
     def big(r, others):
-        return r["rom"] > cap or (len(others) > 0 and r["rom"] > RACK_MAX_FRAC * np.median([o["rom"] for o in others]))
+        # the scale: the other reps, not the rack bumps among them (a ~0 m unrack next to a heavy single
+        # made the single "2x the others" and the set vanished)
+        o = [x["rom"] for x in others if x["rom"] >= max(base, R.MIN_ROM)]
+        return r["rom"] > cap or (len(o) > 0 and r["rom"] > RACK_MAX_FRAC * np.median(o))
 
     while reps and big(reps[-1], reps[:-1]):
         reps = reps[:-1]
@@ -108,7 +112,7 @@ def drop_rack_moves(reps, lift):
         reps = reps[1:]
     if not reps:
         return reps
-    floor = RACK_MIN_ROM if lift != "phone" else 0.0       # bar or stack, not hand-held
+    floor = base
     if len(reps) >= 2:
         floor = max(floor, RACK_FRAC * np.median([r["rom"] for r in reps]))
     while reps and reps[0]["rom"] < floor:
@@ -119,10 +123,14 @@ def drop_rack_moves(reps, lift):
 
 
 def closed_set_reps(reps, lift):
-    """A closed set's reps: the anchored ones, with rack moves and handling off the ends. A
-    closed set always has TRAIL s of still after its last active block, so a rep with no end
-    anchor only happens when motion ran up to the cut: the sensor handled, or End tapped mid-move."""
-    return drop_rack_moves([r for r in reps if "no end anchor" not in r["flags"]], lift)
+    """A closed set's reps: the anchored ones, with rack moves and handling off the ends. A closed
+    set has TRAIL s of quiet after its last active block, usually a still that anchors its last rep,
+    so an unanchored rep after anchored ones is motion that ran up to the cut (the sensor handled,
+    End tapped mid-move). But that quiet isn't always a still (hands left on the racked bar, a bar
+    resting at another roll on an uncalibrated pod): with no rep anchored at all, keep them all,
+    flagged, rather than lose the set and its raw data."""
+    anchored = [r for r in reps if "no end anchor" not in r["flags"]]
+    return drop_rack_moves(anchored or reps, lift)
 
 
 def rpe_estimate(lift, last_mcv):

@@ -44,7 +44,9 @@ const rec = (id, nSets) => ({ id, stamp: id.slice(8), date: id.slice(8, 18), fol
     file: `bar-squat-${id.slice(8)}-set${String(k + 1).padStart(2, "0")}.csv` })) });
 
 const sessions = [
-  { record: rec("session-2026-10-26-0100", 2), rows: [row("session-2026-10-26-0100", 0, 1500), row("session-2026-10-26-0100", 1, 2301)] },
+  // a typed name Python must read as UTF-8 (accents and an emoji: the night review)
+  { record: { ...rec("session-2026-10-26-0100", 2), sets: rec("session-2026-10-26-0100", 2).sets.map((s, k) => (k ? s : { ...s, exercise: "Développé couché \u{1F3CB}" })) },
+    rows: [row("session-2026-10-26-0100", 0, 1500), row("session-2026-10-26-0100", 1, 2301)] },
   { record: rec("session-2026-10-26-0200", 1), rows: [row("session-2026-10-26-0200", 0, 7)] },
 ];
 const text = JSON.stringify(toExport(sessions, COLS));
@@ -89,7 +91,8 @@ const py = spawnSync(PYTHON, ["-c", [
   "            acc = 0.0",
   "            for x in st[c]: acc += float(x)",
   "            sums[c] = acc",
-  "        out.append({'id': s['record']['id'], 'index': st['index'], 'n': st['n'], 'sums': sums, 'csv': S.set_csv(st)})",
+  "        out.append({'id': s['record']['id'], 'index': st['index'], 'n': st['n'], 'sums': sums, 'csv': S.set_csv(st),",
+  "                    'names': [x.get('exercise') for x in s['record']['sets']]})",
   "print(json.dumps(out))",
 ].join("\n"), path, join(ROOT, "analysis")], { encoding: "utf8", maxBuffer: 1 << 26 });
 rmSync(dir, { recursive: true, force: true });
@@ -113,6 +116,7 @@ if (py.status !== 0) {
     }
   }
   check(sums, "sessions.py reads the same values (every column's sequential sum equal, bit for bit)");
+  check(got[0].names[0] === "Développé couché \u{1F3CB}", `sessions.py reads a typed name as UTF-8: "${got[0].names[0]}"`);
   check(csv && worst < 1e-6, `sessions.py's set CSV matches the app's toCSV: same rows, worst relative difference ${worst.toExponential(1)}`);
 }
 console.log(ok ? "PASS" : "FAIL");

@@ -265,6 +265,7 @@ def selftest():
 
 
 def main():
+    sys.stdout.reconfigure(errors="replace")      # typed exercise names on a cp1252 console
     if "--selftest" in sys.argv:
         sys.exit(0 if selftest() else 1)
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

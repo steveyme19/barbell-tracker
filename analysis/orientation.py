@@ -217,7 +217,14 @@ def analyze(t, acc, gyr_deg, bar="roll"):
     s0, e0 = runs[0]
     q0 = quat_from_to(acc[s0:e0 + 1].mean(axis=0), np.array([0.0, 0.0, 1.0]))
     trusted = still_mask(len(t), [(s, e) for s, e in runs if t[e] - t[s] >= reps.LONG_STILL])
-    q = madgwick(t, acc, gyr, still, q0, trusted)
+    # from the first still (where gravity says the attitude) forward, and backward to the start:
+    # seeding sample 0 with it put any turn before that still on top of it. Backward = time and the
+    # gyro negated (the trapezoid step is symmetric)
+    q = np.zeros((len(t), 4))
+    q[s0:] = madgwick(t[s0:], acc[s0:], gyr[s0:], still[s0:], q0, trusted[s0:])
+    if s0:
+        b = slice(s0, None, -1)
+        q[:s0 + 1] = madgwick(-t[b], acc[b], -gyr[b], still[b], q0, trusted[b])[::-1]
     R = quat_to_mat(q)
     a_w = np.einsum("nij,nj->ni", R, acc) - np.array([0.0, 0.0, g])
     candidates, runs = runs, confirm_stills(t, a_w, runs, fs)
@@ -279,9 +286,18 @@ def selftest():
         tilt_err = np.abs(r["tilt_deg"] - tilt_true * (1 if np.dot(r["bar_axis"], m.BAR) > 0 else -1))
         moving = ~still_mask(len(t), r["runs"])
         rom = np.diff(truth["pos"][mids, 2])
+        # every true still found: a dropped one hides a move (the comparison then spans two moves
+        # whose net is 0, and passes). True stills: maximal runs of "still" segments, 0.6 s or more
+        want, run = 0, 0.0
+        for seg in m.SCENARIOS[name]() + [("move", 0)]:
+            if seg[0] == "still":
+                run += seg[1]
+            else:
+                want += run >= 0.6
+                run = 0.0
         good = (att[moving].max() < 1.0 and axis_err < 2.0 and np.abs(dz).max() < 0.005 and np.abs(dx).max() < 0.01
-                and tilt_err.max() < 0.5)
-        check(good, f"{name:8s}: attitude worst {att[moving].max():.2f} deg moving, bar axis {axis_err:.2f} deg off, "
+                and tilt_err.max() < 0.5 and len(r["runs"]) >= want)
+        check(good, f"{name:8s}: {len(r['runs'])} of {want} stills, attitude worst {att[moving].max():.2f} deg moving, bar axis {axis_err:.2f} deg off, "
                     f"vertical moves worst {np.abs(dz).max() * 1000:.1f} mm, forward worst {np.abs(dx).max() * 1000:.1f} mm, "
                     f"tilt worst {tilt_err.max():.2f} deg, gyro bias {np.round(r['gyro_bias'], 2)} deg/s")
         if name == "flat":

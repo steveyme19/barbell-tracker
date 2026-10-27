@@ -33,13 +33,18 @@ function median(xs) {
 export function dropRackMoves(reps, lift) {
   if (!reps.length) return reps;
   const cap = S.RACK_MAX_ROM[lift] ?? Infinity;
-  const big = (r, others) => r.rom > cap || (others.length > 0 && r.rom > S.RACK_MAX_FRAC * median(others.map((o) => o.rom)));
+  const base = lift !== "phone" ? S.RACK_MIN_ROM : 0;   // bar or stack, not hand-held
+  // the scale: the other reps, not the rack bumps among them (a ~0 m unrack made a single "handling")
+  const big = (r, others) => {
+    const o = others.map((x) => x.rom).filter((x) => x >= Math.max(base, SETTINGS.MIN_ROM));
+    return r.rom > cap || (o.length > 0 && r.rom > S.RACK_MAX_FRAC * median(o));
+  };
   let a = 0, b = reps.length;
   while (b > a && big(reps[b - 1], reps.slice(a, b - 1))) b--;
   while (a < b && big(reps[a], reps.slice(a + 1, b))) a++;
   reps = reps.slice(a, b);
   if (!reps.length) return reps;
-  let floor = lift !== "phone" ? S.RACK_MIN_ROM : 0;   // bar or stack, not hand-held
+  let floor = base;
   if (reps.length >= 2) floor = Math.max(floor, S.RACK_FRAC * median(reps.map((r) => r.rom)));
   a = 0; b = reps.length;
   while (a < b && reps[a].rom < floor) a++;
@@ -47,11 +52,13 @@ export function dropRackMoves(reps, lift) {
   return reps.slice(a, b);
 }
 
-/** A closed set's reps: the anchored ones, rack moves and handling off the ends. A closed set
- * always has TRAIL s of still after its last active block, so a rep with no end anchor only
- * happens when motion ran up to the cut: the sensor handled, or End tapped mid-move (D31). */
+/** A closed set's reps: the anchored ones, rack moves and handling off the ends (D31). Its TRAIL
+ * is quiet, usually a still that anchors the last rep, so an unanchored rep after anchored ones ran
+ * up to the cut (the sensor handled). With no rep anchored at all (hands left on the racked bar),
+ * keep them all, flagged, rather than lose the set and its raw data. */
 export function closedSetReps(reps, lift) {
-  return dropRackMoves(reps.filter((r) => !r.flags.includes("no end anchor")), lift);
+  const anchored = reps.filter((r) => !r.flags.includes("no end anchor"));
+  return dropRackMoves(anchored.length ? anchored : reps, lift);
 }
 
 /** [low, high] RPE (5 to 10, half steps) from the last rep's MCV, or null. Uncalibrated v0. */

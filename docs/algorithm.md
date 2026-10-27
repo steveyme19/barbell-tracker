@@ -517,10 +517,12 @@ top of sections 5 to 10 finds the sets (`analysis/sets.py`, ported to
    **The sensor handled** (D31): unclipping the pod, or picking up the phone, before the
    set's 15 s of quiet is up adds one huge end "rep" (1.98 m on a real pod set). End reps
    over a per-lift cap (squat and deadlift 1.0 m, bench 0.8 m) or over 2x the median of
-   the set's other reps go first; the small-rep floor is then taken from what's left. And a
-   closed set keeps only anchored reps: it always has 2 s of still after its last active
-   block, so a rep with no end anchor only comes from motion running up to the cut (the
-   sensor carried, End tapped mid-move). The live view keeps the rep in progress.
+   the set's other reps (not counting rack bumps) go first; the small-rep floor is then
+   taken from what's left. And a closed set drops an unanchored rep after anchored ones: its
+   2 s of quiet after the last active block is usually a still, so that rep is motion that
+   ran up to the cut (the sensor carried, End tapped mid-move). With no rep anchored at all
+   (the quiet wasn't a still: hands left on the racked bar) it keeps them all, flagged. The
+   live view keeps the rep in progress.
    Moving the pod to another bar can still make an anchored, normal-looking phantom set:
    no threshold tells it from a real single. **Not a set** on its card takes it out (the
    session, the live tracker's rest for the next set, its stored samples and CSV).

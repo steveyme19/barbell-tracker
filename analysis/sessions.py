@@ -30,7 +30,7 @@ def column(c):
 
 
 def load(path):
-    obj = json.loads(Path(path).read_text())
+    obj = json.loads(Path(path).read_text(encoding="utf-8"))   # the app writes UTF-8 (typed names)
     if obj.get("format") != FORMAT:
         raise ValueError(f"{path}: not a Bar Tracker session export")
     if obj.get("version") != VERSION:
@@ -59,6 +59,7 @@ def set_csv(st):
 
 
 def main():
+    sys.stdout.reconfigure(errors="replace")      # a cp1252 console can't print every typed exercise name
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
         sys.exit(__doc__)

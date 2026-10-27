@@ -59,6 +59,7 @@ let podDevice = null;         // the browser: the pod picked with Connect pod (a
 let podName = "";             // the app: the last pod its plugin connected to (it remembers the pod itself)
 let podPickNew = false;       // the app: the next Start picks the nearest pod instead of the saved one
 let ending = false;           // End is waiting for the source to stop (the pod's STOP handshake)
+let pendingSeg = null;        // a next-set edit typed between two slow reps: { n: reps then, v: the edit }
 let starting = false;         // a source is starting (the pod takes 1 to 10 s): no other session meanwhile
 
 // ---------- incoming data ----------
@@ -97,9 +98,14 @@ function runLive() {
     { ...SETTINGS, LIFT: named }, imuOf(samples));
   const used = res.error ? named : res.lift;        // the name, or what the sensor saw (D21)
   const reps = res.error ? [] : dropRackMoves(res.reps, used);
-  // Velocity loss over the reps a still has locked in: a provisional last rep is half a concentric
-  // on raw drift (35% live on a set whose card ends at 0%), and the buzz fires once per set.
-  const locked = reps.filter((r) => !r.flags.includes("no end anchor"));
+  // another rep came after an edit held between reps: it was mid-set, so the edit is this set's too
+  if (pendingSeg && seg && reps.length > pendingSeg.n) { seg = { ...seg, ...pendingSeg.v }; pendingSeg = null; }
+  // Velocity loss over finished reps: a last rep no still has locked in yet may be half a
+  // concentric on raw drift (35% live on a set whose card ends at 0%), and the buzz fires once per
+  // set. Only that one: the reps before it in an unanchored window are finished and their lockouts
+  // leveled (6b), so a no-pause set still buzzes mid-set, one rep after the crossing.
+  const last = reps[reps.length - 1];
+  const locked = last && last.flags.includes("no end anchor") ? reps.slice(0, -1) : reps;
   live = { res, reps, tAbs, lift: used, velLoss: locked.length >= 2 ? setSummary(used, locked, tAbs).velLoss : null };
   if (reps.length && !buzzed) { buzz(150); buzzed = true; }   // a set started
   // Velocity-loss stop: last locked rep vs best rep in this set, the number the card will show.
@@ -136,6 +142,7 @@ function onSet(set) {
   set.rpe = "";
   if (set.exercise) rememberExercise(set.exercise);
   live = null;
+  pendingSeg = null;
   buzzed = false;
   vlAlerted = false;
   seg = null;
@@ -158,6 +165,7 @@ function onSet(set) {
 
 function onDrop() {     // motion that wasn't a set (plates, a bump)
   live = null;
+  pendingSeg = null;
   buzzed = false;
   vlAlerted = false;
   seg = null;
@@ -167,6 +175,7 @@ function onDrop() {     // motion that wasn't a set (plates, a bump)
 // ---------- start / end ----------
 
 function newSession({ autosave, persist = false, from = null }) {
+  pendingSeg = null;
   if (from) {
     // picking up a stored session: same id, folder and sets, a new tracker
     session = sessionFromRecord(from, { autosave, persist });
@@ -208,6 +217,17 @@ async function startSession(from = null) {
   if (running || starting || ending) return;
   starting = true;
   $("resumeBar").hidden = true;
+  if (from) {
+    // the stored record, not the offer's snapshot: edits since, and a delete since (then no resume:
+    // a new part under the deleted id would overwrite the set files Delete promised to keep)
+    const fresh = await getSession(from.id).catch(() => null);   // undefined = gone, null = read failed
+    if (fresh === undefined) {
+      starting = false;
+      showError("That session was deleted, so it can't be resumed.");
+      return;
+    }
+    if (fresh) from = fresh;
+  }
   // A calibration still collecting would keep listening to the session's sensors, and its end
   // (BarSensors.stop) would cut the session's data off unnoticed: cancel it, and wait for the stop.
   if (calRun) await stopCalibration("Calibration cancelled: a session started.");
@@ -226,7 +246,6 @@ async function startSession(from = null) {
     });
   }
   if (from) {
-    from = (await getSession(from.id).catch(() => null)) ?? from;   // edits since the offer appeared
     newSession({ autosave: native, persist: true, from });
     await restoreSets(from);
   } else {
@@ -538,10 +557,14 @@ async function checkUnfinished() {
   const last = rec.sets[rec.sets.length - 1];
   $("resumeText").textContent = `Unfinished session from ${fmtWhen(rec.startedAtMs)}: ${rec.sets.length} sets, last one ${formatTime(Math.max(0, Date.now() - (last.wallEnd ?? rec.startedAtMs)) / 1000)} ago.`;
   $("resumeBar").hidden = false;
+  $("resumeBar").dataset.id = rec.id;
   $("resumeBtn").onclick = () => startSession(rec);
   $("closeOldBtn").onclick = async () => {
-    await putSession({ ...rec, ended: true }).catch(() => {});
     $("resumeBar").hidden = true;
+    // the stored record: the page-load one would undo edits and "Not a set" since, or bring a
+    // deleted session back as a ghost with no sets to open
+    const cur = await getSession(rec.id).catch(() => null);
+    if (cur && !cur.ended) await putSession({ ...cur, ended: true }).catch(() => {});
     renderHistory();
   };
 }
@@ -638,15 +661,35 @@ async function shareSession() {
 // CSVs (a pulled folder is then complete); in a browser it's a download. Import adds what isn't
 // stored yet. Delete takes a past session out of IndexedDB; its files stay (the real backup).
 
+// One session's raw columns in memory at a time (months of sets are hundreds of MB). A browser's
+// download goes in pieces under FILE_CHARS: one string can't pass V8's limit (2^29 characters,
+// about 56 sessions), and Import reads each file back with file.text().
+const FILE_CHARS = 2 ** 27;
+
 async function exportSessions(ids) {
-  const data = (await Promise.all(ids.map((id) => getSessionData(id)))).filter(Boolean);
-  if (native) {
-    for (const d of data) await saveFile(d.record.folder, "session.json", JSON.stringify(toExport([d], COLS)));
-  } else if (data.length) {
-    const name = data.length === 1 ? `${data[0].record.folder}.json` : `bartracker-export-${new Date().toISOString().slice(0, 10)}.json`;
-    download(name, JSON.stringify(toExport(data, COLS)), "application/json");
+  const done = [], files = [[]];
+  let size = 0;
+  for (const id of ids) {
+    const d = await getSessionData(id);
+    if (!d) continue;
+    done.push(d);
+    if (native) { await saveFile(d.record.folder, "session.json", JSON.stringify(toExport([d], COLS))); continue; }
+    const entry = JSON.stringify(toExport([d], COLS).sessions[0]);
+    if (size && size + entry.length > FILE_CHARS) { files.push([]); size = 0; }
+    files.at(-1).push(new Blob([entry]));                 // out of the JS heap at once
+    size += entry.length;
+    d.rows = null;                                       // the typed arrays can go now
   }
-  return data;
+  if (!native && done.length) {
+    const head = JSON.stringify(toExport([], COLS)).slice(0, -2);   // '{"format":...,"sessions":['
+    const day = new Date().toISOString().slice(0, 10);
+    files.forEach((parts, k) => {
+      const name = done.length === 1 ? `${done[0].record.folder}.json`
+        : `bartracker-export-${day}${files.length > 1 ? `-${k + 1}` : ""}.json`;
+      download(name, new Blob([head, ...parts.flatMap((p, i) => (i ? [",", p] : [p])), "]}"]), "application/json");
+    });
+  }
+  return done;
 }
 
 async function exportShown() {
@@ -689,7 +732,9 @@ async function deleteShown() {
   if (!session?.viewing || running || starting || ending) return;
   if (!confirm(`Delete the session from ${fmtWhen(session.startedAt.getTime())} from the app? Its set files in Documents/BarTracker stay.`)) return;
   try {
-    await deleteSession(session.id);
+    const id = session.id;
+    await deleteSession(id);
+    if ($("resumeBar").dataset.id === id) $("resumeBar").hidden = true;   // its offer is for a session that's gone
     session = null;
     $("setList").innerHTML = "";
     render();
@@ -1143,6 +1188,8 @@ function setExercise(name) {
   $("exercise").value = exercise;
   $("profileHint").textContent = hintFor(exercise);
   if (editsOpenSet()) seg = { ...seg, exercise, lift };   // changed it mid-set: this set too
+  // over 3 s since the last rep: mid-set (a slow next rep) or done (racking)? Only another rep tells
+  else if (seg) pendingSeg = { n: live?.reps?.length ?? 0, v: { ...pendingSeg?.v, exercise, lift } };
   try { localStorage.setItem("exercise", exercise); } catch { /* storage blocked */ }
   render();
 }
@@ -1151,6 +1198,7 @@ function setWeight(value) {
   weight = String(value).trim();
   $("weight").value = weight;
   if (editsOpenSet()) seg.weight = weight;
+  else if (seg) pendingSeg = { n: live?.reps?.length ?? 0, v: { ...pendingSeg?.v, weight } };
   try { localStorage.setItem("weight", weight); } catch { /* storage blocked */ }
   render();
 }

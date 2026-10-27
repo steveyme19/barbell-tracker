@@ -387,6 +387,10 @@ the median taken over all reps, a heavy single followed by handling ([0.55, 1.98
 the real single as a "rack move". Now 5 reps, 0.24, 21%, 8-10. A closed segment always has 2 s of
 still after its last active block, so an unanchored rep there only comes from motion that ran up
 to the cut.
+*Amended the same night (review):* the "2x the other reps" scale ignores the rack bumps among them
+(a ~0 m unrack next to a heavy single made the single "handling" and the set vanished), and a closed
+set with no rep anchored at all keeps them all, flagged (its 2 s of quiet isn't always a still:
+hands left on the racked bar). 7 more rack-filter answers and 2 closed-set answers in parity.mjs.
 *Left open:* moving the pod to another bar can make an anchored phantom set of normal size, which
 no threshold can tell from a real single: that needs a "not a set" control on the set card.
 Both cases are in parity.mjs with their known answers (the bug was shared by Python and JS, so

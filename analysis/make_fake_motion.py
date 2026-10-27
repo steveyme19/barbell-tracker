@@ -21,6 +21,7 @@ Scenarios (the roadmap 0.3 tests, plus a bench-style J-curve):
     diagonal  lifted 30 cm up and 20 cm forward onto a table, and back down
     jcurve    three bench reps: 40 cm up with a 10 cm forward sweep, and back
     tiltroll  the bar tilted 20 degrees, two lifts spinning a full turn about the tilted bar, leveled
+    early     the roll gesture before the first still (ending 10 degrees off where it began), then lifts
 """
 
 import sys
@@ -129,6 +130,9 @@ SCENARIOS = {
     # bar) during each lift, then leveled. A body/world mix-up in the gyro update shows here, not above
     "tiltroll": lambda: [("still", 2.0)] + roll_gesture() + [("still", 1.5), ("move", 0.6, [0, 0, 0], FWD_BODY, 20), ("still", 1.2)]
     + lifts(2, 0.40, axis=BAR, dth=360) + [("move", 0.6, [0, 0, 0], FWD_BODY, -20), ("still", 1.5)],
+    # moving from the first sample: the bar rolled right after Start (a net 10 degrees), then still
+    "early": lambda: [("move", 0.5, [0, 0, 0], BAR, 40), ("move", 0.7, [0, 0, 0], BAR, -80), ("move", 0.5, [0, 0, 0], BAR, 50),
+                      ("still", 2.0)] + lifts(3, 0.40, pause=1.0),
 }
 
 

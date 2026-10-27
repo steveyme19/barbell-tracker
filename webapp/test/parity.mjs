@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { parseRecording } from "../fileio.js";
 import { analyze, magnitude, liftFromName, SETTINGS } from "../reps.js";
-import { SessionTracker, formatTime, dropRackMoves } from "../sets.js";
+import { SessionTracker, formatTime, dropRackMoves, closedSetReps } from "../sets.js";
 import { fitProfile } from "../lv.js";
 import { fitCalibration } from "../calib.js";
 
@@ -189,6 +189,20 @@ const rackCases = [
   ["free", [0.9, 0.5, 0.5], [0.9, 0.5, 0.5]],      // 0.9 < 2 x 0.5: a free lift keeps it
   ["free", [0.5, 0.5, 1.2], [0.5, 0.5]],           // 1.2 > 2 x 0.5: handling
   ["phone", [0.3, 0.05, 0.3], [0.3, 0.05, 0.3]],   // phone tests: no floor, only the middle anyway
+  // a ~0 m unrack bump must not set the scale for the handling test (night review)
+  ["squat", [0.0, 0.549], [0.549]],                // a heavy single after the unrack
+  ["squat", [0.549, 0.03], [0.549]],               // ... and before the rerack bump
+  ["bench", [0.40, 0.07], [0.40]],
+  ["squat", [0.03, 0.55, 0.03], [0.55]],
+  ["squat", [0.055, 0.55], [0.55]],
+  ["free", [0.02, 0.5, 1.2], [0.5]],               // the bump goes, the 1.2 m handling too
+  ["phone", [0.0, 0.5], [0.5]],                    // phone: no floor, but a 0 m "rep" still sets no scale
+];
+// closed sets (closed_set_reps / closedSetReps): an unanchored rep after anchored ones goes; with
+// none anchored they all stay, flagged (hands on the racked bar: the end's quiet wasn't a still)
+const closedCases = [
+  ["squat", [[0.55, 0], [0.55, 0], [0.55, 0], [0.50, 1]], [0.55, 0.55, 0.55]],
+  ["squat", [[0.55, 1], [0.55, 1], [0.55, 1]], [0.55, 0.55, 0.55]],
 ];
 {
   const reps = (roms) => roms.map((rom) => ({ rom }));
@@ -203,6 +217,16 @@ const rackCases = [
   });
   if (bad.length) { failures++; console.log(`FAIL rack filter: ${bad.map(([l, r, w]) => `${l} ${JSON.stringify(r)} -> want ${JSON.stringify(w)}`).join("; ")}`); }
   else console.log(`PASS rack filter: ${rackCases.length} known answers, Python and JS (handling off the ends first, then rack bumps)`);
+  const mk = (rs) => rs.map(([rom, u]) => ({ rom, flags: u ? ["no end anchor"] : [] }));
+  const pyc = JSON.parse(execFileSync(PYTHON, ["-c", [
+    "import json, sys", "sys.path.insert(0, sys.argv[1])", "import sets",
+    "cases = json.loads(sys.argv[2])",
+    "print(json.dumps([[r['rom'] for r in sets.closed_set_reps([{'rom': x, 'flags': ['no end anchor'] if u else []} for x, u in rs], lift)] for lift, rs, _ in cases]))",
+  ].join("\n"), path.join(ROOT, "analysis"), JSON.stringify(closedCases)], { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
+  const badc = closedCases.filter(([lift, rs, want], k) => JSON.stringify(closedSetReps(mk(rs), lift).map((r) => r.rom)) !== JSON.stringify(want)
+    || JSON.stringify(pyc[k]) !== JSON.stringify(want));
+  if (badc.length) { failures++; console.log(`FAIL closed sets: ${badc.map(([l, r, w]) => `${l} ${JSON.stringify(r)} -> want ${JSON.stringify(w)}`).join("; ")}`); }
+  else console.log(`PASS closed sets: ${closedCases.length} known answers, Python and JS (an unanchored rep after anchored ones goes; none anchored, all stay)`);
 }
 
 // ---------- load-velocity profile (analysis/lv.py vs webapp/lv.js) ----------
