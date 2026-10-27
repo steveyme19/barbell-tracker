@@ -448,7 +448,42 @@ grinder's whole curve is slow) so a sensor wiggle isn't a sticking point, and th
 because every rep speeds up and slows down there. The smoothing width truncates (int / Math.floor),
 not rounds: at 210 Hz 0.05 x fs is exactly 10.5, and Python's round() and JS's Math.round() split it.
 *Provisional:* the 10% and the 50 ms are guesses until real heavy reps; on the fakes, a 40% dip is
-found within 0.2% of the ROM, and no smooth fake or real set reads a sticking point.
+found within 0.2% of the ROM and no smooth fake reads one. Three real sets do, none of them a
+barbell grind: hand-held phone files 2123 (rep 3, 50% deep at 16%) and 2206 (rep 2, 11.7% deep,
+just over the line), and the lat raise's rep 7 (39% deep at 42%, the set's odd rep: 2.6 s, its
+profile 0.56 off the median). *Amended 2026-10-27 (review):* the known answer didn't pin either
+setting (any STICK_PROM up to 0.45 passed) or the rep count. It now holds 3 more reps on the rule's
+edges, each failing its own mutation: an 8% dip reads none (fails at STICK_PROM 0.02), a 12% dip
+reads one (fails at 0.13), a deep dip at 93% of the ROM reads none (fails at STICK_RANGE 0.05-0.95);
+and the rep count must match. The set card's "~41%" is a true median now (an even count averaged
+the two middle reps' places; it took the higher).
+
+**D35 (2026-10-27): consistency's tempo is the lowering: the run of moving down nearest the rep
+that drops at least half its ROM, timed at its own 3%; sets compare by exercise name.**
+- consistency.py `eccentric()`: the gap next to the concentric splits into runs where the bar
+  moves down faster than ECC_STOP (0.03) x the gap's peak downward speed. The lowering is the run
+  nearest the rep whose drop is at least half the rep's ROM (none: the run holding the peak), then
+  timed at 3% of its own peak.
+- Which side: squat and bench lower first, a deadlift rises first, by name; a stack or a free
+  weight goes either way (a curl or OHP rises, an RDL or lunge lowers), so the data says: did the
+  bar come down over half the first rep's ROM to its start?
+- Set to set and session to session group by the typed exercise name, trimmed, any case (the LV
+  profile's sameName), not the tracking profile; unnamed sets fall back to "(profile)". A session in
+  two exports counts once.
+*Why:* the night review ran 001b081 on the real files. The old rule (the run nearest the
+concentric) timed a box sit's bottom wobble (squat 2131: 0.08 s for a 1.46 s descent, tempo +624%)
+and a deadlift's settle at lockout (0.028 s for 3.05 s, -98%). The reviewer's fix (the run holding
+the peak speed) then timed the pod being lifted off the stack after the lat raise's last rep
+(-0.21 m/s, faster than its -0.12 m/s lowering): the drop is what tells them apart, since wobbles,
+settles, bobs and handling move centimetres, a lowering most of the ROM. `lift != "deadlift"` read
+every stack and free rep against the previous rep's lowering (the lat raise's rep 1: -82% from
+pre-set noise). Every unnamed exercise is "machine" or "free" (D21), so a curl was held against an
+OHP. Real files now: squat 2131 +19/+5/0/-2/-7%, 2134 -1/+26/+4/-4/0%, the deadlift +58/-9/-2/+12/0%
+(rep 1's lowering really is 3 s), the lat raise -8/0/-16/-19/+14/+7/+4%.
+*Guarded by* consistency.py --selftest: a 35% slower descent must read 35 +/- 5% in a squat with a
+box sit's wobble, a deadlift with a settle, a stack handled after its last rep and an unnamed
+free weight lowered first, and a curl and an OHP at one load must not mix. Each old rule (nearest
+run, peak run, `!= "deadlift"`, by profile) and a data rule stuck on "rises first" fails it.
 
 ## Proposed (say yes or no)
 

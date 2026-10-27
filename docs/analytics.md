@@ -83,11 +83,17 @@ Start with cm.
 session to session (from app exports, D30), on depth (ROM, cm), the velocity profile (RMS
 of the normalized profiles) and tempo. **Tempo is the eccentric's duration**: the
 concentric's is speed, which fatigue is supposed to cut, so it stays out (the self-test
-holds a 35% slower concentric of the same shape to 0% tempo and 0.003 profile). Stored
-sets go through the closed-set filter first (D31). With no Smith-machine floor yet every
-deviation is shown, none judged; `--floor-depth/tempo/profile` flags those over 2x it.
-`--selftest` plants the deliberate faults above (5 cm short, a mid-rep hitch, a slower
-descent): each stands out on its own measure by 100x or more. Path deviations wait for
+holds a 35% slower concentric of the same shape to 0% tempo and 0.003 profile). The
+lowering is the run of moving down nearest the rep that drops at least half its ROM, so a
+box sit's wobble, a settle at lockout or the pod handled after the set can't stand in for
+it; before the rep for squat and bench, after it for a deadlift, and for a stack or a free
+weight whichever side the data shows (D35). Sets compare by their typed exercise name, not
+the tracking profile (every unnamed exercise is "machine" or "free"). Stored sets go
+through the closed-set filter first (D31). With no Smith-machine floor yet every deviation
+is shown, none judged; `--floor-depth/tempo/profile` flags those over 2x it. `--selftest`
+plants the deliberate faults above (5 cm short, a mid-rep hitch, a slower descent): each
+stands out on its own measure by 100x or more, and the slower descent reads its true 35%
+next to a box sit, a deadlift settle and post-set handling. Path deviations wait for
 orientation on real bar data (0.3, D33).
 
 ## 3. Depth check
@@ -111,9 +117,12 @@ rep. The concentric's velocity averaged over 50 ms; the deepest dip with a rise 
 and after it, at least 10% of the rep's peak below the lower of those two peaks, between
 10% and 90% of the ROM. Reported as where (% of the ROM), the speed there and the dip's
 depth; the set card shows each rep's and the set's median ("Sticks at ~41% of the way up,
-3 of 5 reps"). Known answer: `make_fake_reps.py sticking` (2 light reps, 3 with a dip),
-found within 0.2% of the ROM; none on every other file. The 10% is provisional until real
-heavy reps (roadmap 2.x). Not yet: the trend over weeks (5.5).
+3 of 5 reps"). Known answer: `make_fake_reps.py sticking` (2 light reps, 3 with a dip,
+found within 0.2% of the ROM, and 3 on the rule's edges: an 8% dip, a 12% one, a deep one
+at 93% of the ROM), which fails if either setting moves. No smooth fake reads one; three
+real sets do, none a barbell grind (two hand-held phone files, the lat raise's odd last
+rep: D34). The 10% is provisional until real heavy reps (roadmap 2.x). Not yet: the trend
+over weeks (5.5).
 
 ## 5. RPE estimation
 

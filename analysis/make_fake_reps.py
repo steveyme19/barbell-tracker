@@ -73,22 +73,27 @@ if "lifts" in sys.argv:
 def sticking_set(seed=5, rom=0.40):
     """A paused bench set for the sticking point (analytics.md section 4, roadmap 5.3): 2 light reps
     (a smooth press, no dip), then 3 heavy ones whose speed dips to 40% of the peak partway up and
-    picks up again. Pauses on the chest and at lockout anchor every rep. Returns the recording and,
-    per rep, the dip's true place as a fraction of the ROM (None for the light reps)."""
+    picks up again. Then 3 that pin the rule's edges (STICK_PROM 10%, STICK_RANGE 10-90%): a dip
+    8% deep (not one), 12% deep (one), and a deep one at 93% of the ROM (outside the range, not
+    one). Pauses on the chest and at lockout anchor every rep. Returns the recording and, per rep,
+    the dip's true place as a fraction of the ROM (None where no sticking point should be found)."""
     r = np.random.default_rng(seed)
     ease = lambda n: 0.5 - 0.5 * np.cos(np.pi * np.arange(n) / n)
     z, truth = [np.full(int(1.5 * FS), rom)], []
-    for k, (up, dip_at) in enumerate([(0.8, None), (0.9, None), (1.8, 0.45), (2.1, 0.45), (2.4, 0.5)]):
+    # (concentric s, dip centre in u, its depth, its width, whether it's a sticking point)
+    spec = [(0.8, None, 0, 0, False), (0.9, None, 0, 0, False), (1.8, 0.45, 0.6, 0.07, True), (2.1, 0.45, 0.6, 0.07, True),
+            (2.4, 0.5, 0.6, 0.07, True), (1.8, 0.45, 0.20, 0.07, False), (1.8, 0.45, 0.25, 0.07, True), (1.8, 0.80, 0.8, 0.04, False)]
+    for k, (up, dip_at, amp, w, sticks) in enumerate(spec):
         z += [rom - rom * ease(int(1.1 * FS)), np.zeros(int(0.5 * FS))]          # down, pause on the chest
         n = int(up * FS)
         u = np.arange(n) / n
         v = np.sin(np.pi * u)
         if dip_at is not None:
-            v = v * (1 - 0.6 * np.exp(-((u - dip_at) / 0.07) ** 2))
+            v = v * (1 - amp * np.exp(-((u - dip_at) / w) ** 2))
         x = np.concatenate([[0.0], np.cumsum(v)[:-1]])
         x *= rom / (x[-1] + v[-1])
         z += [x, np.full(int(1.0 * FS), rom)]                                     # up, pause at lockout
-        if dip_at is None:
+        if not sticks:
             truth.append(None)
         else:
             near = np.abs(u - dip_at) < 0.15                                      # the dip, not the ends
@@ -110,7 +115,7 @@ if "sticking" in sys.argv:
     out = Path(__file__).parent / "data" / "fake_bench_sticking.csv"
     df.to_csv(out, index=False)
     (Path(__file__).parent / "data" / "fake_bench_sticking_truth.json").write_text(__import__("json").dumps(truth))
-    print(f"Wrote data/{out.name}: 5 paused bench reps, sticking dips at {[None if p is None else round(p, 3) for p in truth]} of the ROM")
+    print(f"Wrote data/{out.name}: {len(truth)} paused bench reps, sticking points at {[None if p is None else round(p, 3) for p in truth]} of the ROM")
     sys.exit()
 
 

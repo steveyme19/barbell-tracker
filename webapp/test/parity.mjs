@@ -28,7 +28,7 @@ const defaults = [
   "analysis/data/fake_reps_nopause.csv",
   "analysis/data/fake_reps_drift.csv",
   "analysis/data/fake_bench_grinder.csv",
-  "analysis/data/fake_bench_sticking.csv",   // 2 light reps, 3 with a sticking dip: known answers (5.3)
+  "analysis/data/fake_bench_sticking.csv",   // 2 light, 3 sticking, 3 on the rule's edges: known answers (5.3)
   "analysis/data/fake_bench.csv",
   "analysis/data/fake_squat.csv",
   "analysis/data/fake_deadlift.csv",
@@ -96,6 +96,7 @@ for (const [file, forced] of files) {
     const truthFile = until === null && path.basename(file) === "fake_bench_sticking.csv" && file.replace(/\.csv$/, "_truth.json");
     if (truthFile && existsSync(truthFile)) {
       const truth = JSON.parse(readFileSync(truthFile, "utf8"));
+      if (js.reps.length !== truth.length) problems.push(`known answer: ${js.reps.length} reps, ${truth.length} made`);
       js.reps.forEach((r, k) => {
         const want = truth[k];
         if ((want === null) !== !r.sticking || (want !== null && Math.abs(r.sticking.pos - want) > 0.03)) {

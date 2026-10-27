@@ -2,7 +2,7 @@
 // Session mode: start once, lift, and the tracker finds each set and the rest between.
 import { PhoneSource, NativeSensorSource, ReplaySource, PodSource, PodWebSource, PodNativeSource } from "./sources.js";
 import { isNativeApp, keepScreenOn, saveFile, deleteFile, shareFiles, recordInBackground, askNotifications, vibrateNative } from "./native.js";
-import { analyze, magnitude, imuOf, liftFromName, liftForExercise, SETTINGS } from "./reps.js";
+import { analyze, magnitude, imuOf, liftFromName, liftForExercise, median, SETTINGS } from "./reps.js";
 import { SessionTracker, setSummary, dropRackMoves, closedSetReps, formatTime, formatRpe } from "./sets.js";
 import { gapsNear, gapText } from "./gaps.js";
 import { parseRecording, toCSV } from "./fileio.js";
@@ -826,7 +826,7 @@ function fillSetCard(set) {
   // the sticking region (analytics.md section 4): where the reps that dipped slowed, % of their ROM
   const stuck = set.reps.filter((r) => r.sticking);
   if (stuck.length) {
-    const at = stuck.map((r) => r.sticking.pos * 100).sort((a, b) => a - b)[Math.floor(stuck.length / 2)];
+    const at = median(stuck.map((r) => r.sticking.pos * 100));   // np.median: two dips average, not the higher
     c.querySelector(".set-lv").insertAdjacentHTML("beforeend",
       `<div class="set-stick">Sticks at ~${Math.round(at)}% of the way up (${stuck.length} of ${set.reps.length} reps)</div>`);
   }

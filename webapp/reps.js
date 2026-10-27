@@ -137,7 +137,7 @@ export function integrate(y, t) {
   return out;
 }
 
-function median(arr) {
+export function median(arr) {
   const s = Array.from(arr).sort((a, b) => a - b);
   const m = s.length >> 1;
   return s.length % 2 ? s[m] : 0.5 * (s[m - 1] + s[m]);
