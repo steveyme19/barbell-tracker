@@ -59,7 +59,9 @@ def lowering(v, x, t, lo, hi, rom):
     lowering, however long the stop partway down. The lowering is the biggest drop, timed at
     ECC_STOP x its own peak; with no piece, the run holding the gap's peak speed. Drift in a pause at
     the top, a wobble in a bottom pause or box sit and a settle at lockout are too small to be
-    pieces, and a 1 1/4 rep's quarter is kept apart by its rise. None if the bar never moves down."""
+    pieces, and a lower piece after a rise of more than ECC_RISE is a lowering of its own. (Not a
+    1 1/4 rep's quarter: reps.py makes any rise of MIN_ROM or more a rep, so the quarter is a rep of
+    its own and its gaps alternate, an open reps.py issue, D35.) None if the bar never moves down."""
     if hi - lo < 3:
         return None
     seg = v[lo:hi + 1]
@@ -290,7 +292,7 @@ def selftest():
         return base - d / 2 * (1 - np.cos(2 * np.pi * np.arange(n) / n))
 
     def lift_set(fault, seed, lift="squat", top=True, box=False, settle=False, handle=False, rom=ROM,
-                 hinge=0.0, stop=0.0, tremble=False, after=None, cut=False, raw=False):
+                 hinge=0.0, stop=0.0, tremble=False, after=None, cut=False, raw=False, pace=1.0, slow=2):
         """5 reps, rep 3 carrying the fault. top: starts standing and lowers first (a squat, an
         RDL); else starts at the bottom and rises first (a deadlift, a stack, a curl). box: a 1.5 s
         box sit at the bottom with 3 wobble dips (-0.03 to -0.07 m/s); settle: a 1 mm dip as the bar
@@ -301,7 +303,8 @@ def selftest():
         8 Hz, not a still: a dead-still stop of 0.5 s or more is a still to reps.py, whose leveling
         then bends that rep, an open reps.py issue); after: the bar is then taken
         to this height (set down, reracked, the pod unclipped); cut: the recording ends halfway up
-        rep 5. raw: (t, a) instead of the analysis."""
+        rep 5; pace: every lowering this much longer; slow: which rep carries the tempo fault (0-based).
+        raw: (t, a) instead of the analysis."""
         rng = np.random.default_rng(seed)
         z = [np.full(int(2 * FS), rom if top else hinge)]
         if hinge and not top:
@@ -309,7 +312,7 @@ def selftest():
         for k in range(5):
             depth = rom - (0.05 if fault == "depth" and k == 2 else 0.0)
             up = 1.0 * (1.35 if fault == "fatigue" and k == 2 else 1.0)
-            down = 1.1 * (1.35 if fault == "tempo" and k == 2 else 1.0)
+            down = 1.1 * pace * (1.35 if fault == "tempo" and k == slow else 1.0)
             n = int(up * FS)
             u = np.arange(n) / n
             vv = np.sin(np.pi * u)
@@ -386,6 +389,8 @@ def selftest():
     # the slower descent, between the right two reps whatever is around it (four reviews' cases)
     T = lambda name, r, at, want=35, n=5: stands_out(f"tempo, {name}", r, "tempo_pct", want, 5, at, n)
     ok &= T("a squat with a box sit's wobble", lift_set("tempo", 4, box=True), 1)
+    ok &= T("a squat whose 2nd rep's lowering is the slow one (the set's tempo is its median, not a gap)",
+            lift_set("tempo", 21, slow=1), 0)
     ok &= T("a deadlift with a settle at lockout", lift_set("tempo", 5, "deadlift", top=False, settle=True), 2)
     ok &= T("a stack, the pod handled after it", lift_set("tempo", 6, "machine", top=False, handle=True), 2)
     ok &= T("an unnamed free weight lowered first (an RDL)", lift_set("tempo", 7, "free"), 1)
@@ -428,12 +433,14 @@ def selftest():
     ok &= known("two pieces with a 1 s stop between, partway down", split([hold(1.0)]), 2.2 - (0.6 - own(0.6)))
     ok &= known("two pieces with a 0.015 ROM bob up between: one lowering", split([-vel(0.0075, 0.1)]), 1.3 - (0.6 - own(0.6)))
     ok &= known("two pieces with a 0.03 ROM rise between: two", split([-vel(0.015, 0.1)]), own(0.6))
-    ok &= known("a 1 1/4 squat's descent, not its quarter", [hold(0.5), vel(0.5, 1.2), hold(0.05), -vel(0.125, 0.2),
-                                                           vel(0.125, 0.4), hold(0.1)], own(1.2))
+    ok &= known("a descent, not a smaller drop after a rise in the same gap", [hold(0.5), vel(0.5, 1.2), hold(0.05),
+                -vel(0.125, 0.2), vel(0.125, 0.4), hold(0.1)], own(1.2))
     ok &= known("a 0.07 ROM settle at the bottom isn't a piece", [hold(0.5), vel(0.3, 1.0), hold(0.2), vel(0.035, 0.3), hold(0.3)],
                 own(1.0))
     ok &= known("a 0.15 ROM sink after a 0.2 s stop is one", [hold(0.5), vel(0.3, 1.0), hold(0.2), vel(0.075, 0.25), hold(0.5)],
                 1.45 - (1.0 - own(1.0)) / 2 - (0.25 - own(0.25)) / 2)
+    ok &= known("no piece (two small sinks): the run holding the peak, not the bigger sink or the gap",
+                [hold(0.5), vel(0.04, 1.0), hold(0.3), vel(0.03, 0.2), hold(0.5)], own(0.2))
 
     # a session in several exports: the newest copy by its own time, not by the files' names, order or dates
     import base64
@@ -482,6 +489,25 @@ def selftest():
     ok &= good
     print(f"{'PASS' if good else 'FAIL'}  by exercise: the OHP isn't held against the curls (same profile and load); "
           f"the curl is, by name in any case")
+    # set to set and session to session, tempo a set's median lowering: 5 earlier sessions, one Back
+    # squat set each, lowering at 1.35, 1.35, 1, 1, 1 x the usual (the last 4 have a median of 1), then
+    # 3 sets at 1, 1, 1.35: set to set and against the baseline both [0, 0, +35]%, from 4 sessions
+    import re
+    bs = lambda i, s, p: ({"index": i, "exercise": "Back squat", "load": 225}, lift_set(None, s, pace=p))
+    hist = [({"id": f"e{k}"}, [bs(0, 30 + k, p)]) for k, p in enumerate([1.35, 1.35, 1, 1, 1])]
+    now = [({"id": "now"}, [bs(i, 40 + i, p) for i, p in enumerate([1, 1, 1.35])])]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        report(hist + now, None)
+    tail = buf.getvalue().split("== now", 1)[-1]
+    s2s = [float(m) for m in re.findall(r"    set \d: depth .*?tempo\s+([-+]\d+)%", tail)]
+    base = re.findall(r"against (\d+) earlier session\(s\) at similar load: depth .*?tempo\s+([-+]\d+)%", tail)
+    want = [0, 0, 35]
+    good = (len(s2s) == 3 and all(abs(a - b) <= 3 for a, b in zip(s2s, want)) and [int(n) for n, _ in base] == [4, 4, 4]
+            and all(abs(float(p) - b) <= 3 for (_, p), b in zip(base, want)))
+    ok &= good
+    print(f"{'PASS' if good else 'FAIL'}  tempo set to set {s2s} and against 4 earlier sessions {[float(p) for _, p in base]} "
+          f"(from {[int(n) for n, _ in base]}), want [0, 0, +35] each")
     print("PASS" if ok else "FAIL")
     return ok
 

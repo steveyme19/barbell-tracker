@@ -39,6 +39,7 @@ MIN_SETS = 2          # calibration sets per exercise before a line is fit
 NEAR = 3              # "near failure": RIR this or less, where the research expects ~1 rep of error
 FAIL_FRAC = 0.8       # a set to failure's "rep" rising less than this x the one before: the attempt that failed
 SPLIT_FRAC = 0.8      # a set to failure with a rep under this x its median ROM isn't labeled: a split grinder
+REST_MAX = 6.0        # s: a still between two reps of a set to failure this long is a rest (rest-pause, a cluster)
 
 
 def is_calibration(meta):
@@ -66,22 +67,28 @@ def labeled_reps(r):
     safeties set (section 5, step 1) a set can end with an attempt that failed, lowered onto them,
     and the leveling (which takes a barbell set's last still for a lockout, reps.py level_heights)
     lifts that attempt's top to lockout height so it reads as a full rep. On the plain heights
-    (drift taken out between stills, no leveling) it rises short:
-    - from lockout (a squat, a bench, an RDL, a curl from the rack): the first rep that rose under
-      FAIL_FRAC x the one before (rep 1: the lowering into it) and then came to rest low (below the
-      start, and back down at least half its own rise, which a grinder's sag isn't) ends the set,
-      wherever it is: the bar lifted back into the hooks afterwards is one more "rep";
+    (drift taken out between stills, no leveling) it rises short. A miss ends the set, so only the
+    last two reps can be one (after it at most a rerack, the bar put back into the hooks):
+    - from lockout (a squat, a bench, an RDL or a curl from the rack): a rep that rose under
+      FAIL_FRAC x the one before (rep 1: the lowering into it) and then came to rest low ends the
+      set there. "Low" is local, against the lockout just before it (the plain heights drift window
+      by window): below it by half the median rise, and back down at least half the rep's own rise
+      (defensive: reps.py keeps a dead-still stall inside its rep today, so none reaches it). The
+      stills it looks at stop where the bar is back at lockout: a low still after that is the next
+      rep's own pause in the hole, not the safeties.
     - from the bottom (a deadlift, a stack, an OHP from the shoulders, a pin squat: the first rep
       leaves the still the set starts in going up; by the data, not the profile, which a Romanian
       deadlift shares): every rep starts and ends there, so only the last is judged, against the one
-      before. A single from the bottom has nothing to be judged against and isn't labeled.
-    The "half its own rise" condition is defensive: reps.py keeps a grinder's dead-still stall in one
-    rep today (reading its ROM long, flagged 'uneven lockout'), so no stall reaches it.
+      before. A first rep the others start well above is the bar picked up from the floor (an RDL
+      pulled from the floor), not a rep. A single from the bottom has nothing to judge it by.
     A miss stuck in the hole rises under MIN_ROM and is no rep at all; one near lockout (0.8 x the
     rep before or more) can't be told from a short completed rep and is counted (its set's labels
-    read one high). Then a set with no completed rep (a missed single), or with a rep that never
-    went back down (it starts over halfway up the one before) or is much shorter than the others (a
-    grinder that sank 5+ cm and split in two), isn't labeled."""
+    read one high). A still of REST_MAX or longer between two reps is a rest (rest-pause, a cluster:
+    sets.py keeps under 15 s in one set): only the reps after the last one count down, since each
+    mini-set went to failure (dropping reps from the front never mislabels the rest). Then a set
+    with no completed rep (a missed single), or with a rep that never went back down (it starts over
+    halfway up the one before) or is much shorter than the others (a grinder that sank 5+ cm and
+    split in two), isn't labeled."""
     reps = S.closed_set_reps(r["reps"], r["lift"])
     if not reps:
         return None, "no reps"
@@ -91,18 +98,26 @@ def labeled_reps(r):
     x0 = x[r["runs"][0][1]]                                   # the still before the set
     half = 0.5 * float(np.median(rise))
     if x[reps[0]["start"]] - x0 > -half:
+        if len(reps) >= 2 and r["x"][reps[1]["start"]] - r["x"][reps[0]["start"]] > 0.25 * reps[1]["rom"]:
+            reps, rise = reps[1:], rise[1:]                   # picked up from the floor, then lowered first
         if len(reps) < 2:
             return None, "a single from the bottom: a made rep and a miss look alike"
         if rise[-1] < FAIL_FRAC * rise[-2]:
             reps = reps[:-1]
     else:
-        for k in range(len(reps)):
+        for k in range(max(0, len(reps) - 2), len(reps)):
             ref = rise[k - 1] if k else x0 - x[reps[0]["start"]]
             if rise[k] >= FAIL_FRAC * ref:
                 continue
+            top = x[reps[k - 1]["end"]] if k else x0          # the lockout just before it
             nxt = reps[k + 1]["start"] if k + 1 < len(reps) else len(x)
-            rest = [x[a] for a, _ in r["runs"] if reps[k]["end"] <= a < nxt]
-            if rest and min(rest) - x0 < -half and min(rest) < x[reps[k]["start"]] + 0.5 * rise[k]:
+            rest = []
+            for a, _ in r["runs"]:
+                if reps[k]["end"] <= a < nxt:
+                    if x[a] > top - (1 - FAIL_FRAC) * ref:
+                        break                                 # back at lockout
+                    rest.append(x[a])
+            if rest and min(rest) - top < -half and min(rest) < x[reps[k]["start"]] + 0.5 * rise[k]:
                 reps = reps[:k]
                 break
     if not reps:
@@ -111,7 +126,12 @@ def labeled_reps(r):
     stayed = any(r["x"][q["start"]] > r["x"][p["start"]] + 0.5 * p["rom"] for p, q in zip(reps, reps[1:]))
     if stayed or min(roms) < SPLIT_FRAC * float(np.median(roms)):
         return None, "a rep that never went back down, or much shorter than the others (a grinder that sank and split?)"
-    return reps, None
+    t, first = r["t"], 0
+    for k in range(1, len(reps)):
+        e, s0 = reps[k - 1]["end"], reps[k]["start"]
+        if any(t[min(hi, s0)] - t[max(lo, e)] >= REST_MAX for lo, hi in r["runs"] if lo < s0 and hi > e):
+            first = k
+    return reps[first:], None
 
 
 def collect(sessions):
@@ -284,17 +304,23 @@ def selftest():
     ease = lambda n: 0.5 - 0.5 * np.cos(np.pi * np.arange(n) / n)
     rng = np.random.default_rng(11)
 
-    def squat_set(mcvs, failed=0.0, sag=0.0, depths=None, stuck=False, rerack=False, stall=0.0, lift="squat"):
+    def squat_set(mcvs, failed=0.0, sag=0.0, depths=None, stuck=False, rerack=False, stall=0.0, lift="squat",
+                  pause=0.0, pins=0.0, bias=0.0, hold=1.0, end_hold=1.0):
         """Reps at these MCVs from lockout (depths: each rep's, else the ROM). failed: then an attempt
         up this fraction of the ROM, a stall, and the bar lowered onto safeties 3 cm under the
         bottom; stuck: an attempt that never leaves the bottom, onto them; rerack: after 5 s on them
         the bar lifted back into the hooks 5 cm under lockout. sag: the last rep stalls at 0.25 m,
         sinks this much and grinds on to lockout; stall: the last rep stops dead still for 0.8 s this
-        high, then grinds on to lockout."""
+        high, then grinds on to lockout. pause: every rep stops this long in the hole; pins: the bar
+        is then set on pins this far under lockout; bias: the accelerometer's bias wanders this much
+        (a 25 s sine), so the plain heights drift window by window; hold: each lockout's still (0:
+        touch and go at the top), end_hold: the last one's."""
         z = [np.full(int(2 * FS), ROM)]
         for j, v in enumerate(mcvs):
             d = depths[j] if depths else ROM
             z.append(ROM - d * ease(int(1.1 * FS)))
+            if pause:
+                z.append(np.full(int(pause * FS), ROM - d))
             if stall and j == len(mcvs) - 1:
                 z += [stall * ease(int(stall / v * FS)), np.full(int(0.8 * FS), stall),
                       stall + (ROM - stall) * ease(int((ROM - stall) / v * FS))]
@@ -308,7 +334,7 @@ def selftest():
                 vv = np.sin(np.pi * u)
                 x = np.concatenate([[0.0], np.cumsum(vv)[:-1]])
                 z.append(ROM - d + d * x / (x[-1] + vv[-1]))
-            z.append(np.full(int(1.0 * FS), ROM))
+            z.append(np.full(int((hold if j < len(mcvs) - 1 else end_hold) * FS), ROM))
         end = ROM
         if failed or stuck:
             z.append(ROM - ROM * ease(int(1.1 * FS)))
@@ -321,11 +347,73 @@ def selftest():
             if rerack:
                 z += [np.full(int(5 * FS), -0.03), -0.03 + (ROM - 0.02) * ease(int(1.5 * FS))]
                 end = ROM - 0.05
+        if pins:
+            z.append(ROM - pins * ease(int(1.0 * FS)))
+            end = ROM - pins
         z.append(np.full(int(2 * FS), end))
         z = np.concatenate(z)
         t = np.arange(len(z)) / FS
-        a = G + np.gradient(np.gradient(z, t), t) + 0.03 * rng.standard_normal(len(t))
+        a = G + np.gradient(np.gradient(z, t), t) + 0.03 * rng.standard_normal(len(t)) + bias * np.sin(2 * np.pi * t / 25)
         return C.R.analyze(t, a, lift)
+
+    def spliced_miss(path, frac=0.4, depth=0.64):
+        """A real recording with a miss spliced into its last still, 1 s in: lowered `depth`, up
+        `frac` of it, a 0.3 s stall, onto safeties 3 cm under the bottom, then 3 s of that still's own
+        samples (a still reads the same at any height). Its plain heights drift across the set as
+        real ones do (2131: its lockouts read up to +0.56 m against the first still)."""
+        t, a = C.R.load_phyphox(path, C.R.AXIS)
+        acc, gyro = C.R.load_imu(path, len(t))
+        dt = float(np.median(np.diff(t)))
+        s0, e0 = C.R.analyze(t, a, "squat", acc, gyro)["runs"][-1]
+        cut = s0 + int(1.0 / dt)
+        still = np.arange(s0, e0 + 1)
+        h = frac * depth
+        e = lambda d: 0.5 - 0.5 * np.cos(np.pi * np.arange(int(d / dt)) / int(d / dt))
+        z = np.concatenate([-depth * e(1.1), -depth + h * e(0.8), np.full(int(0.3 / dt), h - depth), h - depth - (h + 0.03) * e(0.6)])
+        tz = dt * np.arange(len(z))
+        noise = a[still] - a[still].mean()
+        a2 = a[still].mean() + np.gradient(np.gradient(z, tz), tz) + noise[np.arange(len(z)) % len(noise)]
+        after = still[np.arange(int(3.0 / dt)) % len(still)]           # the still's own samples, repeated
+        idx = np.concatenate([np.arange(cut), np.full(len(z), cut), after])
+        a_all = np.concatenate([a[:cut], a2, a[after]])
+        t_all = t[0] + dt * np.arange(len(a_all))
+        pick = lambda m: None if m is None else m[idx]
+        return C.R.analyze(t_all, a_all, "squat", pick(acc), pick(gyro))
+
+    def rest_pause(minis, rest=10.0):
+        """Mini-sets from lockout, each to failure (its last rep at the RIR 0 speed), the bar reracked
+        5 cm down into the hooks for `rest` s between them."""
+        z = [np.full(int(2 * FS), ROM)]
+        for m, n_reps in enumerate(minis):
+            if m:
+                z += [ROM - 0.05 * ease(int(0.4 * FS)), np.full(int(rest * FS), ROM - 0.05), ROM - 0.05 + 0.05 * ease(int(0.4 * FS)),
+                      np.full(int(1.0 * FS), ROM)]
+            for v in [V1 + DV * (n_reps - k) for k in range(1, n_reps + 1)]:
+                n = int(ROM / v * FS)
+                u = np.arange(n) / n
+                vv = np.sin(np.pi * u)
+                x = np.concatenate([[0.0], np.cumsum(vv)[:-1]])
+                z += [ROM - ROM * ease(int(1.1 * FS)), ROM * x / (x[-1] + vv[-1]), np.full(int(1.0 * FS), ROM)]
+        z.append(np.full(int(2 * FS), ROM))
+        z = np.concatenate(z)
+        t = np.arange(len(z)) / FS
+        return C.R.analyze(t, G + np.gradient(np.gradient(z, t), t) + 0.03 * rng.standard_normal(len(t)), "squat")
+
+    def rdl_from_floor(mcvs):
+        """A Romanian deadlift (tracked as a deadlift) pulled from the floor: the pickup to lockout
+        (0.55 m), then RDLs of 0.40 m from lockout, then the bar set back down."""
+        top, d = 0.55, 0.40
+        z = [np.zeros(int(2 * FS)), top * ease(int(1.2 * FS)), np.full(int(1.5 * FS), top)]
+        for v in mcvs:
+            n = int(d / v * FS)
+            u = np.arange(n) / n
+            vv = np.sin(np.pi * u)
+            x = np.concatenate([[0.0], np.cumsum(vv)[:-1]])
+            z += [top - d * ease(int(1.2 * FS)), top - d + d * x / (x[-1] + vv[-1]), np.full(int(1.0 * FS), top)]
+        z += [top * (1 - ease(int(1.2 * FS))), np.zeros(int(2 * FS))]
+        z = np.concatenate(z)
+        t = np.arange(len(z)) / FS
+        return C.R.analyze(t, G + np.gradient(np.gradient(z, t), t) + 0.03 * rng.standard_normal(len(t)), "deadlift")
 
     def pull_set(mcvs, lift, failed=0.0, partial=None):
         """Reps from the bottom at these MCVs (a deadlift from the floor, a stack): up, 0.5 s at the
@@ -464,7 +552,24 @@ def selftest():
              ("a missed single on a stack (to 60% and back)", pull_set([], "machine", failed=0.6), None),
              ("a made deadlift single (from the bottom: nothing to judge it against)", pull_set([0.25], "deadlift"), None),
              ("6 on a stack, the 4th only 60% of the way", pull_set(nine[3:], "machine", partial=3), None),
-             ("9 squats, the last stopping dead still 0.8 s at 0.20 m and grinding on", squat_set(nine, stall=0.20), 9)]
+             ("9 squats, the last stopping dead still 0.8 s at 0.20 m and grinding on", squat_set(nine, stall=0.20), 9),
+             ("9 squats paused 1 s in the hole, the 7th and 8th 0.62 and 0.48 m deep",
+              squat_set(nine, depths=[ROM] * 6 + [0.62, 0.48, ROM], pause=1.0), 9),
+             ("9 squats paused 1 s in the hole, touch and go at the top, the 5th and 6th 0.62 and 0.48 m deep",
+              squat_set(nine, depths=[ROM] * 4 + [0.62, 0.48] + [ROM] * 3, pause=1.0, hold=0.0), 9),
+             ("8 squats paused 1 s, the 5th and 6th 0.62 and 0.48 m deep, then a miss to 40%",
+              squat_set(nine[1:], depths=[ROM] * 4 + [0.62, 0.48, ROM, ROM], pause=1.0, failed=0.4), 8),
+             ("9 squats, the 5th and 6th 0.62 and 0.48 m deep, then a miss to 70%",
+              squat_set(nine, depths=[ROM] * 4 + [0.62, 0.48] + [ROM] * 3, failed=0.7), 9),
+             ("9 squats, the last two 0.62 and 0.48 m deep, set straight down on pins 0.25 m under lockout",
+              squat_set(nine, depths=[ROM] * 7 + [0.62, 0.48], pins=0.25, end_hold=0.0), 9),
+             ("9 squats, a miss to 55%, the sensor's bias wandering 0.05 m/s^2", squat_set(nine, failed=0.55, bias=0.05), 9),
+             ("a rest-pause, 6 + 3 + 2 with 10 s in the hooks: only the last mini-set", rest_pause([6, 3, 2]), 2),
+             ("6 Romanian deadlifts (tracked as a deadlift) pulled from the floor: the pickup isn't one",
+              rdl_from_floor(nine[3:]), 6)]
+    real = Path(__file__).parent / "data" / "bar-squat-2026-10-16-2131.csv"
+    if real.exists():                                         # the real drift: 5 squats on the phone's own sensors
+        cases.append(("the real squat 2131 with a miss to 40% spliced on (its heights drift +0.56 m)", spliced_miss(real), 5))
     for name, r, want in cases:
         got = n_of(r)
         good = got == want if want is not None else isinstance(got, str)

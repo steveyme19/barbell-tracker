@@ -97,7 +97,7 @@ filter first (D31). With no Smith-machine floor yet every deviation is shown, no
 faults above (5 cm short, a mid-rep hitch, a slower descent): each stands out on its own
 measure by 100x or more, and the slower descent reads its true 35% in the right gap on 11
 lifts and endings; each of lowering()'s thresholds, moved either way, fails an exact-number
-check. Path deviations wait for orientation on real bar data (0.3, D33).
+check, and so does a wrong set-to-set or session tempo. Path deviations wait for orientation on real bar data (0.3, D33).
 
 ## 3. Depth check
 
@@ -187,18 +187,19 @@ is small, so no machine learning.
 
 **Built in Python** (roadmap 5.4, `analysis/rpe.py`, D36), reading app exports (D30): steps
 2 to 6 above. A set to failure is one with "Your RPE" 10 (the app has no failure mark yet);
-the attempt that failed onto the safeties isn't counted (nor a rerack after it), and a set
-with no completed rep, a single from the bottom, or a grinder that sank and split isn't
-labeled; a miss near lockout (0.8 of the rep before or more) is counted, a limit until a rep
-can be marked as not one. A rep reps.py flags 'uneven lockout' keeps its place in the count
+the attempt that failed onto the safeties isn't counted (nor a rerack after it), only the
+last mini-set of a rest-pause counts down, and a set with no completed rep, a single from the
+bottom, or a grinder that sank and split isn't labeled; a miss near lockout (0.8 of the rep
+before or more) is counted, a limit until a rep can be marked as not one. A rep reps.py flags 'uneven lockout' keeps its place in the count
 but not its MCV. Per exercise name: RIR from MCV by least squares predicts; your MCV at
 failure and per rep in reserve (the two numbers v0 guesses, so a fit can replace them) come
 from MCV on RIR, unbiased by MCV noise. Leave one session out, near failure (RIR 0-3) and
 further, naming any session the others can't check; step 3's "one line across loads?"
 within a session that took 2+ loads to failure (across days a load is also its day); each
 normal set's range on the 5..10 scale next to your call. `--selftest`: a synthetic squatter
-with a known line and day-to-day offsets, through the raw-signal pipeline, 15 sets to
-failure whose completed reps are known, and exact checks of each piece; 26 of 27 mutations (a rep,
+with a known line and day-to-day offsets, through the raw-signal pipeline, 24 sets to
+failure whose completed reps are known (one a real recording with a miss spliced on), and
+exact checks of each piece; 34 of 35 mutations (a rep,
 a set or a session the fit saw leaking into its check, labels off by one, each labeling rule
 off or forced, each fix undone) fail it. Waits for your sets to failure.
 

@@ -499,31 +499,43 @@ in a squat with a box sit's wobble, a deadlift with a settle, a stack handled af
 an unnamed RDL, a Romanian deadlift, a pin squat, a row with a hinge, a curl from a high rack, a
 Romanian deadlift set down on the floor, a lunge with the pod unclipped, a lunge cut off mid-rep, and
 +44% / +126% when it also stops 0.1 / 1.0 s partway; a curl and an OHP at one load must not mix; a
-session in three exports keeps its newest copy whatever the names, order and file dates. Then
-lowering() on exact numbers, the 0.03 by hand: each threshold halved and doubled, the biggest drop
-swapped for the peak run or the first or last piece, joining off or time-limited, the gap's 3% for
-its own, and every export sort but the right one fail it (21 mutations; one survives: the smaller
-neighbour's ROM against the larger, which no case tells apart and which differ by a few % in
-practice).
+session in three exports keeps its newest copy whatever the names, order and file dates; set to
+set and against 4 earlier sessions, a set lowered 35% slower reads +35% (the set's tempo is its
+median lowering, the baseline the last 4 sessions). Then lowering() on exact numbers, the 0.03 by
+hand, its no-piece fallback included. 30 of 31 mutations fail it (each threshold halved and doubled,
+the biggest drop swapped for the peak run or the first or last piece, joining off or time-limited,
+the gap's 3% for its own, the fallback changed, a set's or a stack's tempo or the baseline's
+sessions wrong, every export sort but the right one); one survives: the smaller neighbour's ROM
+against the larger, which no case tells apart and which differ by a few % in practice.
 *Open (reps.py, not this):* a dead-still stop of 0.5 s or more partway down, or a grinder's dead-still
 stall, is a still to reps.py, and the squat's leveling takes it for a lockout: that rep's ROM reads
 ~25% long (flagged 'uneven lockout'; item H of the first bug hunt). And a curl from a rack well above
 the hang: the lift back onto the hooks is kept as one more rep (the rack filter, D31, can't tell a
-0.35 m rerack from a 0.40 m curl).
+0.35 m rerack from a 0.40 m curl). And a 1 1/4 rep: its quarter rises MIN_ROM or more, so reps.py
+counts it as a rep (5 squats read 10, the last full one then dropped as handling) and consistency
+compares quarters with full reps (depth +41 cm every other rep, the gaps alternating about 60%).
 
 **D36 (2026-10-27): RPE v1 (Python) labels reps from sets with "Your RPE" 10, fits per exercise
 name, and is only ever checked on sessions it wasn't fit on.**
 - analysis/rpe.py: a set to failure (Your RPE >= 10, or a `toFailure` mark if a set ever has one)
   labels rep k of its N completed reps with N - k in reserve. Which reps completed (`labeled_reps`),
-  on heights without the leveling (which stretches a miss's top to lockout): from lockout (squat,
-  bench, an RDL, a curl from the rack) the first rep that rose under 0.8 x the one before (rep 1:
-  the lowering into it) and then came to rest low (the safeties) ends the set, so a rerack after it
-  goes too; from the bottom (a deadlift, a stack, an OHP, a pin squat; by the data, which a Romanian
-  deadlift doesn't share with a deadlift) only the last rep is judged, and a single isn't labeled.
-  A set with no completed rep, or a rep that never went back down or is under 0.8 x the median ROM
-  (a grinder that sank and split), isn't labeled, and the report says why. A labeled rep flagged
-  'uneven lockout' keeps its place in the count but its MCV isn't used (a dead-still stall, a miss
-  after short lockout holds: heights the leveling couldn't make agree).
+  on heights without the leveling (which stretches a miss's top to lockout). A miss ends the set, so
+  only the last two reps can be one (at most a rerack after it). From lockout (squat, bench, an RDL
+  or a curl from the rack): a rep that rose under 0.8 x the one before (rep 1: the lowering into
+  it) and then came to rest low ends the set there. "Low" is local, against the lockout just before
+  it (plain heights drift window by window: on the real squat 2131 its lockouts read up to +0.56 m
+  against the first still, so a miss spliced on read -0.07 m there for a true -0.67); the stills it
+  looks at stop where the bar is back at lockout (a low still after that is the next rep's pause in
+  the hole, which cut a paused set at a shallow completed rep). From the bottom (a deadlift, a
+  stack, an OHP, a pin squat; by the data, which a Romanian deadlift doesn't share with a deadlift)
+  only the last rep is judged; a first rep the others start well above is the bar picked up from
+  the floor; a single isn't labeled. A still of 6 s or more between two reps is a rest (rest-pause,
+  a cluster: sets.py keeps under 15 s in one set): only the reps after the last one count down
+  (dropping reps from the front never mislabels the rest). A set with no completed rep, or a rep
+  that never went back down or is under 0.8 x the median ROM (a grinder that sank and split), isn't
+  labeled, and the report says why. A labeled rep flagged 'uneven lockout' keeps its place in the
+  count but its MCV isn't used (a dead-still stall, a miss after short lockout holds: heights the
+  leveling couldn't make agree).
 - Per exercise (typed name, like consistency.py): RIR = a + b x MCV by least squares predicts; the
   reported pair, the MCV at RIR 0 and per rep in reserve (v0's two numbers), is MCV on RIR, since
   the labels are exact and the noise is in MCV (the predictor inverted reads the MCV at failure low:
@@ -539,9 +551,11 @@ name, and is only ever checked on sessions it wasn't fit on.**
 RPE 10 means 0 reps left, which is the label; a separate "to failure" box would be more objective
 (an attempted rep that failed), so the code already reads one. Leave one session out because reps
 in one set are near copies and day-to-day shifts are the error that matters.
-*Amended 2026-10-27 (two reviews, 13 + 7 findings, 0 refuted):* the failed attempt was a rep and
-shifted every label, and the first fix missed it on lifts from the bottom, a missed single, a split
-single or double, and a rerack after the miss; the pair was the predictor inverted; validation
+*Amended 2026-10-27 (three reviews, 13 + 7 + 7 findings, 0 refuted):* the failed attempt was a rep
+and shifted every label, and the first fix missed it on lifts from the bottom, a missed single, a
+split single or double, and a rerack after the miss; then a paused set's next pause read as the
+safeties, the drift across a real set hid them, a rest-pause was labeled as one countdown and an RDL
+pulled from the floor kept its pickup; the pair was the predictor inverted; validation
 skipped sessions silently with a wrong reason; the bias used estimates off the 5..10 scale; the
 width rounded under the error; the per-load residuals were day offsets; the self-test's guards
 missed partial leaks and every case where a rule must not fire.
@@ -553,14 +567,16 @@ reaches it.
 *Guarded by* rpe.py --selftest: the raw-signal squatter (a failed attempt on the safeties, a
 second set to failure in one session, a split grinder, a set called 9.5, a warm-up called 5)
 recovers 0.241 / 0.0452 from 44 labels, its held-out errors must equal leave one session out
-recomputed independently (0.21 reps), 10 of 10 ranges hold the truth; 15 sets to failure whose
-completed reps are known (misses at 55-70%, stuck in the hole, a short last rep racked, a rerack
-after a miss, a Romanian deadlift tracked as a deadlift, missed and made singles, a split single,
-deadlifts and a stack with and without a miss, a half rep mid-set, a dead-still stall set aside);
-exact checks of the pair under noise, the width, both clamps, loads by number and the per-load
-rule. Of 27 mutations (leave a rep or set out, in-sample, labels +/-1, RPE 9 as failure, FAIL_FRAC
-either way, each branch and check of the labeling off or forced, each fix undone) 26 fail it; the
-defensive condition above survives, as it must. *Open:* the to-failure box in the app; whether one
+recomputed independently (0.21 reps), 10 of 10 ranges hold the truth; 24 sets to failure whose
+completed reps are known (misses at 40-70%, stuck in the hole, a short last rep racked or set on
+pins, a rerack after a miss, a Romanian deadlift tracked as a deadlift reracked or pulled from the
+floor, missed and made singles, a split single, deadlifts and a stack with and without a miss, a
+half rep mid-set, a dead-still stall set aside, paused sets with a shallow pair, touch and go or
+not, a rest-pause, a wandering bias, and the real squat 2131 with a miss spliced on); exact checks of
+the pair under noise, the width, both clamps, loads by number and the per-load rule. Of 35
+mutations (leave a rep or set out, in-sample, labels +/-1, RPE 9 as failure, FAIL_FRAC and REST_MAX
+either way, each branch, window and check of the labeling off, forced or widened, each fix undone)
+34 fail it; the defensive condition above survives, as it must. *Open:* the to-failure box in the app; whether one
 line fits every load (needs 2+ loads to failure in one session).
 
 ## Proposed (say yes or no)
