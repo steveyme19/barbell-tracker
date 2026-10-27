@@ -525,7 +525,8 @@ name, and is only ever checked on sessions it wasn't fit on.**
     single isn't labeled. A first rep the next starts well above is the bar picked up from the
     floor: it goes, and the rest is judged as a set from lockout (an RDL's depth is its own).
   - From lockout (squat, bench, an RDL or a curl from the rack): a last "rep" rising from a still in
-    the hole 2.5 s longer than any pause before is the bar lifted off the safeties into the hooks
+    the hole 2.5 s longer than any pause before (stills at one height across a nudge joined, as for
+    rests) is the bar lifted off the safeties into the hooks
     (after a miss stuck in the hole, no rep to reps.py, or the bar set down). Then only the last two
     reps can be a miss (a miss ends the set): one that rose under 0.8 x the rep before and under
     0.8 x its own lowering (a short completed rep rises back up all of it, a miss doesn't, with or
@@ -557,15 +558,16 @@ name, and is only ever checked on sessions it wasn't fit on.**
 RPE 10 means 0 reps left, which is the label; a separate "to failure" box would be more objective
 (an attempted rep that failed), so the code already reads one. Leave one session out because reps
 in one set are near copies and day-to-day shifts are the error that matters.
-*Amended 2026-10-27 (four reviews, 13 + 7 + 7 + 8 findings, 0 refuted):* the failed attempt was a
-rep and shifted every label, and each fix met a new ending: lifts from the bottom, a missed single,
+*Amended 2026-10-27 (five reviews, 13 + 7 + 7 + 8 + 4 findings, 0 refuted):* the failed attempt
+was a rep and shifted every label, and each fix met a new ending: lifts from the bottom, a missed single,
 a split single or double, a rerack after a miss or after a set-down, a paused or touch-and-go set
 with a shallow completed rep, a short last rep set onto the safeties, the drift across a real set,
 a rest-pause (also with its rests split by a nudge, or real 8 cm hooks), an RDL or a row pulled from
 the floor; the pair was the predictor inverted; validation skipped sessions silently with a wrong
 reason; the bias used estimates off the 5..10 scale; the width rounded under the error; the
 per-load residuals were day offsets; the self-test's guards missed partial leaks and every case
-where a rule must not fire.
+where a rule must not fire; the rerack rule timed single stills while the rest rule joined them, so
+a still on the safeties split by a bump left only the rerack labeled.
 *Limits:* a miss near lockout (rising 0.8 x the rep before or more) can't be told from a short
 completed rep on these heights and is counted, so that set's labels read one high. A row's slow
 stand-up (under 1.5 x the last row's speed) or a curl's rerack is kept as a rep (the D31 rack filter
@@ -576,19 +578,23 @@ failure" box and a confirm of the reps completed on a set called RPE 10 (open, Q
 *Guarded by* rpe.py --selftest: the raw-signal squatter (a failed attempt on the safeties, a
 second set to failure in one session, a split grinder, a set called 9.5, a warm-up called 5)
 recovers 0.241 / 0.0452 from 44 labels, its held-out errors must equal leave one session out
-recomputed independently (0.21 reps), 10 of 10 ranges hold the truth; 36 sets to failure whose
-completed reps are known (misses at 40-70%, stuck in the hole, reracked after 1.5, 3, 5 or 8 s, a
+recomputed independently (0.21 reps), 10 of 10 ranges hold the truth, 20 of them near failure;
+42 sets to failure whose completed reps are known (misses at 40-70%, stuck in the hole, reracked
+after 1.5, 3, 5 or 8 s or after 6.5 s split by two bumps, a
 short last rep racked, on pins or onto squat-height safeties, a Romanian deadlift tracked as a
 deadlift reracked or pulled from the floor at varying depths, missed and made singles, a split
 single, deadlifts and a stack with and without a miss, a half rep mid-set, a dead-still stall set
-aside, paused sets with a shallow pair, touch and go or not, 4 s breaths at lockout, rest-pauses
-standing, in 8 cm hooks and split by a nudge, a row from the floor with its stand-up, a fast last
-rep near failure, a wandering bias, and the real squat 2131 with a miss spliced in); exact checks of
-the pair under noise, the width, both clamps, loads by number and the per-load rule. Of 43
-mutations (leave a rep or set out, in-sample, labels +/-1, RPE 9 as failure, the previous rule,
-each constant either way, each branch, window and check of the labeling off, forced or widened,
-each fix undone) 42 fail it; the one survivor, "low" by any amount instead of by half the median
-rise, reads every realistic input the same (after a miss the bar only goes down). *Open:* the
+aside, paused sets with a shallow pair, touch and go or not, a pause squat held 3 s every rep, a
+last rep held 2 s in the hole, 4 s breaths at lockout with and without a pause in the hole, a half
+rep second to last, rest-pauses standing, in 8 cm hooks, split by a nudge or by a re-grip, a row
+from the floor with its stand-up, a fast last rep near failure, a wandering bias, and the real squat
+2131 with a miss spliced in); exact checks of the pair under noise, the width, both clamps, loads
+by number and the per-load rule. Of 53 mutations (leave a rep or set out, in-sample, labels +/-1,
+RPE 9 as failure, the previous commit's rule, FAIL_FRAC, REST_MAX, SET_DOWN, FAST_FRAC, NEAR and
+JOIN_GAP lowered, each branch, window and check of the labeling off, forced or widened, each fix
+undone) 51 fail it. Two survive, both read every realistic input the same: "low" by any amount
+instead of by half the median rise (after a miss the bar only goes down), and JOIN_GAP raised (in
+a gap between two reps there's no rep, so stills at one height around any fidget are one rest). *Open:* the
 to-failure box in the app; whether one line fits every load (needs 2+ loads to failure in one
 session).
 

@@ -107,6 +107,21 @@ def labeled_reps(r):
     rise = [x[p["end"]] - x[p["start"]] for p in reps]
     x0 = x[r["runs"][0][1]]                                   # the still before the set
     half = 0.5 * float(np.median(rise))
+
+    def stills(e, s0):
+        """The stills between samples e and s0, those at one height across a nudge (a re-grip, a
+        bump: under JOIN_GAP s and MIN_ROM apart) joined into one, as (first, last)."""
+        out = []
+        for lo, hi in r["runs"]:
+            if not (lo < s0 and hi > e):
+                continue
+            lo, hi = max(lo, e), min(hi, s0)
+            if out and t[lo] - t[out[-1][1]] <= JOIN_GAP and abs(x[lo] - x[out[-1][1]]) < C.R.MIN_ROM:
+                out[-1] = (out[-1][0], hi)
+            else:
+                out.append((lo, hi))
+        return out
+
     from_bottom = x[reps[0]["start"]] - x0 > -half
     if from_bottom and len(reps) >= 2 and r["x"][reps[1]["start"]] - r["x"][reps[0]["start"]] > 0.25 * reps[1]["rom"]:
         x0 = x[reps[0]["end"]]                                # picked up from the floor, then lowered first
@@ -122,8 +137,7 @@ def labeled_reps(r):
             """The longest still in the hole between the rep before (or the set's start) and rep k."""
             e, s0 = (reps[k - 1]["end"] if k else r["runs"][0][1]), reps[k]["start"]
             top = x[reps[k - 1]["end"]] if k else x0
-            return max([t[min(hi, s0)] - t[max(lo, e)] for lo, hi in r["runs"]
-                        if lo < s0 and hi > e and x[max(lo, e)] - top < -half], default=0.0)
+            return max([t[hi] - t[lo] for lo, hi in stills(e, s0) if x[lo] - top < -half], default=0.0)
         if len(reps) >= 2 and held(len(reps) - 1) >= SET_DOWN + max(held(k) for k in range(len(reps) - 1)):
             reps, rise = reps[:-1], rise[:-1]                 # the bar lifted off the safeties
         for k in range(max(0, len(reps) - 2), len(reps)):
@@ -142,19 +156,8 @@ def labeled_reps(r):
         return None, "no completed rep (a missed single?)"
     first, med = 0, float(np.median([p["rom"] for p in reps]))
     for k in range(1, len(reps)):
-        e, s0 = reps[k - 1]["end"], reps[k]["start"]
-        span = None                                           # the rest so far: stills at one height
-        for lo, hi in r["runs"]:
-            if not (lo < s0 and hi > e):
-                continue
-            lo, hi = max(lo, e), min(hi, s0)
-            if span and t[lo] - t[span[1]] <= JOIN_GAP and abs(x[lo] - x[span[1]]) < C.R.MIN_ROM:
-                span = (span[0], hi)                          # a nudge (a re-grip, a bump): still the one rest
-            else:
-                span = (lo, hi)
-            if t[span[1]] - t[span[0]] >= REST_MAX:
-                first = k + (reps[k]["rom"] < SPLIT_FRAC * med)   # a short rep after it: the lift out of the hooks
-                break
+        if any(t[hi] - t[lo] >= REST_MAX for lo, hi in stills(reps[k - 1]["end"], reps[k]["start"])):
+            first = k + (reps[k]["rom"] < SPLIT_FRAC * med)   # a short rep after it: the lift out of the hooks
     reps = reps[first:]
     if not reps:
         return None, "no completed rep after the last rest"
@@ -336,7 +339,8 @@ def selftest():
     rng = np.random.default_rng(11)
 
     def squat_set(mcvs, failed=0.0, sag=0.0, depths=None, stuck=False, rerack=False, stall=0.0, lift="squat",
-                  pause=0.0, pins=0.0, bias=0.0, hold=1.0, end_hold=1.0, on=5.0, half_at=None):
+                  pause=0.0, pins=0.0, bias=0.0, hold=1.0, end_hold=1.0, on=5.0, half_at=None, nudges=(),
+                  last_pause=0.0):
         """Reps at these MCVs from lockout (depths: each rep's, else the ROM). failed: then an attempt
         up this fraction of the ROM, a stall, and the bar lowered onto safeties 3 cm under the
         bottom; stuck: an attempt that never leaves the bottom, onto them; rerack: after `on` s on
@@ -346,13 +350,15 @@ def selftest():
         is then set on pins this far under lockout; bias: the accelerometer's bias wanders this much
         (a 25 s sine), so the plain heights drift window by window; hold: each lockout's still (0:
         touch and go at the top), end_hold: the last one's. half_at: that rep first goes 40% up and
-        sinks back to a 1 s pause in the hole, then is made."""
+        sinks back to a 1 s pause in the hole, then is made. nudges: 5 mm bumps (0.6 s) this many
+        s into the still on the safeties; last_pause: the last rep alone held this long in the hole."""
         z = [np.full(int(2 * FS), ROM)]
         for j, v in enumerate(mcvs):
             d = depths[j] if depths else ROM
             z.append(ROM - d * ease(int(1.1 * FS)))
-            if pause:
-                z.append(np.full(int(pause * FS), ROM - d))
+            p_hole = pause + (last_pause if j == len(mcvs) - 1 else 0.0)
+            if p_hole:
+                z.append(np.full(int(p_hole * FS), ROM - d))
             if j == half_at:
                 h = 0.4 * d
                 z += [ROM - d + h * ease(int(0.8 * FS)), np.full(int(0.3 * FS), ROM - d + h),
@@ -381,7 +387,11 @@ def selftest():
                 z += [np.zeros(int(0.6 * FS)), -0.03 * ease(int(0.4 * FS))]
             end = -0.03
             if rerack:
-                z += [np.full(int(on * FS), -0.03), -0.03 + (ROM - 0.02) * ease(int(1.5 * FS))]
+                rest = np.full(int(on * FS), -0.03)
+                for tn in nudges:
+                    i, m = int(tn * FS), int(0.6 * FS)
+                    rest[i:i + m] += 0.0025 * (1 - np.cos(2 * np.pi * np.arange(m) / m))
+                z += [rest, -0.03 + (ROM - 0.02) * ease(int(1.5 * FS))]
                 end = ROM - 0.05
         if pins:
             z.append(ROM - pins * ease(int(1.0 * FS)))
@@ -416,17 +426,18 @@ def selftest():
         pick = lambda m: None if m is None else m[idx]
         return C.R.analyze(t_all, a_all, "squat", pick(acc), pick(gyro))
 
-    def rest_pause(minis, rest=10.0, drop=0.05, nudge=False):
+    def rest_pause(minis, rest=10.0, drop=0.05, nudge=0.0, bumps=1):
         """Mini-sets from lockout, each to failure (its last rep at the RIR 0 speed), the bar reracked
         `drop` down into the hooks for `rest` s between them (real hooks need 6-10 cm, so the lift out
-        is a rep to reps.py; nudge: a 5 mm shift for 0.6 s, 4.5 s into each rest, splitting its still)."""
+        is a rep to reps.py; nudge: `bumps` 5 mm shifts over this long, 4.5 s into each rest, splitting
+        its still: one over 0.6 s leaves a 0.5 s gap, two over 1.2 s (a re-grip) a 1.05 s one)."""
         z = [np.full(int(2 * FS), ROM)]
         for m, n_reps in enumerate(minis):
             if m:
                 hooks = np.full(int(rest * FS), ROM - drop)
                 if nudge:
-                    i = int(4.5 * FS)
-                    hooks[i:i + int(0.6 * FS)] += 0.0025 * (1 - np.cos(2 * np.pi * np.arange(int(0.6 * FS)) / int(0.6 * FS)))
+                    i, m = int(4.5 * FS), int(nudge * FS)
+                    hooks[i:i + m] += 0.0025 * (1 - np.cos(2 * np.pi * bumps * np.arange(m) / m))
                 z += [ROM - drop * ease(int(0.5 * FS)), hooks, ROM - drop + drop * ease(int(0.5 * FS)),
                       np.full(int(1.0 * FS), ROM)]
             for v in [V1 + DV * (n_reps - k) for k in range(1, n_reps + 1)]:
@@ -540,6 +551,7 @@ def selftest():
             b, a = np.polyfit([r[4] for r in tr], [r[3] for r in tr], 1)
             ref += [abs(a + b * r[4] - r[3]) for r in cal if r[0] == s_out]
         same = len(ref) == len(sq["near"] + sq["far"]) and np.allclose(sorted(ref), sorted(sq["near"] + sq["far"]), atol=1e-9)
+        check(len(sq["near"]) == 20, f"near failure is RIR 0-{NEAR}: {len(sq['near'])} reps (4 per set to failure, 5 sets)")
         check(same and not sq["skipped"] and held < 0.75 and held > own,
               f"leave one session out: {held:.2f} reps over {len(ref)} reps, the same as recomputed, under 0.75 and over "
               f"the fit's own {own:.2f}")
@@ -630,7 +642,7 @@ def selftest():
              ("9 squats, a miss to 55%, the sensor's bias wandering 0.05 m/s^2", squat_set(nine, failed=0.55, bias=0.05), 9),
              ("a rest-pause, 6 + 3 + 2 with 10 s in the hooks: only the last mini-set", rest_pause([6, 3, 2]), 2),
              ("a rest-pause, reracked 8 cm deep into real hooks (the lift out is a rep)", rest_pause([6, 3, 2], drop=0.08), 2),
-             ("a rest-pause whose rests a 5 mm nudge splits", rest_pause([6, 3, 2], nudge=True), 2),
+             ("a rest-pause whose rests a 5 mm nudge splits", rest_pause([6, 3, 2], nudge=0.6), 2),
              ("9 squats, a miss stuck in the hole, 3 s on the safeties, reracked", squat_set(nine, stuck=True, rerack=True, on=3.0), 9),
              ("9 squats, a miss stuck in the hole, 8 s on the safeties, reracked", squat_set(nine, stuck=True, rerack=True, on=8.0), 9),
              ("9 squats paused 1 s in the hole, touch and go at the top, the 7th and 8th 0.62 and 0.48 m deep",
@@ -645,7 +657,18 @@ def selftest():
              ("9 squats, the last 1.3x faster than the one before (noise near failure): kept",
               squat_set(nine[:8] + [1.3 * nine[7]]), 9),
              ("6 Romanian deadlifts (tracked as a deadlift) pulled from the floor: the pickup isn't one",
-              rdl_from_floor(nine[3:]), 6)]
+              rdl_from_floor(nine[3:]), 6),
+             ("9 squats, a miss stuck in the hole, 6.5 s on the safeties nudged at 2 and 4 s, reracked",
+              squat_set(nine, stuck=True, rerack=True, on=6.5, nudges=(2.0, 4.0)), 9),
+             ("9 squats paused 1 s in the hole, 4 s breaths at every lockout (two stills, not one rest)",
+              squat_set(nine, hold=4.0, pause=1.0), 9),
+             ("9 pause squats, 3 s in the hole every rep (the rerack rule is against the set's own pauses)",
+              squat_set(nine, pause=3.0), 9),
+             ("9 squats, the last held 2 s in the hole before grinding up (not a rerack)", squat_set(nine, last_pause=2.0), 9),
+             ("9 squats, the 8th first 40% up and back to a 1 s pause in the hole: refused, not cut there",
+              squat_set(nine, half_at=7), None),
+             ("a rest-pause in 8 cm hooks whose rests a re-grip splits (two bumps, a 1.05 s gap)",
+              rest_pause([6, 3, 2], drop=0.08, nudge=1.2, bumps=2), 2)]
     real = Path(__file__).parent / "data" / "bar-squat-2026-10-16-2131.csv"
     if real.exists():                                         # the real drift: 5 squats on the phone's own sensors
         cases.append(("the real squat 2131 with a miss to 40% spliced on (its heights drift +0.56 m)", spliced_miss(real), 5))

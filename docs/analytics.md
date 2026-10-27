@@ -199,9 +199,9 @@ from MCV on RIR, unbiased by MCV noise. Leave one session out, near failure (RIR
 further, naming any session the others can't check; step 3's "one line across loads?"
 within a session that took 2+ loads to failure (across days a load is also its day); each
 normal set's range on the 5..10 scale next to your call. `--selftest`: a synthetic squatter
-with a known line and day-to-day offsets, through the raw-signal pipeline, 36 sets to
+with a known line and day-to-day offsets, through the raw-signal pipeline, 42 sets to
 failure whose completed reps are known (one a real recording with a miss spliced in), and
-exact checks of each piece; 42 of 43 mutations (a rep,
+exact checks of each piece; 51 of 53 mutations (a rep,
 a set or a session the fit saw leaking into its check, labels off by one, each labeling rule
 off or forced, each fix undone) fail it. Waits for your sets to failure.
 
