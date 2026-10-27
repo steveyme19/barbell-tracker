@@ -28,6 +28,7 @@ const defaults = [
   "analysis/data/fake_reps_nopause.csv",
   "analysis/data/fake_reps_drift.csv",
   "analysis/data/fake_bench_grinder.csv",
+  "analysis/data/fake_bench_sticking.csv",   // 2 light reps, 3 with a sticking dip: known answers (5.3)
   "analysis/data/fake_bench.csv",
   "analysis/data/fake_squat.csv",
   "analysis/data/fake_deadlift.csv",
@@ -85,7 +86,23 @@ for (const [file, forced] of files) {
       if (Math.abs(r.mcv - p.mcv) > MCV_TOL) problems.push(`rep ${k + 1} MCV ${r.mcv.toFixed(4)} vs ${p.mcv.toFixed(4)}`);
       if (r.leveled !== p.leveled) problems.push(`rep ${k + 1} leveled JS ${r.leveled} vs Python ${p.leveled}`);
       if (r.flags.join() !== p.flags.join()) problems.push(`rep ${k + 1} flags JS [${r.flags}] vs Python [${p.flags}]`);
+      // the sticking point (analytics.md section 4): both none, or the same place and speed
+      if (!r.sticking !== !p.sticking || (r.sticking && (Math.abs(r.sticking.pos - p.sticking.pos) > 0.01 ||
+          Math.abs(r.sticking.v - p.sticking.v) > MCV_TOL))) {
+        problems.push(`rep ${k + 1} sticking JS ${JSON.stringify(r.sticking)} vs Python ${JSON.stringify(p.sticking)}`);
+      }
     });
+    // the known answer: fake_bench_sticking's dips (make_fake_reps.py sticking)
+    const truthFile = until === null && path.basename(file) === "fake_bench_sticking.csv" && file.replace(/\.csv$/, "_truth.json");
+    if (truthFile && existsSync(truthFile)) {
+      const truth = JSON.parse(readFileSync(truthFile, "utf8"));
+      js.reps.forEach((r, k) => {
+        const want = truth[k];
+        if ((want === null) !== !r.sticking || (want !== null && Math.abs(r.sticking.pos - want) > 0.03)) {
+          problems.push(`known answer: rep ${k + 1} sticking ${r.sticking ? r.sticking.pos.toFixed(3) : "none"} vs true ${want === null ? "none" : want.toFixed(3)}`);
+        }
+      });
+    }
   }
   if (problems.length) {
     failures++;

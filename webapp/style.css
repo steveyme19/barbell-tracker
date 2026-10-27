@@ -160,6 +160,7 @@ td.flag { color: var(--ochre); font-size: 11px; text-align: left; }
 .history-item span:last-child { color: var(--muted); }
 .history-empty { color: var(--muted); font-size: 13px; }
 .history-tools { display: flex; gap: 8px; margin-top: 8px; }
+.set-stick { color: var(--muted); font-size: 13px; margin-top: 4px; }
 .tools { margin-top: 18px; }
 .cal-status { font-size: 14px; margin: 0 0 8px; }
 .cal-faces { list-style: none; padding: 0; margin: 0 0 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 14px; }

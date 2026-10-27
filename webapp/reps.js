@@ -24,6 +24,9 @@ export const SETTINGS = {
   V_STOP_FRAC: 0.03,     // look for a rep's start/end where v <= this x its peak, then walk on while v
                          // keeps falling: to v = 0, or to where a too-short pause's drift floor begins (D32)
   WALK_MIN_FS: 150,      // Hz: the walk needs v smooth near zero; Chrome's 60 Hz wobbles there (D32)
+  STICK_SMOOTH: 0.05,    // s: velocity averaged over this before looking for the sticking dip
+  STICK_PROM: 0.10,      // the dip sits this x the rep's peak below the lower peak around it (provisional, 5.3)
+  STICK_RANGE: [0.10, 0.90],   // ... between these fractions of the ROM
   LONG_WINDOW: 4.0,      // s: flag reps inside longer windows (more drift)
   BIG_CORRECTION: 0.15,  // m/s: flag windows whose drift correction was this big
   LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve (lockouts only)
@@ -447,6 +450,38 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
 }
 
 /** Median height of the turnaround bottoms, for lifts whose bottom repeats; else null. */
+/** Where a hard concentric sticks (analytics.md section 4): the deepest dip with a rise before and
+ * after it, STICK_PROM x the rep's peak below the lower of those peaks, inside STICK_RANGE of the
+ * ROM; null for a rep that doesn't dip. Same running-sum mean as reps.py, to the last bit. */
+export function stickingPoint(x, v, t, rep, S = SETTINGS) {
+  const s = rep.start, e = rep.end, n = e - s + 1;
+  if (n < 5 || rep.rom <= 0) return null;
+  const fs = (n - 1) / (t[e] - t[s]);
+  const h = Math.floor(Math.max(1, Math.floor(S.STICK_SMOOTH * fs)) / 2);
+  const c = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) c[i + 1] = c[i] + v[s + i];
+  const vv = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(i - h, 0), hi = Math.min(i + h, n - 1);
+    vv[i] = (c[hi + 1] - c[lo]) / (hi - lo + 1);
+  }
+  let peak = -Infinity;
+  for (const y of vv) peak = Math.max(peak, y);
+  const left = new Float64Array(n), right = new Float64Array(n);
+  for (let i = 0; i < n; i++) left[i] = i ? Math.max(left[i - 1], vv[i]) : vv[i];
+  for (let i = n - 1; i >= 0; i--) right[i] = i < n - 1 ? Math.max(right[i + 1], vv[i]) : vv[i];
+  let best = null;
+  for (let i = 1; i < n - 1; i++) {
+    if (!(vv[i] < vv[i - 1] && vv[i] <= vv[i + 1])) continue;
+    const pos = (x[s + i] - x[s]) / rep.rom;
+    if (!(S.STICK_RANGE[0] <= pos && pos <= S.STICK_RANGE[1])) continue;
+    const depth = Math.min(left[i - 1], right[i + 1]) - vv[i];
+    if (depth >= S.STICK_PROM * peak && (best === null || depth > best.depth)) best = { i, depth, pos };
+  }
+  if (best === null) return null;
+  return { pos: best.pos, v: vv[best.i], depth: best.depth, t: t[s + best.i] - t[s] };
+}
+
 export function usualBottom(x, S = SETTINGS) {
   if (!S.LIFTS[S.LIFT].bottoms) return null;
   const { lows } = turningPoints(x, S.MIN_ROM);
@@ -553,6 +588,7 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
   // the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
   const walk = lift !== "phone" && fs >= S.WALK_MIN_FS;
   const reps = findReps(x, v, t, windows, S, usualBottom(x, S), walk ? S.V_STOP_FRAC : 0);
+  for (const r of reps) r.sticking = stickingPoint(x, v, t, r, S);   // analytics.md section 4
   return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length, lift, mount, noise };
 }
 

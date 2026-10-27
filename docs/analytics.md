@@ -95,6 +95,15 @@ sticking region. Report where it happens (% of ROM) and track it over weeks. For
 mid-range bench sticking point, this shows exactly where it is and whether it moves as
 your training changes. It only shows up on heavy reps. Light reps don't dip.
 
+Built (D34, roadmap 5.3): `sticking_point` in reps.py / `stickingPoint` in reps.js, per
+rep. The concentric's velocity averaged over 50 ms; the deepest dip with a rise before
+and after it, at least 10% of the rep's peak below the lower of those two peaks, between
+10% and 90% of the ROM. Reported as where (% of the ROM), the speed there and the dip's
+depth; the set card shows each rep's and the set's median ("Sticks at ~41% of the way up,
+3 of 5 reps"). Known answer: `make_fake_reps.py sticking` (2 light reps, 3 with a dip),
+found within 0.2% of the ROM; none on every other file. The 10% is provisional until real
+heavy reps (roadmap 2.x). Not yet: the trend over weeks (5.5).
+
 ## 5. RPE estimation
 
 This uses the reps-in-reserve RPE scale: RPE 10 = 0 reps left, RPE 9 = 1 left, and so

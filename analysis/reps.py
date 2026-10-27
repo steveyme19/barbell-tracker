@@ -56,6 +56,10 @@ V_STOP_FRAC = 0.03      # a rep's start and end are looked for where v is at or 
                         # (the same boundary as before), or to where a pause too short or shaky to be a
                         # still begins, its leftover drift reading a hair above 0 (it used to be swallowed
                         # into the rep: MCV up to half too low, D32). Bar and stack lifts; 0 = off
+STICK_SMOOTH = 0.05     # s: the concentric's velocity is averaged over this before looking for its dip
+STICK_PROM = 0.10       # a sticking dip sits at least this x the rep's peak below the lower of the
+                        # peaks before and after it (provisional: tune on real heavy reps, roadmap 5.3)
+STICK_RANGE = (0.10, 0.90)   # ... and between these fractions of the ROM (every rep rises and falls at its ends)
 WALK_MIN_FS = 150.0     # Hz: the walk needs v smooth near zero. Chrome's 60 Hz with its jittery
                         # timestamps wobbles there, and it stopped short (the same squats, D32)
 LONG_WINDOW = 4.0       # s: flag reps inside longer windows (more drift)
@@ -375,6 +379,41 @@ def find_reps(x, v, t, windows, bottom_ref=None, stop_frac=0.0):
     return reps
 
 
+def sticking_point(x, v, t, rep):
+    """Where a hard concentric sticks (analytics.md section 4): velocity rises, dips, rises again. The
+    deepest dip with a rise before and after it, STICK_PROM x the rep's peak below the lower of those
+    two peaks, inside STICK_RANGE of the ROM; None for a rep that doesn't dip (light ones don't).
+    {pos: fraction of the ROM, v: m/s at the dip, depth: m/s, t: s into the rep}. The smoothing is a
+    centered mean from running sums, the same in reps.js to the last bit."""
+    s, e = rep["start"], rep["end"]
+    n = e - s + 1
+    if n < 5 or rep["rom"] <= 0:
+        return None
+    fs = (n - 1) / (t[e] - t[s])
+    h = max(1, int(STICK_SMOOTH * fs)) // 2               # int() truncates, like Math.floor (not round: 10.5 at 210 Hz)
+    c = np.concatenate([[0.0], np.cumsum(v[s:e + 1])])
+    lo = np.maximum(np.arange(n) - h, 0)
+    hi = np.minimum(np.arange(n) + h, n - 1)
+    vv = (c[hi + 1] - c[lo]) / (hi - lo + 1)
+    peak = vv.max()
+    left = np.maximum.accumulate(vv)                      # the highest before (and at) each sample
+    right = np.maximum.accumulate(vv[::-1])[::-1]         # ... and after
+    best = None
+    for i in range(1, n - 1):
+        if not (vv[i] < vv[i - 1] and vv[i] <= vv[i + 1]):
+            continue
+        pos = (x[s + i] - x[s]) / rep["rom"]
+        if not (STICK_RANGE[0] <= pos <= STICK_RANGE[1]):
+            continue
+        depth = min(left[i - 1], right[i + 1]) - vv[i]
+        if depth >= STICK_PROM * peak and (best is None or depth > best[1]):
+            best = (i, depth, pos)
+    if best is None:
+        return None
+    i, depth, pos = best
+    return dict(pos=float(pos), v=float(vv[i]), depth=float(depth), t=float(t[s + i] - t[s]))
+
+
 def usual_bottom(x, lift):
     """Median height of the turnaround bottoms, for lifts whose bottom repeats; else None."""
     if not LIFTS[lift]["bottoms"]:
@@ -505,6 +544,8 @@ def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
     # the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
     walk = lift != "phone" and fs >= WALK_MIN_FS
     reps = find_reps(x, v, t, windows, usual_bottom(x, lift), V_STOP_FRAC if walk else 0.0)
+    for r in reps:
+        r["sticking"] = sticking_point(x, v, t, r)       # analytics.md section 4
     return dict(t=t, fs=fs, g=g, a=a, runs=runs, v=v, x=x, windows=windows, reps=reps,
                 ignored=n_candidates - len(runs), lift=lift, mount=mount, noise=noise)
 
@@ -537,7 +578,7 @@ def main():
             "lift": r["lift"], "mount": r["mount"],
             "reps": [{"start": int(r["start"]), "end": int(r["end"]), "rom": float(r["rom"]),
                       "dur": float(r["dur"]), "mcv": float(r["mcv"]), "peak": float(r["peak"]),
-                      "leveled": r["leveled"], "flags": r["flags"]} for r in reps],
+                      "leveled": r["leveled"], "flags": r["flags"], "sticking": r["sticking"]} for r in reps],
         }))
         return
 

@@ -434,6 +434,18 @@ still; while moving, the bias-corrected gyro alone.**
 *Open:* hand-held data (pauses too shaky for the vector test), real bar data (phase 2), and whether
 orientation beats the magnitude for reps.py's vertical (section 4's table) are all still to see.
 
+**D34 (2026-10-26): the sticking point is the deepest mid-rep velocity dip with a rise on both
+sides, 10% of the rep's peak deep, between 10% and 90% of the ROM.**
+- reps.py sticking_point / reps.js stickingPoint, per rep, after find_reps (it doesn't touch the
+  boundaries): STICK_SMOOTH 50 ms centered mean (running sums, so JS matches to the bit), STICK_PROM
+  0.10 x the rep's peak below the lower of the peaks before and after, STICK_RANGE 0.10-0.90 of the ROM.
+*Why:* analytics.md section 4's rise-dip-rise pattern, with a prominence (not an absolute speed: a
+grinder's whole curve is slow) so a sensor wiggle isn't a sticking point, and the ends left out
+because every rep speeds up and slows down there. The smoothing width truncates (int / Math.floor),
+not rounds: at 210 Hz 0.05 x fs is exactly 10.5, and Python's round() and JS's Math.round() split it.
+*Provisional:* the 10% and the 50 ms are guesses until real heavy reps; on the fakes, a 40% dip is
+found within 0.2% of the ROM, and no smooth fake or real set reads a sticking point.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

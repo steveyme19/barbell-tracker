@@ -70,6 +70,50 @@ if "lifts" in sys.argv:
     sys.exit()
 
 
+def sticking_set(seed=5, rom=0.40):
+    """A paused bench set for the sticking point (analytics.md section 4, roadmap 5.3): 2 light reps
+    (a smooth press, no dip), then 3 heavy ones whose speed dips to 40% of the peak partway up and
+    picks up again. Pauses on the chest and at lockout anchor every rep. Returns the recording and,
+    per rep, the dip's true place as a fraction of the ROM (None for the light reps)."""
+    r = np.random.default_rng(seed)
+    ease = lambda n: 0.5 - 0.5 * np.cos(np.pi * np.arange(n) / n)
+    z, truth = [np.full(int(1.5 * FS), rom)], []
+    for k, (up, dip_at) in enumerate([(0.8, None), (0.9, None), (1.8, 0.45), (2.1, 0.45), (2.4, 0.5)]):
+        z += [rom - rom * ease(int(1.1 * FS)), np.zeros(int(0.5 * FS))]          # down, pause on the chest
+        n = int(up * FS)
+        u = np.arange(n) / n
+        v = np.sin(np.pi * u)
+        if dip_at is not None:
+            v = v * (1 - 0.6 * np.exp(-((u - dip_at) / 0.07) ** 2))
+        x = np.concatenate([[0.0], np.cumsum(v)[:-1]])
+        x *= rom / (x[-1] + v[-1])
+        z += [x, np.full(int(1.0 * FS), rom)]                                     # up, pause at lockout
+        if dip_at is None:
+            truth.append(None)
+        else:
+            near = np.abs(u - dip_at) < 0.15                                      # the dip, not the ends
+            i = np.flatnonzero(near)[np.argmin(v[near])]
+            truth.append(float(x[i] / rom))
+    z.append(np.full(int(2 * FS), rom))
+    z = np.concatenate(z)
+    tt = np.arange(len(z)) / FS
+    az = np.gradient(np.gradient(z, tt), tt)
+    sig = G + az + 0.03 + NOISE * r.standard_normal(len(tt))
+    zeros = np.zeros_like(tt)
+    df = pd.DataFrame({"Time (s)": tt, "Acceleration x (m/s^2)": zeros, "Acceleration y (m/s^2)": zeros,
+                       "Acceleration z (m/s^2)": sig, "Absolute acceleration (m/s^2)": sig})
+    return df, truth
+
+
+if "sticking" in sys.argv:
+    df, truth = sticking_set()
+    out = Path(__file__).parent / "data" / "fake_bench_sticking.csv"
+    df.to_csv(out, index=False)
+    (Path(__file__).parent / "data" / "fake_bench_sticking_truth.json").write_text(__import__("json").dumps(truth))
+    print(f"Wrote data/{out.name}: 5 paused bench reps, sticking dips at {[None if p is None else round(p, 3) for p in truth]} of the ROM")
+    sys.exit()
+
+
 def half_sine(dur, dist, sign):
     """Velocity for moving `dist` in `dur` seconds, smooth start and stop."""
     n = int(round(dur * FS))

@@ -6,6 +6,7 @@ __pycache__/
 # Generated plots and fake data (regenerate any time)
 analysis/out/
 analysis/data/fake_*.csv
+analysis/data/fake_*.json
 
 # KiCad
 *-backups/

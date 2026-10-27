@@ -778,12 +778,20 @@ function fillSetCard(set) {
   const gap = c.querySelector(".set-gap");
   gap.textContent = gapText(set);
   gap.hidden = !gap.textContent;
+  // the sticking region (analytics.md section 4): where the reps that dipped slowed, % of their ROM
+  const stuck = set.reps.filter((r) => r.sticking);
+  if (stuck.length) {
+    const at = stuck.map((r) => r.sticking.pos * 100).sort((a, b) => a - b)[Math.floor(stuck.length / 2)];
+    c.querySelector(".set-lv").insertAdjacentHTML("beforeend",
+      `<div class="set-stick">Sticks at ~${Math.round(at)}% of the way up (${stuck.length} of ${set.reps.length} reps)</div>`);
+  }
   const tbody = c.querySelector("tbody");
   tbody.innerHTML = "";
   set.reps.forEach((r, k) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${k + 1}</td><td>${(r.rom * 100).toFixed(1)} cm</td>` +
       `<td>${r.mcv.toFixed(2)}</td><td>${r.peak.toFixed(2)}</td><td>${r.dur.toFixed(2)} s</td>` +
+      `<td>${r.sticking ? `${Math.round(r.sticking.pos * 100)}%` : ""}</td>` +
       `<td class="flag">${r.flags.length ? "⚠" : ""}</td>`;
     if (r.flags.length) tr.title = r.flags.join(", ");
     tbody.appendChild(tr);
