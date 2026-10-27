@@ -74,6 +74,11 @@ export async function getSetSamples(sessionId, index) {
   return { samples, tAbs: Array.from(rec.tAbs) };
 }
 
+/** One set's raw samples out of the store ("Not a set" on its card). */
+export function deleteSetSamples(sessionId, index) {
+  return run("sets", "readwrite", (s) => s.delete([sessionId, index]));
+}
+
 // ---------- export, import, delete (roadmap 5.1; the file format is export.js) ----------
 
 const sessionRange = (id) => IDBKeyRange.bound([id, -Infinity], [id, Infinity]);

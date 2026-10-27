@@ -522,7 +522,8 @@ top of sections 5 to 10 finds the sets (`analysis/sets.py`, ported to
    block, so a rep with no end anchor only comes from motion running up to the cut (the
    sensor carried, End tapped mid-move). The live view keeps the rep in progress.
    Moving the pod to another bar can still make an anchored, normal-looking phantom set:
-   no threshold tells it from a real single.
+   no threshold tells it from a real single. **Not a set** on its card takes it out (the
+   session, the live tracker's rest for the next set, its stored samples and CSV).
 5. **Rest** = first rep start of a set minus the last rep end of the set before. Live,
    the app shows the rest timer 3 s after the last rep (provisional: more reps within
    15 s and it's still the same set).

@@ -7,7 +7,7 @@ import { SessionTracker, setSummary, dropRackMoves, closedSetReps, formatTime, f
 import { gapsNear, gapText } from "./gaps.js";
 import { parseRecording, toCSV } from "./fileio.js";
 import { askPersist, putSession, getSession, listSessions, putSetSamples, getSetSamples, getSessionData, deleteSession,
-  importSessions, COLS } from "./store.js";
+  deleteSetSamples, importSessions, COLS } from "./store.js";
 import { toExport, fromExport } from "./export.js";
 import { fitProfile } from "./lv.js";
 import { fitCalibration, applyCalibration, CalibrationRun, G_LOCAL } from "./calib.js";
@@ -711,6 +711,38 @@ async function shareSet(set) {
 
 // ---------- set cards ----------
 
+// "Not a set": a phantom no threshold can tell from a real single (the pod moved to another bar
+// mid-session, D31), or anything else that shouldn't count. Out of the session and the live tracker
+// (it times the next rest from its last set), its stored samples and CSV gone, and the set after it
+// gets its rest from the set before (wall time: a resumed session's parts run on their own clocks).
+async function dropSet(set) {
+  if (!confirm(`Take Set ${set.index + 1} (${nameOf(set)}) out of this session? Its CSV file goes too.`)) return;
+  const sets = session.sets, p = sets.indexOf(set);
+  if (p < 0) return;
+  sets.splice(p, 1);
+  const k = tracker?.sets?.indexOf(set) ?? -1;
+  if (k >= 0) tracker.sets.splice(k, 1);
+  set.card.remove();
+  const prev = sets[p - 1], next = sets[p];
+  if (next) {
+    next.restBefore = !prev ? null
+      : prev.wallEnd != null && next.wallStart != null ? (next.wallStart - prev.wallEnd) / 1000 : next.startT - prev.endT;
+  }
+  for (const s of sets) fillSetCard(s);                 // the next rest, and the profiles lost a point
+  render();
+  persistSession();
+  deleteSetSamples(session.id, set.index).catch(() => {});
+  if (session.autosave) {
+    try {
+      await deleteFile(session.folder, set.file);
+      await saveSummary();
+    } catch (err) {
+      showError(`Couldn't update the files: ${err.message}`);
+    }
+  }
+  showMessage(`Set ${set.index + 1} taken out.`);
+}
+
 function addSetCard(set) {
   const card = $("setCardTpl").content.firstElementChild.cloneNode(true);
   set.card = card;
@@ -723,6 +755,7 @@ function addSetCard(set) {
   });
   card.querySelector(".set-rpe").addEventListener("change", (e) => { set.rpe = e.target.value; saveSummaryLater(); });
   card.querySelector(".set-save").addEventListener("click", () => shareSet(set));
+  card.querySelector(".set-drop").addEventListener("click", () => dropSet(set));
   card.querySelector(".set-more").addEventListener("toggle", (e) => { if (e.target.open) drawSetPlot(set); });
   fillSetCard(set);
   $("setList").prepend(card);           // newest first
