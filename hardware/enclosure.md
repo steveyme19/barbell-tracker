@@ -42,6 +42,9 @@ printing anything that has to fit.
 - **Power:** the XIAO has no switch. For v1, either unplug the JST to turn it off, or
   put a mini slide switch in the battery + lead (then it can't charge while switched
   off). Deep sleep with wake-on-motion is the phase 4 answer (hardware/README.md).
+  *(Superseded: no switch since 10-19, and the 10-21 print has no room for a JST pair: as
+  printed the battery is soldered to the pads, and off is the deep sleep (D26). See the assembly
+  checklist.)*
 
 ### XIAO axes (measured 2026-10-18, for the lid arrows)
 
@@ -118,7 +121,7 @@ For phase 3, stick the printed AprilTag on the pod's flat lid. No extra part.
 
 | item | for |
 |---|---|
-| M3 heat-set inserts + M3 × 6 to 8 screws | adapter interface |
+| 5 short M3 heat-set inserts (x 4); 2 × M3 × 10 socket head; 3 × M3 × 8 countersunk | adapter interface (pod to puck); Adapter A's magnets |
 | M2 heat-set inserts (or self-tapping M2) + screws | lid |
 | Pot magnets Ø16 mm, countersunk M3, 3 or 4 | Adapter A |
 | Hook-and-loop strap 20 mm wide, or 2 small hose clamps | Adapter B |
@@ -128,9 +131,11 @@ For phase 3, stick the printed AprilTag on the pod's flat lid. No extra part.
 
 ## Assembly checklist (2026-10-30, the parts arrived)
 
-Print check first: the **10-21 files** in `hardware/enclosure/` (`Pod case.stl`, `Pod lid.stl`,
-`Adapter A puck.stl`) are the current design. The case is **41.8 mm** long. A 40.8 mm case is from
-the old `stl/` files (no lid countersinks, old insert spots): reprint it.
+Print check first: the **10-21 export** is the current design: `hardware/enclosure/stl/`
+(`pod_case.stl`, `pod_lid.stl`, `puck_a.stl`, laid print-side down by `stl_orient.py` on 10-30;
+Fusion's `Pod case.stl` and the others beside the folder are the same parts as modeled). The case
+is **41.8 mm** long. A 40.8 mm case is from the `stl/` files before 10-30 (no lid countersinks,
+old insert spots): reprint it.
 
 What the print was sized for (pod_v1.py's parameters), so check each part against it:
 
@@ -143,7 +148,19 @@ What the print was sized for (pod_v1.py's parameters), so check each part agains
 | magnet inserts + screws | 3 more short M3 inserts; M3 x 8 countersunk | |
 | puck to pod | 2 x M3 x 10 socket head | 6.8 mm through the puck, 3.2 mm into the pod's insert |
 | battery | at most 30.5 x 19.7 x 7.6 mm incl. the protection board, wires out of one end (the PL 602030) | pocket + 0.4 mm a side |
-| JST-PH pair | plugged together, in the free space at the far end above the tray (~10 x 9 mm) | not modeled: test-fit it before soldering |
+| battery leads | as printed, soldered straight to the BAT pads under the board | no room for a JST-PH pair (below) |
+
+**Battery wiring, a decision before cutting anything.** The cell's leads leave its far end under
+the tray, run back over the cell in the 2 mm `batt_gap` and up through the window under the
+board to the BAT pads: that path is in the print. A mated JST-PH pair isn't. The free space above
+the tray at the far end (~10 x 8.5 mm, only 4.7 mm tall; a mated PH pair is ~4.5 mm thick) has no
+way in for the leads: the board covers the window, and the tray's far end leaves a 0.5 mm slot
+the lid's end wall would pinch them in. The tray's wire hole went with the switch (10-19,
+0f34569). So either:
+- **solder the battery straight to the pads** (cut the plug off), as the print is; the pod is
+  off when it deep-sleeps (D26), with no hard off short of desoldering; or
+- **reprint the case with a wire hole** in the tray past the fence (about 4 x 5 mm, where pod_v1
+  had one until 10-19) and test-fit the mated pair under the lid before relying on it.
 
 Inserts: set them with a soldering iron (the insert maker's temperature for your filament),
 straight and flush, and let them cool before any screw goes in. **Before the battery goes near the board, check its polarity with the
@@ -235,6 +252,8 @@ Changes from the sketch above, and why:
   at 24.5 mm tall. Axis arrows wait for the IMU orientation to be confirmed. Adapters next.
 - Not modeled yet: embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
+  *(Superseded 10-30: the wire hole went with the switch on 10-19, so the leads can't reach that
+  space; see the assembly checklist.)*
 
 ### Measured parts (2026-10-19, calipers in inches, converted)
 
@@ -300,7 +319,7 @@ board 20.955 x 17.780). Distances from the USB-C board edge / the D0-D6 edge, in
   the window to the pads. They don't need the tray's wire hole: that was only for routing
   battery + through the switch.
 
-- **No switch (2026-10-19):** removed the switch cradle, its lever slot and recess (case and lid), the `sw_*` parameters, and the tray's wire hole (it was half covered by the cradle, and the wires don't need it: they reach the BAT pads through the window under the board). `boss` back to 6 mm. To turn the pod off, unplug the battery (lid off). A switch can come back in a v2 if that gets annoying. Offline checks: 31/31 pass. **Rerun pod_v1, then pod_export + stl_orient.py**: the STLs in `stl/` are from before this and before the IMU move.
+- **No switch (2026-10-19):** removed the switch cradle, its lever slot and recess (case and lid), the `sw_*` parameters, and the tray's wire hole (it was half covered by the cradle, and the wires don't need it: they reach the BAT pads through the window under the board). `boss` back to 6 mm. To turn the pod off, unplug the battery (lid off) *(10-30: but the print has no room for the JST pair that needs, see the assembly checklist)*. A switch can come back in a v2 if that gets annoying. Offline checks: 31/31 pass. **Rerun pod_v1, then pod_export + stl_orient.py**: the STLs in `stl/` are from before this and before the IMU move. *(Done: the 10-21 export, oriented into `stl/` on 10-30.)*
 
 ### Symmetric mount holes + Adapter A puck (2026-10-19)
 

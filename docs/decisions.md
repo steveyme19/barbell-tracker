@@ -599,32 +599,60 @@ to-failure box in the app; whether one line fits every load (needs 2+ loads to f
 session).
 
 **D37 (2026-10-30): the pod's calibration is one guided USB recording: 20 s of rest, the 6 faces,
-then whole turns about each axis; a turn counts only when it's a whole number of turns about one
-axis that ends where it began.**
+then whole turns about each axis; a turn counts only when it's a whole number of turns about its
+own axis that ends where it began.**
 - analysis/calib_pod.py (roadmap 1.3), live (`python calib_pod.py COM5`, the raw CSV kept, P2) or on
   a recording. Stills: 0.25 s blocks whose accel and gyro wiggle stays under 4x the quietest
-  block's. The rest (the longest still, 10 s+): noise per axis and the gyro bias. Faces: per face
-  its longest still within 10 deg of flat, fitted by calib.py (the phone's fit, D23). Gyro scale:
-  the bias-corrected gyro integrated between two stills, over 360 x the number of turns; used when
-  within 3% of a whole number of turns, under 15% on the other two axes, and with gravity before
-  and after within 2 deg. Saves data/pod-calibration-*.json: corrected = (raw - bias) / scale.
+  block's and whose gyro sits near the slowest quiet block's (a steady turn is quiet too). The
+  rest (the longest still, 10 s+): noise per axis and the gyro bias. Faces: per face its flattest
+  still within 10 deg of flat and 2 s+, fitted by calib.py (the phone's fit, D23); if the fit's
+  worst face is off by over 0.05 m/s^2 (a face propped t deg adds about g sin^2(t) / 2: 0.09 at
+  8 deg), the guide asks for the least flat face again. The USB-C end down can't stand on the
+  plugged-in cable, so the guide says to stand it at the table's edge with the plug over it.
+- Turns: each move between stills is integrated with the bias of the stills either side. A roll
+  about a level axis done a face at a time is one turn once gravity is back within 45 deg of its
+  start; a spin about the vertical stopped short and pushed on by under 45 deg is one spin; one
+  turned back by over 2 deg after it stopped is refused. The angle is about the turn's own axis
+  (the main direction of its rate), not its share on the board's axis. A turn is used when it's
+  within 3% of a whole number of turns, under 15% on the other two axes, and has gravity before
+  and after within 2 deg; each axis takes the median of its turns. Saves
+  data/pod-calibration-*.json: corrected = (raw - bias) / scale.
 *Why:* algorithm.md section 1: scale errors are what drift correction can't see (2% high reads
 2% fast; 1% of gyro scale is 1.8 deg per sleeve half-turn). Whole turns are the only reference on
-hand: gravity confirms a tumble (x, y) ended where it began, but can't see a spin about the
-vertical, so the z turn is against a straight edge, 3 turns (1 deg off is 0.1%). 3%, because a
-gyro's scale error is spec'd to a few %, and a sloppy 340 deg spin at +1.5% reads 345 (4.2%),
-which 5% would take as a turn.
+hand. Gravity confirms a roll (x, y) ended where it began, but can't see a spin about the
+vertical, so those are against a straight edge, 3 turns (1 deg off is 0.1%). 3%, because a gyro's
+scale error is spec'd to a few %, and a sloppy 340 deg spin at +1.5% reads 345 (4.2%), which 5%
+would take as a turn. The chaining, because a hand stops: a roll regrips at each face, and a spin
+read in pieces would take one stopped 15 deg short as a whole turn 1.4% off. A spin turned back
+is refused rather than added: that's a hand hunting for flush, and a new spin is cheaper than a
+guess at which still was. Its own axis, because a turn 6 deg off the board's axis puts only cos 6
+deg of its angle on it (0.55% low). The flattest face and the residual check, because one face
+propped on a crumb skews the fit and nothing else would show it.
 *Guarded by* calib_pod.py --selftest: a synthetic pod at 208 Hz with planted accel and gyro bias
-and scale errors and the pod's noise, through the rest, a 25 deg lean longer than any face (not a
-face), the 6 faces, 3 spins about z and a tumble about x and y, recovers every error (accel scale
-to 0.1%, gyro scale to 0.2%, gyro bias to 0.02 deg/s) and refuses a 340 deg spin, a tumble 4 deg
-short and a turn about a tilted axis. Mutations: each tolerance either way, the bias left in the
-turns, the scale inverted, faces at any tilt all fail it; the gyro bias as the first still's
-instead of the median of all, and a face's first still instead of its longest, pass (equally good
-estimates here). Checked on a real bare-XIAO rest (10-18 desk file: 0.006 m/s^2 and 0.04-0.05
-deg/s of noise) and the live loop through a fake port (micros() rollover included).
-*Open:* applying it (the firmware's flash or the app's PodSource, "save both calibrations in
-firmware" in 1.3), and gyro scale by a record player at 33 1/3 rpm (200 deg/s) if one turns up.
+and scale errors and the pod's noise. The main session (a rest, a 25 deg lean longer than any
+face, the 6 faces, spins about z, rolls about x and y) recovers every error (accel scale to 0.1%,
+gyro scale to 0.2%, gyro bias to 0.02 deg/s) and refuses a 340 deg spin, a tumble 4 deg short and
+a turn about a tilted axis. Then the hand's cases: a roll a quarter at a time with 2 s on each
+face; a spin stopped short and pushed on (then a quarter turn back, which isn't a nudge); one over
+and turned back (refused); a turn 6 deg off y; a face propped 8 deg (redo asked for, then the flat
+one used); three spins, the first 16 deg short (the median); a gyro bias drifting 0.6 deg/s a
+minute; a steady 60 deg/s turn like a turntable's. Last, each tolerance just inside and outside.
+Mutations: 40 of 42 fail it, among them each tolerance either way (RESID_MAX and NUDGE_MAX
+loosened), each chaining rule off or unbounded, the level test either way, the share instead of
+the own axis, the longest or first face instead of the flattest, the bias left in or from the
+first still, each refusal off, the median of turns as the first or the mean, and the rest reading
+as the median of every quiet block (a steady turn longer than the stills became "rest": the bug
+the turntable case found). Two pass, unguarded: the accel stillness threshold 10x looser (the
+self-test has no sliding, and the gyro gates every still it has) and the reported gyro bias from
+the first still instead of the median (only reported: the turns use the stills either side, and
+the app re-estimates the bias at every still). Two gravity checks inside the chaining went, since
+the turn's own end check covers them. Checked on a real bare-XIAO rest (10-18 desk file: 0.006
+m/s^2 and 0.04-0.05 deg/s of noise) and live through a fake port: micros() rollover, the port lost
+at 100 s (the result from what came in), no port (a plain message, no empty CSV), the USB-C-end
+hint and a refused spin's notice printed as they happen.
+*Open:* the first run on the assembled pod; applying it (the firmware's flash or the app's
+PodSource, "save both calibrations in firmware" in 1.3); gyro scale by a record player at 33 1/3
+rpm (200 deg/s) if one turns up (the steady-turn case already passes).
 
 ## Proposed (say yes or no)
 
