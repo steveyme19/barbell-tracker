@@ -126,6 +126,29 @@ For phase 3, stick the printed AprilTag on the pod's flat lid. No extra part.
 | Thin foam tape | battery pocket |
 | *Optional:* mini slide switch (SS12D00 type) | power |
 
+## Assembly checklist (2026-10-30, the parts arrived)
+
+Print check first: the **10-21 files** in `hardware/enclosure/` (`Pod case.stl`, `Pod lid.stl`,
+`Adapter A puck.stl`) are the current design. The case is **41.8 mm** long. A 40.8 mm case is from
+the old `stl/` files (no lid countersinks, old insert spots): reprint it.
+
+What the print was sized for (pod_v1.py's parameters), so check each part against it:
+
+| part | the print expects | why it matters |
+|---|---|---|
+| lid inserts, 4 | M2, for a 3.2 mm hole 4 mm deep (M2 x 3) | a longer insert won't seat |
+| lid screws, 4 | M2 countersunk (flat head, ISO 7046), 5 mm long | the lid is 2 mm, so x 5 leaves 3 mm in the insert; x 6 can bottom out in the 4 mm hole |
+| floor inserts, 2 | M3 **short** (x 4), for a 4.0 mm hole 4.5 mm deep | a standard 5.7 mm M3 insert goes through the floor into the battery |
+| magnets, 3 | Ø16 x 4.5 mm pot magnets, countersunk M3 | pockets are Ø16.4 |
+| magnet inserts + screws | 3 more short M3 inserts; M3 x 8 countersunk | |
+| puck to pod | 2 x M3 x 10 socket head | 6.8 mm through the puck, 3.2 mm into the pod's insert |
+| battery | at most 30.5 x 19.7 x 7.6 mm incl. the protection board, wires out of one end (the PL 602030) | pocket + 0.4 mm a side |
+| JST-PH pair | plugged together, in the free space at the far end above the tray (~10 x 9 mm) | not modeled: test-fit it before soldering |
+
+Inserts: set them with a soldering iron (the insert maker's temperature for your filament),
+straight and flush, and let them cool before any screw goes in. **Before the battery goes near the board, check its polarity with the
+multimeter at the JST plug**: JST-PH LiPos aren't wired the same way by every seller.
+
 ## CAD
 
 Start parametric so measured numbers drop straight in. Suggested user parameters:

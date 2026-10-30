@@ -598,6 +598,34 @@ a gap between two reps there's no rep, so stills at one height around any fidget
 to-failure box in the app; whether one line fits every load (needs 2+ loads to failure in one
 session).
 
+**D37 (2026-10-30): the pod's calibration is one guided USB recording: 20 s of rest, the 6 faces,
+then whole turns about each axis; a turn counts only when it's a whole number of turns about one
+axis that ends where it began.**
+- analysis/calib_pod.py (roadmap 1.3), live (`python calib_pod.py COM5`, the raw CSV kept, P2) or on
+  a recording. Stills: 0.25 s blocks whose accel and gyro wiggle stays under 4x the quietest
+  block's. The rest (the longest still, 10 s+): noise per axis and the gyro bias. Faces: per face
+  its longest still within 10 deg of flat, fitted by calib.py (the phone's fit, D23). Gyro scale:
+  the bias-corrected gyro integrated between two stills, over 360 x the number of turns; used when
+  within 3% of a whole number of turns, under 15% on the other two axes, and with gravity before
+  and after within 2 deg. Saves data/pod-calibration-*.json: corrected = (raw - bias) / scale.
+*Why:* algorithm.md section 1: scale errors are what drift correction can't see (2% high reads
+2% fast; 1% of gyro scale is 1.8 deg per sleeve half-turn). Whole turns are the only reference on
+hand: gravity confirms a tumble (x, y) ended where it began, but can't see a spin about the
+vertical, so the z turn is against a straight edge, 3 turns (1 deg off is 0.1%). 3%, because a
+gyro's scale error is spec'd to a few %, and a sloppy 340 deg spin at +1.5% reads 345 (4.2%),
+which 5% would take as a turn.
+*Guarded by* calib_pod.py --selftest: a synthetic pod at 208 Hz with planted accel and gyro bias
+and scale errors and the pod's noise, through the rest, a 25 deg lean longer than any face (not a
+face), the 6 faces, 3 spins about z and a tumble about x and y, recovers every error (accel scale
+to 0.1%, gyro scale to 0.2%, gyro bias to 0.02 deg/s) and refuses a 340 deg spin, a tumble 4 deg
+short and a turn about a tilted axis. Mutations: each tolerance either way, the bias left in the
+turns, the scale inverted, faces at any tilt all fail it; the gyro bias as the first still's
+instead of the median of all, and a face's first still instead of its longest, pass (equally good
+estimates here). Checked on a real bare-XIAO rest (10-18 desk file: 0.006 m/s^2 and 0.04-0.05
+deg/s of noise) and the live loop through a fake port (micros() rollover included).
+*Open:* applying it (the firmware's flash or the app's PodSource, "save both calibrations in
+firmware" in 1.3), and gyro scale by a record player at 33 1/3 rpm (200 deg/s) if one turns up.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
