@@ -699,6 +699,55 @@ reads the lift from the name.
 *Guarded by* parity.mjs: every dropped segment arrives non-empty, in time order and clear of every
 set's reps, and the fake squat session drops exactly its one no-rep rack walk.
 
+**D40 (2026-10-31): on a real bar, reps are anchored on their turnarounds, and bar lifts from the
+pod use the gyro-tracked vertical instead of |a|.**
+- The first gym session (pod on Adapter A) miscounted every barbell set: 3/8, 1/6, 1/3 squats and
+  1/5 paused deadlifts (the ham curl's 10 were right). A loaded bar never stops between reps (the
+  2.7 Hz sway at lockout, 20 ms touch-and-go tops, plates ringing at 20 Hz on the floor), so the
+  only stills were the rack, one window spanned unrack to rerack, and |a| rectified the clang and
+  the sway into metres of fake height.
+- reps.py (then reps.js, line for line): (1) for squat, bench, deadlift and free with a gyro at 150
+  to 300 Hz, Madgwick (moved here from orientation.py) pulled at stills and quasi-stills gives the
+  acceleration along up; (2) a window that's broken (end velocity over 1.0 m/s) or holds a
+  gyro-confirmed impact is redone rep by rep: a high-passed coarse pass finds the reps, the lift's
+  resting turnarounds (lockouts, the floor) anchor §6's line span by span, a pause on its own mean
+  velocity. Constants and their evidence: TA_*, IMPACT_*, QS_* in reps.py; algorithm.md §6c.
+*Why:* the video truth (plate tracking synced to the pod at r 0.999; 135: 8 reps, 225: 6, 360: 3;
+the deadlift: 5 from the pod's own calibrated forensics). Three designs were prototyped
+independently and judged; this graft scored 8/8, 6/6, 3/3, 5/5 with squat MCV +1.9 to +3.9% on
+average (worst +6.8%), ROM within 1 to 2 cm, the ham curl bit-identical, and the fewest live
+flickers. Turnaround anchors on |a| alone needed |a|'s rectified clang to trigger; the vertical
+alone (high-passed) read the 360's grinder 15% low. Not §7's mistake: the anchor times come from a
+drift-free coarse pass, pauses anchor on their own mean, and only tops are touch-and-go anchors.
+- Review (18 agents, 15 findings, all real) fixed before landing: Madgwick's normalized pull made the
+  vertical chaotic in roundoff (SN_FLOOR 0.05 makes it proportional near convergence; JS vs Python
+  now agree to 3e-12 per sample, gym MCVs moved under 0.001); a floor landing's close divided 0 by 0
+  when a ring reached back to the span's start (NaN, every later rep gone); the rack cut applied to
+  nameless free lifts (TA_RACKED: squat and bench only); the tracker had no catch around analyze()
+  (a throw now drops the segment with its samples, flagged), the live loop none either; JS's
+  Gaussian was 3x slower than needed (same sums, same order).
+*Guarded by* parity.mjs: the 5 gym sets JS vs Python (full and cut partway), the paused deadlift also
+as a nameless free lift (5 reps), whole sessions through analyze(); known answers from the video
+(counts; each rep within 8%, the set's mean within 5%; deadlift reps 2 to 5 within 5%; the ham
+curl's MCVs within 1%); a live replay every 0.25 s (final count right, at most one dip, never ahead
+of the final count but for the ham curl's known flicker); the vertical's gate (60 Hz and 402 Hz bar
+lifts exactly on |a| - g, pod files on the vertical), the vertical JS vs Python per sample within
+1e-9, and Python's within 1e-9 under a 1e-12 nudge (chaos); no rep with zero duration or a
+non-finite MCV; no drop that threw; and an exact-physics set at the pod's rate (make_fake_motion.py
+squat_tng: 6 touch-and-go squats with a walkout, the sway, sleeve roll, the roll-dependent offset and
+a ringing rerack; the old code found 2 of them, this finds 6, each within 8%, worst +5.3%). No older
+parity expectation changed. Over 716 older results what moved: pod-rate deadlifts (the 10-23
+hand-held test, still 5 reps, rep 1 MCV +5.9%, the rest within 1.5%; the 12:10 home set, rep 4 ROM
+53 to 44 cm, still 4 reps), the 13:44 handled "rep" (0 in the closed set and live) and
+fake_session_squat's whole-session reps.py run as machine (six NaN reps gone). sets.py on the fake
+sessions is unchanged.
+*Open:* tuned on one day, one lifter, one mount, an uncalibrated pod. The deadlift's rep 1 starts at
+its 6 cm hitch (+31%). Squats read ~3% high (scale: the 6-face calibration, D37). On the vertical
+only an impact triggers the redo, so a set with none (a soft rerack, a recording cut before the
+rerack) falls back to the old path. Weakly guarded: the quasi-stills and BAR_AXIS barely move any
+final number here (only a live dip notices them going); a deadlift-like synthetic set with a gyro
+scale error would pin them. Untested on bench and on Adapter B.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

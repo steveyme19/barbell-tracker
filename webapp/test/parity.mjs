@@ -34,6 +34,17 @@ const defaults = [
   "analysis/data/fake_deadlift.csv",
   "analysis/data/reps_pause.zip",
   "analysis/data/reps_nopause.zip",
+  // the first loaded-bar session (2026-10-31, the pod on the sleeve end): no still between reps,
+  // turnaround anchors on the gyro's vertical (D40); the ham curl stays on the old path
+  "analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv",
+  "analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv",
+  "analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv",
+  "analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv",
+  "analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv",
+  "analysis/data/fake_motion_squat_tng.csv",   // exact physics at the pod's rate: the same failure, known answer (D40)
+  ["analysis/data/fake_session_squat.csv", "squat"],     // a whole session as one analysis: rests, guards
+  ["analysis/data/fake_session_squat.csv", "machine"],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "free"],   // no rack cut (TA_RACKED)
   "analysis/data/bar-2026-10-16-1835.csv",
   "analysis/data/bar-2026-10-16-1844.csv",
   "analysis/data/bar-2026-10-16-1845.csv",
@@ -69,10 +80,16 @@ for (const [file, forced] of files) {
   const js = analyze(rec.t.slice(0, n), magnitude(imu.ax, imu.ay, imu.az), S, imu);
   const pyArgs = [path.join(ROOT, "analysis", "reps.py"), file, "--json", `--lift=${lift}`];
   if (until !== null) pyArgs.push(`--until=${until}`);
-  const py = JSON.parse(execFileSync(PYTHON, pyArgs, { cwd: path.join(ROOT, "analysis"), encoding: "utf8" }));
+  const pyOut = execFileSync(PYTHON, pyArgs, { cwd: path.join(ROOT, "analysis"), encoding: "utf8", maxBuffer: 1 << 26 });
+  let py;
+  try { py = JSON.parse(pyOut); } catch { py = { error: `Python's JSON doesn't parse (a NaN?): ${pyOut.slice(0, 120)}` }; }
 
   const problems = [];
-  if (js.error) problems.push(`JS error: ${js.error}`);
+  if (py.error) problems.push(py.error);
+  else if (js.error) problems.push(`JS error: ${js.error}`);
+  else if (js.reps.some((r) => !(r.dur > 0) || !Number.isFinite(r.mcv) || !Number.isFinite(r.rom))) {
+    problems.push("a JS rep with no duration or a non-finite MCV/ROM");
+  }
   else if (js.lift !== py.lift) problems.push(`profile JS ${js.lift} vs Python ${py.lift}`);
   else if (!js.mount !== !py.mount || (js.mount && (js.mount.kind !== py.mount.kind ||
       Math.abs(js.mount.rot - py.mount.rot) > 1e-6 || Math.abs(js.mount.side - py.mount.side) > 1e-6))) {
@@ -120,7 +137,8 @@ for (const [file, forced] of files) {
 // same sets as Python working on the whole file: same start/end and rest (within
 // 0.01 s), same rep count, reps within the usual tolerance, same RPE estimate. A third entry
 // is the known answer (reps per set), a fourth each rep's true MCV (within MCV_TRUTH): both
-// sides sharing a bug is what they catch (D31, D32).
+// sides sharing a bug is what they catch (D31, D32). A fifth entry overrides the tolerance:
+// { tol: per rep, mean: the set's mean MCV } (relative).
 const MCV_TRUTH = 0.05;               // relative
 const FAKE_SESSION_MCV = [0.8, 0.85, 0.9, 1.0, 1.15].map((up) => 0.55 / up);   // make_fake_session.py: ROM / UPS
 const sessions = [
@@ -135,8 +153,27 @@ const sessions = [
   ["analysis/data/fake_session_squat_handled.csv", ["squat"], [5, 5, 5, 5], Array(4).fill(FAKE_SESSION_MCV)],
   // the real pod, hand reps, then the pod handled before the set closed: a 2 m "rep 6" (D31)
   ["analysis/data/bar-deadlift-2026-10-23-1857-set01.csv", ["deadlift"], [5]],
+  // 2026-10-31 at the gym (D40). Truth: the video, each rep's plate height synced to the pod (r 0.999,
+  // ROM +-2 cm, MCV +-4%); squats read ~3% high (the pod's uncalibrated scale or the video's). The
+  // deadlift has no video: the pod's own forensics (calibrated, floor to floor), and its rep 1 is a
+  // known miss (it starts at the 6 cm hitch off the floor, +31%). The ham curl: today's numbers
+  // make_fake_motion.py squat_tng: 6 touch-and-go squats at 208 Hz with a walkout, the sway, sleeve roll, the
+  // pod's roll-dependent offset and a ringing rerack, exact truth (the old code found 2 of them)
+  ["analysis/data/fake_motion_squat_tng.csv", ["squat"], [6], [[0.8714, 0.8400, 0.7412, 0.5895, 0.5182, 0.4000]], { tol: 0.08, mean: 0.05 }],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv", ["squat"], [8],
+    [[0.83, 0.87, 0.87, 0.87, 0.92, 0.81, 0.87, 0.84]], { tol: 0.08, mean: 0.05 }],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv", ["squat"], [6],
+    [[0.722, 0.696, 0.639, 0.677, 0.715, 0.626]], { tol: 0.08, mean: 0.05 }],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv", ["squat"], [3],
+    [[0.403, 0.318, 0.276]], { tol: 0.08, mean: 0.05 }],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", ["deadlift"], [5],
+    [[undefined, 0.55, 0.51, 0.54, 0.50]], { tol: 0.05 }],
+  // the same set as a nameless free lift: floor contacts between reps aren't a rerack (TA_RACKED)
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", ["free"], [5]],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv", ["machine"], [10],
+    [[0.378, 0.385, 0.331, 0.372, 0.352, 0.343, 0.320, 0.335, 0.318, 0.205]], { tol: 0.01 }],
 ];
-for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : sessions) {
+for (const [rel, lifts, expect, truth, opt] of process.argv.length > 2 ? [] : sessions) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
   const buf = readFileSync(file);
@@ -168,6 +205,7 @@ for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : session
   // what isn't a set still hands its raw samples to the app (P2): each drop non-empty, in time
   // order, and clear of every set's reps
   for (const d of drops) {
+    if (d.threw) problems.push(`analyze() threw in the tracker: ${d.error}`);
     if (!d.samples.length || d.samples.length !== d.tAbs.length) problems.push(`a drop with ${d.samples.length} samples, ${d.tAbs.length} times`);
     else if (d.tAbs.some((t, i) => i && t <= d.tAbs[i - 1])) problems.push("a drop's times go backwards");
     else if (js.some((s) => d.tAbs[0] < s.endT && d.tAbs.at(-1) > s.startT)) problems.push(`a drop at ${d.tAbs[0].toFixed(1)} s overlaps a set's reps`);
@@ -186,11 +224,99 @@ for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : session
     if (want === undefined) return;
     const err = (r.mcv - want) / want;
     if (Math.abs(err) > Math.abs(worstTruth)) worstTruth = err;
-    if (Math.abs(err) > MCV_TRUTH) problems.push(`known answer: set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(3)} vs true ${want.toFixed(3)} (${(err * 100).toFixed(1)}%)`);
+    if (Math.abs(err) > (opt?.tol ?? MCV_TRUTH)) problems.push(`known answer: set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(3)} vs true ${want.toFixed(3)} (${(err * 100).toFixed(1)}%)`);
   }));
+  if (truth && opt?.mean) js.forEach((s, k) => {
+    if (!truth[k]) return;                // a set the truth doesn't have: the count check reports it
+    const want = truth[k].reduce((p, x) => p + x, 0) / truth[k].length;
+    const got = s.reps.reduce((p, r) => p + r.mcv, 0) / s.reps.length;
+    if (Math.abs(got / want - 1) > opt.mean) problems.push(`known answer: set ${k + 1} mean MCV ${got.toFixed(3)} vs true ${want.toFixed(3)}`);
+  });
   const truthNote = truth ? `, MCV vs truth worst ${(worstTruth * 100).toFixed(1)}%` : "";
   if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
   else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}${truthNote}, ${drops.length} dropped (samples kept)`);
+}
+
+// ---------- live: the 2026-10-31 gym sets as the app sees them mid-set (D40) ----------
+// analyze() on a growing buffer every 0.25 s plus the rack filter, like app.js's live view. The
+// count may dip once (a rep re-anchored as the set goes on) but never twice, and never shows more
+// than the set's final count (the ham curl's old-path flicker shows one ahead once: its allowance).
+const live = [
+  ["analysis/data/fake_motion_squat_tng.csv", "squat", 6],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv", "squat", 8],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv", "squat", 6],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv", "squat", 3],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "deadlift", 5],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv", "machine", 10, 1],
+];
+for (const [rel, lift, final, ahead = 0] of process.argv.length > 2 ? [] : live) {
+  const file = path.resolve(ROOT, rel);
+  if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
+  const buf = readFileSync(file);
+  const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const counts = [];
+  for (let T = rec.t[0] + 3; T <= rec.t[rec.t.length - 1] + 1e-9; T += 0.25) {
+    const n = rec.t.findIndex((x) => x > T);
+    const k = n < 0 ? rec.t.length : n;
+    const imu = Object.fromEntries(["ax", "ay", "az", "gx", "gy", "gz"].map((c) => [c, rec[c].slice(0, k)]));
+    const r = analyze(rec.t.slice(0, k), magnitude(imu.ax, imu.ay, imu.az), { ...SETTINGS, LIFT: lift }, imu);
+    counts.push(r.error ? 0 : dropRackMoves(r.reps, r.lift).length);
+  }
+  const dips = counts.filter((c, i) => i && c < counts[i - 1]).length;
+  const most = Math.max(...counts);
+  const bad = dips > 1 || most > final + ahead || counts.at(-1) !== final;
+  if (bad) failures++;
+  console.log(`${bad ? "FAIL" : "PASS"} live ${path.basename(rel)} [${lift}]: ${counts.length} passes, final ${counts.at(-1)} (want ${final}), most ${most}, dips ${dips}`);
+}
+
+// ---------- the vertical (D40): its gate, JS = Python per sample, and no chaos ----------
+// Browser 60 Hz and phone 402 Hz bar lifts stay on |a| - g (exactly); pod-rate bar lifts get the vertical.
+// On the pod files the vertical must agree JS vs Python to 1e-9 m/s^2 per sample, and Python's own must
+// move less than 1e-9 under a 1e-12 nudge of the accel: Madgwick's normalized pull made it chaotic
+// (0.07 m/s^2 from 1e-15) until SN_FLOOR, and a rep tolerance can't see a chaotic filter under 1 mm.
+const gate = [
+  ["analysis/data/bar-squat-2026-10-16-2131.csv", false],           // phone native sensors, 402 Hz
+  ["analysis/data/bar-squat-2026-10-16-2134-browser.csv", false],   // browser, 60 Hz
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv", true],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv", true],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv", true],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", true],
+  ["analysis/data/fake_motion_squat_tng.csv", true],
+];
+const PY_VERT = [
+  "import sys, json, numpy as np, reps",
+  "from pathlib import Path",
+  "p = Path(sys.argv[1])",
+  "t, a = reps.load_phyphox(p, reps.AXIS)",
+  "acc, gy = reps.load_imu(p, len(t))",
+  "lift = reps.lift_from_name(p.name)",
+  "r = reps.analyze(t, a, lift, acc, gy)",
+  "on_a = bool(np.array_equal(r['a'], a - r['g']))",
+  "nudge = 0.0",
+  "if not on_a:",
+  "    r2 = reps.analyze(t, a, lift, acc + np.random.default_rng(1).normal(0, 1e-12, acc.shape), gy)",
+  "    nudge = float(np.max(np.abs(r2['a'] - r['a'])))",
+  "print(json.dumps({'on_a': on_a, 'nudge': nudge, 'a': [float(x) for x in r['a']]}))",
+].join("\n");
+for (const [rel, vertical] of process.argv.length > 2 ? [] : gate) {
+  const file = path.resolve(ROOT, rel);
+  if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
+  const buf = readFileSync(file);
+  const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const imu = Object.fromEntries(["ax", "ay", "az", "gx", "gy", "gz"].map((k) => [k, rec[k]]));
+  const aRaw = magnitude(imu.ax, imu.ay, imu.az);
+  const r = analyze(rec.t, aRaw, { ...SETTINGS, LIFT: liftFromName(path.basename(file)) }, imu);
+  const jsOnA = !r.error && r.a.every((x, i) => x === aRaw[i] - r.g);
+  const py = JSON.parse(execFileSync(PYTHON, ["-c", PY_VERT, file], { cwd: path.join(ROOT, "analysis"), encoding: "utf8", maxBuffer: 1 << 26 }));
+  let worst = 0;
+  if (!r.error && py.a.length === r.a.length) py.a.forEach((x, i) => { worst = Math.max(worst, Math.abs(x - r.a[i])); });
+  else worst = Infinity;
+  const problems = [];
+  if (jsOnA === vertical || py.on_a === vertical) problems.push(`want ${vertical ? "the vertical" : "|a| - g"}: JS ${jsOnA ? "|a| - g" : "vertical"}, Python ${py.on_a ? "|a| - g" : "vertical"}`);
+  if (vertical && worst > 1e-9) problems.push(`the vertical JS vs Python: worst ${worst.toExponential(1)} m/s^2 (want <= 1e-9)`);
+  if (vertical && !(py.nudge <= 1e-9)) problems.push(`Python's vertical moved ${py.nudge.toExponential(1)} under a 1e-12 nudge (chaotic: SN_FLOOR?)`);
+  if (problems.length) { failures++; console.log(`FAIL vertical ${path.basename(rel)}\n  ${problems.join("\n  ")}`); }
+  else console.log(`PASS vertical ${path.basename(rel)} (${r.fs.toFixed(0)} Hz): ${vertical ? `the vertical, JS vs Python worst ${worst.toExponential(1)}, a 1e-12 nudge moves it ${py.nudge.toExponential(1)}` : "|a| - g, both"}`);
 }
 
 // ---------- the rack filter's ends (analysis/sets.py drop_rack_moves vs webapp/sets.js) ----------

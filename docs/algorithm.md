@@ -95,6 +95,9 @@ Slow rolls don't matter. A fast spin would wreck the rep.
 Rotate the calibrated acceleration into the world frame using the orientation from
 step 2, then subtract g. Result: vertical acceleration of the bar, up = positive.
 
+*Since D40 (§6c) bar lifts from the pod do this: Madgwick pulled onto gravity at stills and
+quasi-stills. The phone still uses the magnitude.*
+
 **Why not just the magnitude** (what the phone does, D9)? Magnitude counts sideways
 acceleration as upward: `|a| ≈ g + a_v + a_h²/2g`, and that last term is always positive.
 It grows with the *square* of sideways acceleration, so gentle sideways motion barely
@@ -332,6 +335,59 @@ data. A bar should turn and drift more than a stack, but the sleeve-end mount (O
 be calm on a smooth bench. If a real bar set ever reads "machine", the name still wins
 for squat/bench/deadlift; raise `MACHINE_ROT` only with that recording in hand.
 
+## 6c. Real bars: turnaround anchors on the vertical (D40)
+
+The first loaded-bar session (2026-10-31, the pod on the sleeve end) broke §5 to §6b: the app
+counted 3 of 8 touch-and-go squats at 135, 1 of 6 at 225, 1 of 3 at 360, 1 of 5 paused
+deadlifts (the ham curl's 10 were right). A loaded bar never stops between reps: standing with
+it sways at 2.7 Hz (0.3 to 0.6 m/s² of wiggle, 10x the racked noise), touch-and-go tops are
+below 0.05 m/s for about 20 ms, and deadlift plates ring at 20 Hz for seconds after each
+set-down. So the only stills are the rack before the unrack and after the rerack, one window
+runs 20 to 26 s, the rerack clang (|a| rectifies it) and the walkout land in it, and reps come
+out metres long. Two changes: the first for bar lifts with a gyro at the pod's rate, the second
+for every lift but phone at 150 Hz or more (on |a| wherever there's no vertical):
+
+1. **The vertical, not |a|** (§4 at last). Madgwick (§2, D33's filter, now in reps.py) is pulled
+   onto gravity at the stills and at *quasi-stills* (accel and gyro averaged over 0.1 s, |a| within
+   0.15 of g, turning under 3 deg/s about anything but the bar for 0.25 s: the ring and the sway
+   average out), the gyro alone in between. The acceleration along up replaces |a| - g: no
+   rectified clang, no sway rectification, and the uncalibrated pod's roll-dependent |a|
+   (9.67 to 10.03 at rest, 10-31) stops mattering. Never a velocity anchor: a quasi-still can be
+   a coast. Phone, machine, 60 Hz browsers and 402 Hz hand-held phones stay on |a|. Madgwick's
+   normalized pull is floored (SN_FLOOR): near convergence it's proportional instead of a full
+   step in a noise-picked direction, which had made the vertical chaotic in roundoff (1e-15 of
+   input moved it 0.07 m/s², so JS and Python parted on live cuts).
+2. **Turnaround anchors.** A window that's broken (its end velocity over 1.0 m/s; a still-less
+   tail over 3.0) or, for a bar lift, holds an impact (|a - g| over 20 m/s² with the gyro over
+   100 deg/s within 0.05 s: the hooks, the floor; with no gyro, over 25 m/s² alone) is redone rep
+   by rep. On the vertical the gym windows end at 0.08 to 0.81 m/s, so there it's the impact that
+   triggers; the broken window is a backstop (on |a| they ended at 3.5 to 8.1):
+   - a coarse pass finds the rep structure: jolts blanked, drift slower than 0.75 s high-passed
+     away, turnarounds of 15 cm or more;
+   - the lift's resting turnarounds are the anchors (lockouts; the floor for a deadlift). A pause
+     (0.25 s or more with the 0.37 s-averaged acceleration under 0.5, not a coast by §5's local
+     test, at the turnaround's height) anchors on its own average velocity; a touch-and-go top on
+     the coarse zero crossing;
+   - §6's straight line runs span by span between neighbouring anchors; a floor lift closes on
+     height at the landing (the bar is back on the floor); before the first anchor and after the
+     last is the unrack, walkout, walk-in and rerack: v = 0, no reps there. A squat or bench set
+     also ends at the first jolt after its first lockout (the rack); a nameless free lift doesn't
+     (a row touches the floor between reps).
+
+**Why this isn't §7's mistake.** §7 refuses turnarounds as anchors because their times come from
+the drifting velocity they would correct. Here the times come from the coarse pass, whose drift
+is high-passed away; a pause anchors on its own average velocity, real evidence the bar is
+stopped; and a touch-and-go anchor is a lockout, never a squat's bottom (a top turns at 2 to
+5 m/s², a bottom at 5 to 13, so a timing error there costs 2 to 3x less). Bottoms stay outputs.
+
+**Scored against video** (frame-level plate tracking synced to the pod, r 0.999): 8/8, 6/6, 3/3
+squats and 5/5 deadlifts; squat MCV +3.2/+3.9/+1.9% mean, worst +6.8%; ROM within 1 to 2 cm on
+average, rep boundaries within 4 to 12 ms. Live (every 0.25 s mid-set) the count never jumps
+ahead and dips at most once. Known misses: the deadlift's rep 1 starts at the 6 cm hitch off the
+floor (+31%); squats read ~3% high (the pod's scale or the video's; the 6-face calibration will
+tell). Three designs were prototyped and judged (turnaround anchors on |a|, quasi-still ZUPTs,
+a high-passed vertical); this is the judge's graft of the first and third.
+
 ## 7. Turnarounds are outputs, never anchors
 
 Inside a window, find where corrected velocity crosses zero. A − to + crossing is the
@@ -558,7 +614,8 @@ all hasn't been tested on real data yet.
 
 ## Known gap: sets with no pause at lockout
 
-Mostly closed by §6b for sets of 3+ reps. Still open: 1 to 2 rep sets with no pause
+Mostly closed by §6b for sets of 3+ reps, and on a real bar by §6c (D40), which doesn't need a
+still between reps at all. Still open: 1 to 2 rep sets with no pause
 (rare, and short windows drift less), lockouts that really do vary, and drift that
 wobbles faster than the reps.
 

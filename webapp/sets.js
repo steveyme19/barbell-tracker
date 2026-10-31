@@ -180,8 +180,16 @@ export class SessionTracker {
     this.segStart = this.segLast = null;
     this.trim();
     const named = this.liftFor(this.sets.length);
-    const res = analyze(samples.map((x) => x.t), magnitude(samples.map((x) => x.ax), samples.map((x) => x.ay),
-      samples.map((x) => x.az)), { ...SETTINGS, LIFT: named }, imuOf(samples));
+    let res;
+    try {
+      res = analyze(samples.map((x) => x.t), magnitude(samples.map((x) => x.ax), samples.map((x) => x.ay),
+        samples.map((x) => x.az)), { ...SETTINGS, LIFT: named }, imuOf(samples));
+    } catch (err) {
+      // a bug must not lose the set: its raw samples go to the app like any drop (P2), flagged
+      console.error(err);
+      this.onDrop({ samples, tAbs, lift: named, error: `analyze threw: ${err.message}`, threw: true });
+      return;
+    }
     const lift = res.error ? named : res.lift;            // the name, or what the sensor saw (D21)
     const reps = res.error ? [] : closedSetReps(res.reps, lift);
     // plates, a bump, the sensor handled: not a set. Its samples go along so the app can keep them (P2)

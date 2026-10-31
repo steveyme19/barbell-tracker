@@ -62,8 +62,11 @@ End session. Bring the phone back to the laptop; the session folder is
 
 ## Known limits this session (not bugs to chase at the gym)
 
-- No pod calibration is applied. On the sleeve end gravity falls on the uncalibrated x/y axes,
-  so |a| at rest shifts a little with the sleeve's roll; enough roll between the stills of one set
-  can drop it (its raw is kept). D37 and D38 hold the follow-ups.
-- Never tested before: the pod on its cell for a whole session, a real radio dropout in the app,
-  the screen-off path for more than a minute, a loaded bar at all.
+- Since D40 (after the 10-31 session) bar lifts use the gyro-tracked vertical and anchor each
+  rep on its turnarounds, so touch-and-go squats and floor-to-floor deadlifts count without a
+  still between reps. Still: leave the bar still for 2 to 3 s after the last rep (the set's end
+  anchor), and hands off the pod until the double buzz.
+- No pod calibration is applied yet; squat MCV reads about 3% high against video (D40).
+- Seen on 10-31: the pod ran 40 min on its cell (4.06 V throughout), the camera in front of the
+  app cost nothing (0 lost), one set lost 72 samples (flagged). Still untested: a real radio
+  dropout in the app and long screen-off stretches.

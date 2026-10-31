@@ -116,6 +116,11 @@ Bluetooth to the XIAO (same time as 4.1).
 - [ ] **2.2 Segmentation on real data.** Algorithm.md §5 to §8 on the real files. Tune
       the stillness thresholds. Count how many of your normal sets actually pause at
       lockout.
+      *2026-10-31: the first session (Adapter A only, squats 135/225/360, paused deadlifts,
+      ham curls, videos of the squats): no squat set paused at lockout, and the stills
+      approach couldn't count them. Real-bar anchoring on turnarounds plus the gyro's
+      vertical (algorithm.md §6c, D40) counts every set right against the video. Still to do:
+      Adapter B, bench, more sessions.*
 - [ ] **2.3 Metrics + quality flags.** §9 and §10: MCV, MPV, peak velocity, ROM, and
       flags per rep.
 - [ ] **2.4 Bar path + bar tilt.** §11 and §12. Get the bar axis from the roll gesture,

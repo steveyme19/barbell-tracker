@@ -21,6 +21,7 @@ Usage:
     python reps.py data/reps_pause.zip --until=8 # only the first 8 s (what the live app saw then)
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -67,6 +68,93 @@ BIG_CORRECTION = 0.15   # m/s: flag windows whose drift correction was this big
 LEVEL_MAX_DEG = 3       # highest power of t in the velocity drift curve (lockouts only)
 LEVEL_MAX_DEG_BOTH = 5  # same, when bottoms are leveled too (twice the points, so more bend is safe)
 LEVEL_FLAG = 0.02       # m: flag a rep whose lockout misses the common height by this much
+
+# Real bars (D40, the 2026-10-31 gym sets). A loaded barbell often never sits still between unrack and
+# rerack: touch-and-go squats, a squatter's 2.7 Hz sway at lockout (0.3 to 0.6 m/s^2, 10x the racked
+# noise), a deadlift whose floor rests ring at 20 Hz. Then one window runs from the rack still to the
+# rerack still, the straight-line fix spreads the rerack clang over every rep, and reps come out metres
+# long. Such a window is redone rep by rep (turnaround_velocity): a coarse pass finds the reps, then each
+# span between two of the lift's resting turnarounds (lockouts; the floor for a deadlift) gets §6's
+# straight-line fix on its own. Why that isn't D2's mistake (§7): the anchor times come from the coarse
+# pass (drift high-passed away), not from the drifting velocity they correct; a pause is anchored on its
+# own average velocity, real evidence the bar is stopped; and a touch-and-go anchor is a lockout, never
+# a squat's bottom (a top turns at 2 to 5 m/s^2, a bottom at 5 to 13, so a timing error there costs 2 to
+# 3x less).
+TA_BROKEN_V = 1.0       # m/s: velocity left at the window's end. Stills, the fakes and every older real
+                        # window: 0.68 at most. The gym sets on |a|: 3.5 to 8.1 (impacts and rectification,
+                        # not sensor bias). On the vertical they end at 0.08 to 0.81, so there a bar lift's
+                        # window is redone because of its impact, and this is a backstop for gross failures
+TA_BROKEN_TAIL = 3.0    # m/s: the same for a window with no end still yet (live, mid-set), which can end
+                        # mid-rep: the bar's own speed (up to 1.4 on file) plus TA_BROKEN_V and a margin
+TA_MIN_WIN = 1.0        # s: a shorter window is never redone (a jolt's pad would cover it)
+TA_BAR = ("squat", "bench", "deadlift", "free")   # bar lifts: an impact redoes their window too, and
+                        # they get the gyro's vertical (below)
+TA_RACKED = ("squat", "bench")   # these end at the rack: the first jolt after the first lockout closes the
+                        # set. Not "free": a row or a clean typed by name touches the floor between reps
+IMPACT_A = 20.0         # m/s^2: |a - g| over this is a jolt (bar on the hooks, plates on the floor).
+                        # Squat reps peaked at 12.8, reracks 22 to 57, deadlift landings 67 to 76 (and
+                        # its liftoffs 15 to 20, not jolts: the bar doesn't hit anything)
+IMPACT_W = 100.0        # deg/s: an impact (it redoes a bar lift's window) is a jolt with the gyro (offset
+IMPACT_NEAR = 0.05      # s     off) over IMPACT_W within IMPACT_NEAR of it. Reracks 250 to 330, set-downs
+                        # 300 to 1130; the ham curl's 22 m/s^2 stack bump stayed under 60
+IMPACT_PAD = 0.1        # s: blanked around each jolt in the coarse pass
+JOLT_PAD = 0.02         # s: blanked around each jolt when a span is integrated again (only the clang,
+                        # not the lift)
+TA_SIGMA = 0.75         # s: the coarse pass removes drift slower than this (Gaussian high-pass). Reps
+                        # take 1.4 to 4 s; this keeps their turnarounds and loses the slow ones' size
+TA_MIN_MOVE = 0.15      # m: a coarse turnaround moves at least this much (the high-pass halves a slow rep)
+TA_REST = {"deadlift": "bottom", "machine": "bottom"}   # where the bar rests between reps; others: "top"
+TA_FLAT_WIN = 0.37      # s: "flat" = acceleration averaged over this (jolts blanked) stays within
+TA_FLAT_A = 0.5         # m/s^2  TA_FLAT_A of 0. The window nulls the 2.7 Hz sway of a bar on the back and
+                        # the floor's 20 Hz ringing. Standing, held lockouts and the floor read up to
+                        # 0.5 (a heavy bar whips at 1 to 5 Hz); touch-and-go tops average -1.75 to -4.9
+TA_PAUSE = 0.25         # s: a flat stretch this long next to a turnaround can be a pause (standing before
+                        # the first rep, a held lockout, the floor) ...
+TA_REACH = 0.5          # s: ... if it reaches to within this of the coarse turnaround (whose zero crossing
+                        # wanders in a pause: up to 0.4 s out of it on these sets) ...
+TA_COAST_DV = 0.35      # m/s: ... isn't a coast by §5's local test (speed changes of opposite sign over
+                        # COAST_LOOK before and after, both over this). Coasting through a concentric or a
+                        # descent changes 0.45 to 1.7 m/s either side; the walkout's bob into standing 0.15
+                        # to 0.32, which the stills' 0.1 would call a coast ...
+TA_NEAR_FRAC = 0.4      # ... and is at the turnaround's height: within this x the bigger neighbouring move,
+                        # on the coarse height. Real pauses on file read 0.06 to 0.37 (the high-pass
+                        # leaks ~10 cm into a long pause), coasts 0.40 to 0.53: a thin margin
+TA_EDGE = 0.25          # s: the set starts and ends at rest: the first pause's anchor averages the last
+                        # 2 x this of it (just before rep 1), the last pause's its first 2 x this (just
+                        # after the last rep, before the walk-in); others all of it
+TA_SET_EDGE = 3.0       # s: a window still this close to the first (last) anchor is part of the set (one
+                        # rep's time); the gym walkouts took 4.3 to 7.3 s from the rack still
+
+# The vertical (D40). On a bar the gyro tracks which way is up, so the acceleration along up replaces
+# |a| - g for bar lifts: |a| rectifies a clang and the sway into fake upward acceleration, and an
+# uncalibrated pod's |a| at rest moves with the sleeve's roll (9.67 to 10.03 on 10-31). Madgwick (D33's
+# filter) is pulled onto gravity at the stills and at quasi-stills, the gyro alone in between.
+VERTICAL_FS = (150.0, 300.0)   # Hz: only at the pod's rate, a stand-in for "the source is the pod".
+                        # Browsers (60 Hz) and the phone's native sensors (402 Hz, hand-held tests) stay on
+                        # |a| (D9): a hand-held phone isn't on a bar
+ACC_OFFSET = None       # m/s^2 (x, y, z): the pod's accel offsets (calib_pod.py, D37), taken off first.
+                        # None: not applied yet (10-31's fit changes squat MCV by 0.6% or less)
+QS_AVG = 0.1            # s: accel and gyro averaged over this for the quasi-still test (two periods of
+                        # the floor's 20 Hz ring cancel)
+QS_DEV = 0.15           # m/s^2: | |mean accel| - g | under this ...
+QS_GYRO = 3.0           # deg/s: ... and the mean turning rate (bias off) under this, NOT counting the turn
+                        # about the bar axis: an Olympic sleeve keeps spinning on its bearing after a set-down
+                        # or a rerack (5 to 25 deg/s here) while the bar rests, and an on-axis pod feels no
+                        # acceleration from it ...
+BAR_AXIS = 2            # the pod axis along the bar (Adapter A: z, on the sleeve end face, D37/O3)
+QS_MIN = 0.25           # s: ... this long = quasi-still: gravity is the only acceleration (resting OR
+                        # coasting, both fine for attitude), so Madgwick may pull onto it. Never a velocity anchor
+BETA_STILL = 0.2        # Madgwick gain while still (rad/s of correction): converge on gravity (D33)
+BETA_MOVE = 0.0         # while moving: the gyro alone. Madgwick's step is beta times a *normalized*
+                        # gradient, so once the true error is below the accel noise it still pushes at
+                        # full strength in a noise-picked direction: 0.005 added 0.45 deg over a 1.2 s
+                        # sleeve spin that the bias-corrected gyro alone tracked to 0.04 deg
+GATE_DEG = 3.0          # a still's accel must point within this of the estimated up to pull on it
+                        # (a steady push reads quiet but tips the accel; a real rest agrees) ...
+SN_FLOOR = 0.05         # the gradient's norm, floored: it's about 2x the tilt error in rad, so under ~1.4 deg
+                        # the pull is proportional (tau ~62 ms), not a full beta step in a noise-picked
+                        # direction. Without it the vertical was chaotic in roundoff: 1e-15 m/s^2 of input
+                        # moved it 0.07 (D40's review), so JS and Python couldn't agree on a live cut
 
 # Which heights repeat every rep. Lockouts always do (that's what "locked out" means).
 #   bottoms: the bottom is a hard stop too (chest, floor), not a depth you choose
@@ -188,6 +276,125 @@ def confirm_still_runs(a, t, fs, runs):
     return confirmed
 
 
+# ---- attitude (D33's Madgwick, here since D40 so analyze() can use it; orientation.py imports it) ----
+
+def still_mask(n, runs):
+    """Per-sample bool: inside one of the (start, end) runs."""
+    m = np.zeros(n, bool)
+    for s, e in runs:
+        m[s:e + 1] = True
+    return m
+
+
+def quat_from_to(a, b):
+    """The unit quaternion (w, x, y, z) that turns unit vector a onto unit vector b."""
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    c = np.dot(a, b)
+    if c < -0.999999:                                    # opposite: any axis at right angles
+        ax = np.cross(a, [1, 0, 0]) if abs(a[0]) < 0.9 else np.cross(a, [0, 1, 0])
+        return np.concatenate([[0.0], ax / np.linalg.norm(ax)])
+    q = np.concatenate([[1 + c], np.cross(a, b)])
+    return q / np.linalg.norm(q)
+
+
+def quat_to_mat(q):
+    """Rotation matrices (n, 3, 3), sensor -> world, from quaternions (n, 4) (w, x, y, z)."""
+    w, x, y, z = q.T
+    return np.stack([
+        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], -1),
+        np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], -1),
+        np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1)], -2)
+
+
+def madgwick(t, acc, gyr_rad, still, q0, trusted=None):
+    """Madgwick's IMU update (MadgwickAHRS.c, MadgwickAHRSupdateIMU) per sample. q maps sensor to
+    world: v_world = q v_sensor q*. still: per-sample bool, BETA_STILL there (if the accel agrees
+    with the estimate within GATE_DEG, or the sample is `trusted`: a still of LONG_STILL or more,
+    so a gyro-scale error left after a spin can't lock the correction out), BETA_MOVE elsewhere. The
+    step from sample i-1 to i turns by the mean of their two gyro readings (the trapezoid): the end
+    reading alone lags the attitude by half a sample, 1.4 degrees in a 560 deg/s sleeve spin.
+    math.sqrt, not ** 0.5: Math.sqrt in reps.js rounds the same way (parity)."""
+    n = len(t)
+    out = np.zeros((n, 4))
+    q0_, q1, q2, q3 = (float(x) for x in q0)
+    out[0] = q0
+    cos_gate = math.cos(math.radians(GATE_DEG))
+    for i in range(1, n):
+        dt = t[i] - t[i - 1]
+        gx, gy, gz = (0.5 * (float(gyr_rad[i][k]) + float(gyr_rad[i - 1][k])) for k in range(3))
+        ax, ay, az = (float(x) for x in acc[i])
+        beta = BETA_MOVE
+        if still[i]:
+            # the estimated up in the sensor frame (R^T z), against the measured accel's direction
+            ux, uy, uz = 2 * (q1 * q3 - q0_ * q2), 2 * (q0_ * q1 + q2 * q3), 1 - 2 * (q1 * q1 + q2 * q2)
+            na = math.sqrt(ax * ax + ay * ay + az * az)
+            if (trusted is not None and trusted[i]) or (na > 0 and (ux * ax + uy * ay + uz * az) / na > cos_gate):
+                beta = BETA_STILL
+        qd0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz)
+        qd1 = 0.5 * (q0_ * gx + q2 * gz - q3 * gy)
+        qd2 = 0.5 * (q0_ * gy - q1 * gz + q3 * gx)
+        qd3 = 0.5 * (q0_ * gz + q1 * gy - q2 * gx)
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if norm > 0:
+            ax, ay, az = ax / norm, ay / norm, az / norm
+            _2q0, _2q1, _2q2, _2q3 = 2 * q0_, 2 * q1, 2 * q2, 2 * q3
+            _4q0, _4q1, _4q2 = 4 * q0_, 4 * q1, 4 * q2
+            _8q1, _8q2 = 8 * q1, 8 * q2
+            q0q0, q1q1, q2q2, q3q3 = q0_ * q0_, q1 * q1, q2 * q2, q3 * q3
+            s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay
+            s1 = _4q1 * q3q3 - _2q3 * ax + 4 * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az
+            s2 = 4 * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az
+            s3 = 4 * q1q1 * q3 - _2q1 * ax + 4 * q2q2 * q3 - _2q2 * ay
+            sn = max(math.sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3), SN_FLOOR)
+            if sn > 0:
+                qd0 -= beta * s0 / sn
+                qd1 -= beta * s1 / sn
+                qd2 -= beta * s2 / sn
+                qd3 -= beta * s3 / sn
+        q0_, q1, q2, q3 = q0_ + qd0 * dt, q1 + qd1 * dt, q2 + qd2 * dt, q3 + qd3 * dt
+        qn = math.sqrt(q0_ * q0_ + q1 * q1 + q2 * q2 + q3 * q3)
+        q0_, q1, q2, q3 = q0_ / qn, q1 / qn, q2 / qn, q3 / qn
+        out[i] = (q0_, q1, q2, q3)
+    return out
+
+
+def quasi_stills(acc, gyr, g, fs):
+    """Per-sample mask: the QS_AVG-averaged accel is g long and the averaged gyro (bias off) barely
+    turns about anything but the bar, for QS_MIN or more. Tolerates the ring and whip that fail the
+    real still test. Also returns the averaged accel (what the attitude is pulled toward)."""
+    n = max(int(QS_AVG * fs), 1)
+    am = np.column_stack([rolling(acc[:, k], n)[0] for k in range(3)])
+    wm = np.column_stack([rolling(gyr[:, k], n)[0] for k in range(3) if k != BAR_AXIS])
+    ok = (np.abs(np.linalg.norm(am, axis=1) - g) < QS_DEV) & (np.linalg.norm(wm, axis=1) < QS_GYRO)
+    mask = np.zeros(len(ok), bool)
+    for s, e in runs_of(ok):
+        if (e + 1 - s) / fs >= QS_MIN:
+            mask[s:e + 1] = True
+    return mask, am
+
+
+def vertical_accel(t, acc, gyro, runs, fs):
+    """Acceleration along up (gravity off, m/s^2) from the gyro-tracked attitude: Madgwick pulled onto
+    gravity in the stills and the quasi-stills, the gyro alone in between, run forward from the first
+    still and backward before it. Every pull is "trusted": a clang can tip the estimate past GATE_DEG
+    (5 to 7 deg on the 10-31 deadlift), and the averaged accel it pulls toward has the ring averaged out."""
+    still = still_mask(len(t), runs)
+    g = float(np.mean(np.linalg.norm(acc[still], axis=1)))
+    w_deg = gyro - np.median(gyro[still], axis=0)             # gyro offset from the stills
+    qs, am = quasi_stills(acc, w_deg, g, fs)
+    pull = still | qs
+    s0, e0 = runs[0]
+    q0 = quat_from_to(acc[s0:e0 + 1].mean(axis=0), np.array([0.0, 0.0, 1.0]))
+    w = np.radians(w_deg)
+    q = np.zeros((len(t), 4))
+    q[s0:] = madgwick(t[s0:], am[s0:], w[s0:], pull[s0:], q0, pull[s0:])
+    if s0:
+        b = slice(s0, None, -1)
+        q[:s0 + 1] = madgwick(-t[b], am[b], -w[b], pull[b], q0, pull[b])[::-1]
+    up = quat_to_mat(q)[:, 2, :]                            # world up in the sensor frame
+    return (acc * up).sum(axis=1) - g
+
+
 def velocity_between_anchors(a, t, fs, runs):
     """Velocity with drift removed between every pair of still periods.
 
@@ -236,6 +443,8 @@ def level_heights(a, t, v, windows, lift=None):
     x = integrate(v, t)
     lows, highs = turning_points(x, MIN_ROM)
     for w in windows:
+        if w.get("turns"):
+            continue                    # redone rep by rep (turnaround_velocity)
         i0, i1 = w["i0"], w["i1"]
         tops = [h for h in highs if i0 < h < i1]
         bottoms = [b for b in lows if i0 < b < i1]
@@ -305,6 +514,196 @@ def level_heights(a, t, v, windows, lift=None):
     return v
 
 
+# ---- turnaround anchors (D40): a window with no still between its reps, redone rep by rep ----
+
+def gauss_smooth(y, fs, sigma):
+    """Gaussian moving average (sigma in s), ends padded with the end values."""
+    n = int(4 * sigma * fs)
+    k = np.exp(-0.5 * (np.arange(-n, n + 1) / (sigma * fs)) ** 2)
+    yp = np.concatenate([np.full(n, y[0]), y, np.full(n, y[-1])])
+    return np.convolve(yp, k / k.sum(), mode="same")[n:len(yp) - n]
+
+
+def dilate(mask, n):
+    """mask widened by n samples each way."""
+    out = np.zeros(len(mask), bool)
+    for i in np.where(mask)[0]:
+        out[max(i - n, 0):i + n + 1] = True
+    return out
+
+
+def jolts(a, fs, pad):
+    """Samples within pad s of a jolt: |a| over IMPACT_A."""
+    return dilate(np.abs(a) > IMPACT_A, int(pad * fs))
+
+
+def impact_mask(a, gyro, runs, fs):
+    """Per sample: a jolt (|a| over IMPACT_A) with the gyro (offset off) over IMPACT_W within
+    IMPACT_NEAR of it: the bar hit something (the hooks, the floor), not a fast rep."""
+    if gyro is None or not np.any(gyro):
+        return np.abs(a) > 25.0                         # no gyro to confirm it: a harder jolt alone
+    jolt = np.abs(a) > IMPACT_A
+    still = still_mask(len(a), runs)
+    wn = np.linalg.norm(gyro - gyro[still].mean(axis=0), axis=1)
+    return jolt & dilate(wn > IMPACT_W, int(IMPACT_NEAR * fs))
+
+
+def broken_window(v, w):
+    """The still-to-still fix can't be trusted: the velocity left at the window's end (raw, or after
+    the tail with no end still) is far beyond any sensor bias."""
+    if w["anchored"]:
+        return abs(w["raw_end"]) > TA_BROKEN_V
+    return abs(v[w["i1"]]) > TA_BROKEN_TAIL
+
+
+def runs_of(mask):
+    """(start, end) of every run of True in mask."""
+    d = np.diff(np.concatenate([[0], np.asarray(mask).astype(int), [0]]))
+    return list(zip(np.where(d == 1)[0], np.where(d == -1)[0] - 1))
+
+
+def find_pause(a, t, xc, k, lo, hi, fs, flat, floor):
+    """The pause at the coarse turnaround k (lo, hi: the turnarounds either side; xc: coarse height),
+    as (start, end) samples, or None. A flat run between lo and hi, TA_PAUSE or longer, reaching to
+    within TA_REACH of k, is a pause (standing before the first rep, a held lockout, the floor) if the
+    bar isn't moving through it. Flat is also a coast, the old lesson of §5, so two checks: §5's local
+    one (speed changes of opposite sign before and after, both over TA_COAST_DV), and height: a pause
+    is at the turnaround's height, within TA_NEAR_FRAC of the bigger neighbouring move (a slow
+    concentric's flat middle, or a grinder's flat finish, is well below the top). Which run: at a
+    lockout the nearest, on the floor the longest (a deadlift's hitch just off the floor passes both
+    checks and sits nearer, but it's brief). In a pause the coarse velocity's zero crossing k can land
+    anywhere, even outside it."""
+    look, reach = int(COAST_LOOK * fs), int(TA_REACH * fs)
+    move = max(abs(xc[k] - xc[lo]), abs(xc[k] - xc[hi]))
+    best = None
+    for rs, re in runs_of(flat[lo:hi + 1]):
+        rs, re = rs + lo, re + lo
+        if re - rs < TA_PAUSE * fs or not (rs - reach <= k <= re + reach):
+            continue
+        into, out = speed_change(a, t, rs - look, rs), speed_change(a, t, re, re + look)
+        if into * out < 0 and min(abs(into), abs(out)) > TA_COAST_DV:
+            continue
+        if abs(xc[(rs + re) // 2] - xc[k]) > TA_NEAR_FRAC * move:
+            continue
+        score = -(re - rs) if floor else (0 if rs <= k <= re else min(abs(rs - k), abs(re - k)))
+        if best is None or score < best[0]:
+            best = (score, (rs, re))
+    return None if best is None else best[1]
+
+
+def span_velocity(vr, tw, s, e, vs, ve, hit=None):
+    """Velocity over samples s..e: the raw velocity vr less a straight line through vs at s and ve at
+    e (each anchor's raw velocity, §6's fix for one span). hit (floor lifts only): jolt samples. The
+    last jolt in the span's second half is the bar landing: the floor stops it, so v = 0 from there
+    on, and the span before it closes on height instead (the bar is back on the floor it left from),
+    since its speed at the landing isn't known."""
+    tt = tw[s:e + 1] - tw[s]
+    v = vr[s:e + 1] - vs
+    if hit is not None:
+        late = np.where(hit[s:e + 1] & (tt > tt[-1] / 2))[0]
+        if len(late):
+            land = late[-1]
+            while land > 0 and hit[s + land - 1]:      # back to the onset of that last jolt
+                land -= 1
+            if tt[land] > 0:
+                x = integrate(v[:land + 1], tt[:land + 1])
+                v[:land + 1] -= 2 * x[-1] / tt[land] ** 2 * tt[:land + 1]   # height back to 0 at the landing
+            else:
+                v[:] = 0.0                              # the span starts in that jolt: on the floor
+            v[land + 1:] = 0.0
+            return v
+    return v - (ve - vs) * tt / tt[-1]
+
+
+def turnaround_velocity(a, t, fs, w, lift):
+    """Velocity over a redone window, rep by rep:
+      1. coarse pass: the rep structure only (this velocity isn't kept). Jolts blanked, a jolt the
+         bar comes to rest after stops it, drift slower than TA_SIGMA high-passed away; then the
+         height's turnarounds of TA_MIN_MOVE or more
+      2. the lift's resting turnarounds (TA_REST: lockouts, or the floor) are the anchors: a pause
+         (find_pause) anchors on its average velocity, which averages out a heavy bar's whip; a
+         touch-and-go turn on the coarse zero crossing. A squat or bench set ends at the first jolt
+         after its first lockout (the bar hit the rack)
+      3. one raw velocity over the window (jolts blanked), less a straight line between each pair of
+         neighbouring anchors (§6, span by span). Before the first anchor and after the last it's 0:
+         the unrack, walkout, walk-in and rerack aren't reps. No end still yet (live, or a still the
+         test missed) and not racked: after the last anchor the raw velocity goes on from it, flagged,
+         like any unanchored tail (the rep in progress).
+    Returns v for samples i0..i1; w gets the anchors, and w["rests"] = (first anchor, last anchor,
+    closed: nothing after the last one can be a rep)."""
+    i0, i1 = w["i0"], w["i1"]
+    tw = t[i0:i1 + 1] - t[i0]
+    aw = a[i0:i1 + 1]
+    floor = TA_REST.get(lift, "top") == "bottom"
+    # 1. coarse pass (n: samples in TA_FLAT_WIN)
+    blank = jolts(aw, fs, IMPACT_PAD)
+    am = np.where(blank, 0.0, aw)
+    n = max(1, int(TA_FLAT_WIN * fs))
+    flat = np.abs(rolling(am, n)[0]) < TA_FLAT_A
+    stops = [je for js, je in runs_of(blank)
+             if any(rs <= n and re - rs >= TA_PAUSE * fs for rs, re in runs_of(flat[je:]))]
+    vc = np.zeros_like(aw)
+    for s, e in zip([0] + stops, stops + [len(aw) - 1]):
+        vc[s:e + 1] = integrate(am[s:e + 1], tw[s:e + 1] - tw[s])
+    vc = vc - gauss_smooth(vc, fs, TA_SIGMA)
+    xc = integrate(vc, tw)
+    lows, highs = turning_points(xc, TA_MIN_MOVE)
+    turns = sorted(lows + highs)
+    # 2. anchors: (sample, first and last sample of the stretch whose average velocity is the zero)
+    rests = []
+    for k in (lows if floor else highs):
+        j = turns.index(k)
+        lo = turns[j - 1] if j > 0 else 0
+        hi = turns[j + 1] if j + 1 < len(turns) else len(tw) - 1
+        rests.append((k, find_pause(am, tw, xc, k, lo, hi, fs, flat, floor)))
+    racked = False
+    if lift in TA_RACKED:
+        hits = np.where(np.abs(aw) > IMPACT_A)[0]
+        hits = hits[hits > rests[0][0]] if rests else hits
+        if len(hits):
+            rests = [(k, p) for k, p in rests if (p[0] if p else k) < hits[0]]
+            racked = True                               # no rep in progress after it, live or not
+    closed = w["anchored"] or racked
+    edge = int(TA_EDGE * fs)
+    anchors = []
+    for j, (k, p) in enumerate(rests):
+        if p is None:
+            anchors.append((k, k, k))                   # touch-and-go
+            continue
+        ps, pe = p
+        if j == 0 and len(rests) > 1:
+            ps = max(ps, pe - 2 * edge)                 # standing before the first rep: its end
+        elif j == len(rests) - 1 and j > 0:
+            pe = min(pe, ps + 2 * edge)                 # after the last rep: its start (then the walk-in)
+        anchors.append(((ps + pe) // 2, ps, pe))
+    # The window's own stills anchor the set's ends too when they're part of it (the hold before the
+    # first rep, the bottom a row starts from): within TA_SET_EDGE of the first or last anchor, and
+    # not behind a rerack. Further away it's the rack, with a walkout in between. A turnaround within
+    # TA_REACH of the still is that same rest, and the still is the better anchor (the coarse pass is
+    # least sure near the window's ends).
+    end = len(tw) - 1
+    if anchors and anchors[0][0] <= TA_SET_EDGE * fs:
+        anchors = [(0, 0, 0)] + [an for an in anchors if an[0] > TA_REACH * fs]
+    if anchors and w["anchored"] and not racked and end - anchors[-1][0] <= TA_SET_EDGE * fs:
+        anchors = [an for an in anchors if an[0] < end - TA_REACH * fs] + [(end, end, end)]
+    w["anchors"] = [i0 + k for k, _, _ in anchors]
+    w["rests"] = (i0 + anchors[0][0], i0 + anchors[-1][0], closed) if anchors else None
+    v = np.zeros_like(aw)
+    if not anchors:
+        return v
+    # 3. spans
+    hit = jolts(aw, fs, JOLT_PAD)
+    vr = integrate(np.where(hit, 0.0, aw), tw)
+    zero = [vr[s0:s1 + 1].mean() for _, s0, s1 in anchors]
+    for (s, _, _), (e, _, _), vs, ve in zip(anchors[:-1], anchors[1:], zero[:-1], zero[1:]):
+        if e > s:
+            v[s:e + 1] = span_velocity(vr, tw, s, e, vs, ve, hit if floor else None)
+    if not closed:
+        s = anchors[-1][0]
+        v[s:] = vr[s:] - zero[-1]
+    return v
+
+
 def turning_points(x, min_move):
     """Lows and highs where the height reverses by at least min_move ("zigzag")."""
     lows, highs = [], []
@@ -359,11 +758,24 @@ def find_reps(x, v, t, windows, bottom_ref=None, stop_frac=0.0):
         if len(cand):                        # on to v = 0, or to where a pause's drift floor begins
             while end < hi and v[end] > V_ZERO and v[end + 1] < v[end]:
                 end += 1
+        if end <= start:
+            continue                    # a flat stretch (turnaround anchors zero the walkout and rerack)
         rom = x[end] - x[start]
         dur = t[end] - t[start]
         flags = []
+        skip = False
         for w in windows:
             if w["i0"] <= end and w["i1"] >= start:
+                if w.get("turns"):
+                    # its reps lie between the first and the last resting turnaround: before is the
+                    # unrack and walkout, after is the walk-in and rerack (unless it's still going)
+                    first, last, closed = w["rests"] or (w["i1"], w["i0"], True)
+                    if start < first or (end > last and closed):
+                        skip = True
+                    flags.append("turnaround anchors")
+                    if end > last and not closed:
+                        flags.append("no end anchor")
+                    continue
                 if not w["anchored"]:
                     flags.append("no end anchor")
                 if w.get("leveled"):
@@ -373,6 +785,8 @@ def find_reps(x, v, t, windows, bottom_ref=None, stop_frac=0.0):
                     flags.append(f"long window {w['dur']:.1f}s")
                 if w["anchored"] and abs(w["raw_end"]) > BIG_CORRECTION:
                     flags.append("big drift correction")
+        if skip:
+            continue
         leveled = any(w.get("leveled") and w["i0"] <= end and w["i1"] >= start for w in windows)
         reps.append(dict(start=start, end=end, rom=rom, dur=dur, mcv=rom / dur,
                          peak=v[start:end + 1].max(), leveled=leveled, flags=sorted(set(flags))))
@@ -537,9 +951,24 @@ def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
     # Machine or free weight (D21). Stills don't depend on the lift, so this can wait till here.
     mount = detect_mount(acc, gyro, runs, fs)
     lift = choose_lift(lift, mount)
+    # A bar lift from the pod: the acceleration along up instead of |a| - g (D40)
+    bar = lift in TA_BAR and acc is not None and gyro is not None and np.any(gyro)
+    if bar and VERTICAL_FS[0] <= fs <= VERTICAL_FS[1]:
+        a = vertical_accel(t, acc - (ACC_OFFSET if ACC_OFFSET is not None else 0.0), gyro, runs, fs)
 
     v, windows = velocity_between_anchors(a, t, fs, runs)
+    # Windows with no still between their reps get turnaround anchors (D40): a broken window, or a bar
+    # lift's window holding an impact (the bar hit the hooks or the floor inside it). Not a hand-held
+    # phone test, nor a browser's 60 Hz
+    real = lift != "phone" and fs >= WALK_MIN_FS
+    hits = impact_mask(a, gyro, runs, fs) if real else np.zeros(len(a), bool)
+    turns = [w for w in windows if real and w["dur"] >= TA_MIN_WIN
+             and (broken_window(v, w) or (lift in TA_BAR and hits[w["i0"]:w["i1"] + 1].any()))]
+    for w in turns:
+        w["turns"] = True
     v = level_heights(a, t, v, windows, lift)
+    for w in turns:
+        v[w["i0"]:w["i1"] + 1] = turnaround_velocity(a, t, fs, w, lift)
     x = integrate(v, t)
     # the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
     walk = lift != "phone" and fs >= WALK_MIN_FS

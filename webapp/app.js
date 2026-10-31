@@ -49,6 +49,8 @@ let buzzed = false;       // vibrated for the set in progress yet?
 let vlTarget = 20;        // velocity-loss stop target, % (0 = off). Sticky.
 let vlAlerted = false;    // buzzed for the target in this set yet?
 let lastHiddenRun = -Infinity;   // data time of the last live analysis while the screen was off
+let hiddenGap = ANALYZE_EVERY_MS / 1000;   // s of data between those passes: 2x the last pass's run time if longer
+let liveErrLogged = false;       // a live pass that threw is logged once
 let analyzeTimer = null;
 let tickTimer = null;
 let wakeLock = null;
@@ -76,9 +78,11 @@ function onSample(s) {
   }
   // Screen off: timers stop, sensor batches don't. Run the live analysis from the data so
   // the set-start and velocity-loss buzzes still happen in your pocket.
-  if (document.hidden && running && s.t - lastHiddenRun >= ANALYZE_EVERY_MS / 1000) {
+  if (document.hidden && running && s.t - lastHiddenRun >= hiddenGap) {
     lastHiddenRun = s.t;
+    const t0 = performance.now();
     runLive();
+    hiddenGap = Math.max(ANALYZE_EVERY_MS, 2 * (performance.now() - t0)) / 1000;   // like scheduleAnalysis
   }
   if (!drawQueued) {
     drawQueued = true;
@@ -89,6 +93,15 @@ function onSample(s) {
 // Live analysis of the set in progress only (the tracker hands over just that
 // segment), so a long session stays as fast as a single set.
 function runLive() {
+  try {
+    liveAnalysis();
+  } catch (err) {
+    live = null;
+    if (!liveErrLogged) { console.error(err); liveErrLogged = true; }
+  }
+}
+
+function liveAnalysis() {
   if (!tracker?.inSegment) { live = null; return; }
   const { samples, tAbs } = tracker.segmentSamples();
   if (samples.length < 10) return;
@@ -121,9 +134,12 @@ function scheduleAnalysis(lastMs = 0) {
   analyzeTimer = setTimeout(() => {
     if (!running) return;
     const t0 = performance.now();
-    runLive();
-    render();
-    scheduleAnalysis(performance.now() - t0);
+    try {
+      runLive();
+      render();
+    } finally {
+      scheduleAnalysis(performance.now() - t0);
+    }
   }, Math.max(ANALYZE_EVERY_MS, 2 * lastMs));
 }
 
@@ -208,6 +224,7 @@ function newSession({ autosave, persist = false, from = null }) {
   recent = [];
   nSamples = 0;
   lastHiddenRun = -Infinity;   // every new source starts its t again (the pod at 0)
+  hiddenGap = ANALYZE_EVERY_MS / 1000;
   if (!from) $("setList").innerHTML = "";
   $("hint").textContent = "";
   $("hint").classList.remove("err");

@@ -32,6 +32,41 @@ export const SETTINGS = {
   LEVEL_MAX_DEG: 3,      // highest power of t in the velocity drift curve (lockouts only)
   LEVEL_MAX_DEG_BOTH: 5, // same, when bottoms are leveled too
   LEVEL_FLAG: 0.02,      // m: flag a rep whose lockout misses the common height by this much
+  // Real bars (D40): a window with no still between its reps is redone rep by rep, anchored on its
+  // turnarounds (turnaroundVelocity). See TA_* in reps.py for the why of each number.
+  TA_BROKEN_V: 1.0,      // m/s: velocity left at an anchored window's end over this: redo it
+  TA_BROKEN_TAIL: 3.0,   // m/s: the same for a tail with no end still yet (live, mid-set)
+  TA_MIN_WIN: 1.0,       // s: a shorter window is never redone
+  TA_BAR: ["squat", "bench", "deadlift", "free"],   // bar lifts: an impact redoes their window too
+  TA_RACKED: ["squat", "bench"],   // these end at the rack (the first jolt after the first lockout)
+  IMPACT_A: 20.0,        // m/s^2: |a - g| over this is a jolt (the hooks, the floor)
+  IMPACT_W: 100.0,       // deg/s: an impact is a jolt with the gyro (offset off) over this ...
+  IMPACT_NEAR: 0.05,     // s     ... within this of it
+  IMPACT_PAD: 0.1,       // s: blanked around each jolt in the coarse pass
+  JOLT_PAD: 0.02,        // s: blanked around each jolt when a span is integrated again
+  TA_SIGMA: 0.75,        // s: the coarse pass removes drift slower than this (Gaussian high-pass)
+  TA_MIN_MOVE: 0.15,     // m: a coarse turnaround moves at least this much
+  TA_REST: { deadlift: "bottom", machine: "bottom" },   // where the bar rests between reps; others "top"
+  TA_FLAT_WIN: 0.37,     // s: "flat" = acceleration averaged over this stays within
+  TA_FLAT_A: 0.5,        // m/s^2  this of 0
+  TA_PAUSE: 0.25,        // s: a flat stretch this long next to a turnaround can be a pause ...
+  TA_REACH: 0.5,         // s: ... if it reaches to within this of the coarse turnaround ...
+  TA_COAST_DV: 0.35,     // m/s: ... isn't a coast (speed changes of opposite sign, both over this) ...
+  TA_NEAR_FRAC: 0.4,     // ... and is at the turnaround's height (within this x the bigger move)
+  TA_EDGE: 0.25,         // s: the first/last pause's anchor averages 2 x this next to the set
+  TA_SET_EDGE: 3.0,      // s: a window still this close to the first/last anchor is part of the set
+  // The vertical (D40): bar lifts at the pod's rate use the acceleration along up (Madgwick, D33)
+  VERTICAL_FS: [150, 300],   // Hz: only at the pod's rate (a 402 Hz hand-held phone stays on |a|)
+  ACC_OFFSET: null,      // m/s^2 [x, y, z]: the pod's accel offsets (D37), taken off first; null: not yet
+  QS_AVG: 0.1,           // s: accel and gyro averaged over this for the quasi-still test
+  QS_DEV: 0.15,          // m/s^2: | |mean accel| - g | under this ...
+  QS_GYRO: 3.0,          // deg/s: ... and the mean turning (bias off, not about the bar) under this ...
+  BAR_AXIS: 2,           // the pod axis along the bar (Adapter A: z)
+  QS_MIN: 0.25,          // s: ... this long = quasi-still (attitude only, never a velocity anchor)
+  BETA_STILL: 0.2,       // Madgwick gain while still (rad/s)
+  BETA_MOVE: 0.0,        // while moving: the gyro alone
+  GATE_DEG: 3.0,         // a still's accel must point within this of the estimated up to pull on it
+  SN_FLOOR: 0.05,        // the gradient's norm, floored: a proportional pull near convergence (see reps.py)
   // Which heights repeat every rep (see LIFTS in reps.py).
   LIFTS: {
     phone: { bottoms: false, ends: false },    // hand-held: you don't hold still at the turnaround height
@@ -278,6 +313,141 @@ export function confirmStillRuns(a, t, fs, runs, S = SETTINGS) {
   return confirmed;
 }
 
+
+// ---- attitude (D33's Madgwick, here since D40; the same as reps.py) ----
+
+/** Per-sample bool: inside one of the [start, end] runs. */
+function stillMask(n, runs) {
+  const m = new Uint8Array(n);
+  for (const [s, e] of runs) for (let i = s; i <= e; i++) m[i] = 1;
+  return m;
+}
+
+const norm3 = (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/** The unit quaternion [w, x, y, z] that turns vector a onto vector b. */
+function quatFromTo(a, b) {
+  const na = norm3(a), nb = norm3(b);
+  a = a.map((x) => x / na);
+  b = b.map((x) => x / nb);
+  const c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (c < -0.999999) {                                  // opposite: any axis at right angles
+    const ax = Math.abs(a[0]) < 0.9 ? cross3(a, [1, 0, 0]) : cross3(a, [0, 1, 0]);
+    const n = norm3(ax);
+    return [0, ax[0] / n, ax[1] / n, ax[2] / n];
+  }
+  const q = [1 + c, ...cross3(a, b)];
+  const n = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  return q.map((x) => x / n);
+}
+
+/** madgwick() in reps.py: Madgwick's IMU update per sample, the trapezoid's mean gyro per step.
+ * t, acc (rows [x, y, z]), gyr (rad/s rows), still and trusted (per-sample) -> quaternions. */
+function madgwick(t, acc, gyr, still, q0, trusted, S) {
+  const n = t.length;
+  const out = new Array(n);
+  let [q0_, q1, q2, q3] = q0;
+  out[0] = [q0_, q1, q2, q3];
+  const cosGate = Math.cos((S.GATE_DEG * Math.PI) / 180);
+  for (let i = 1; i < n; i++) {
+    const dt = t[i] - t[i - 1];
+    const gx = 0.5 * (gyr[i][0] + gyr[i - 1][0]), gy = 0.5 * (gyr[i][1] + gyr[i - 1][1]), gz = 0.5 * (gyr[i][2] + gyr[i - 1][2]);
+    let [ax, ay, az] = acc[i];
+    let beta = S.BETA_MOVE;
+    if (still[i]) {
+      const ux = 2 * (q1 * q3 - q0_ * q2), uy = 2 * (q0_ * q1 + q2 * q3), uz = 1 - 2 * (q1 * q1 + q2 * q2);
+      const na = Math.sqrt(ax * ax + ay * ay + az * az);
+      if ((trusted && trusted[i]) || (na > 0 && (ux * ax + uy * ay + uz * az) / na > cosGate)) beta = S.BETA_STILL;
+    }
+    let qd0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz);
+    let qd1 = 0.5 * (q0_ * gx + q2 * gz - q3 * gy);
+    let qd2 = 0.5 * (q0_ * gy - q1 * gz + q3 * gx);
+    let qd3 = 0.5 * (q0_ * gz + q1 * gy - q2 * gx);
+    const norm = Math.sqrt(ax * ax + ay * ay + az * az);
+    if (norm > 0) {
+      ax /= norm; ay /= norm; az /= norm;
+      const _2q0 = 2 * q0_, _2q1 = 2 * q1, _2q2 = 2 * q2, _2q3 = 2 * q3;
+      const _4q0 = 4 * q0_, _4q1 = 4 * q1, _4q2 = 4 * q2;
+      const _8q1 = 8 * q1, _8q2 = 8 * q2;
+      const q0q0 = q0_ * q0_, q1q1 = q1 * q1, q2q2 = q2 * q2, q3q3 = q3 * q3;
+      const s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay;
+      const s1 = _4q1 * q3q3 - _2q3 * ax + 4 * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az;
+      const s2 = 4 * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az;
+      const s3 = 4 * q1q1 * q3 - _2q1 * ax + 4 * q2q2 * q3 - _2q2 * ay;
+      const sn = Math.max(Math.sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3), S.SN_FLOOR);
+      if (sn > 0) {
+        qd0 -= (beta * s0) / sn;
+        qd1 -= (beta * s1) / sn;
+        qd2 -= (beta * s2) / sn;
+        qd3 -= (beta * s3) / sn;
+      }
+    }
+    q0_ += qd0 * dt; q1 += qd1 * dt; q2 += qd2 * dt; q3 += qd3 * dt;
+    const qn = Math.sqrt(q0_ * q0_ + q1 * q1 + q2 * q2 + q3 * q3);
+    q0_ /= qn; q1 /= qn; q2 /= qn; q3 /= qn;
+    out[i] = [q0_, q1, q2, q3];
+  }
+  return out;
+}
+
+/** quasi_stills() in reps.py: [mask, averaged accel rows]. gyr: rows, bias off (deg/s). */
+function quasiStills(acc, gyr, g, fs, S) {
+  const n = Math.max(Math.trunc(S.QS_AVG * fs), 1);
+  const N = acc.length;
+  const am3 = [0, 1, 2].map((k) => rolling(acc.map((r) => r[k]), n).mean);
+  const wm = [0, 1, 2].filter((k) => k !== S.BAR_AXIS).map((k) => rolling(gyr.map((r) => r[k]), n).mean);
+  const ok = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    const an = Math.sqrt(am3[0][i] * am3[0][i] + am3[1][i] * am3[1][i] + am3[2][i] * am3[2][i]);
+    const wn = Math.sqrt(wm[0][i] * wm[0][i] + wm[1][i] * wm[1][i]);
+    ok[i] = Math.abs(an - g) < S.QS_DEV && wn < S.QS_GYRO ? 1 : 0;
+  }
+  const mask = new Uint8Array(N);
+  for (const [s, e] of runsOf(ok)) if ((e + 1 - s) / fs >= S.QS_MIN) for (let i = s; i <= e; i++) mask[i] = 1;
+  const am = new Array(N);
+  for (let i = 0; i < N; i++) am[i] = [am3[0][i], am3[1][i], am3[2][i]];
+  return [mask, am];
+}
+
+/** vertical_accel() in reps.py: acceleration along up (gravity off) from the gyro-tracked attitude,
+ * pulled onto gravity at stills and quasi-stills, forward from the first still and backward before it. */
+function verticalAccel(t, acc, gyro, runs, fs, S) {
+  const N = t.length;
+  const still = stillMask(N, runs);
+  let gs = 0, cnt = 0;
+  for (let i = 0; i < N; i++) if (still[i]) { gs += norm3(acc[i]); cnt++; }
+  const g = gs / cnt;
+  const bias = [0, 1, 2].map((k) => median(gyro.filter((_, i) => still[i]).map((r) => r[k])));
+  const wDeg = gyro.map((r) => [r[0] - bias[0], r[1] - bias[1], r[2] - bias[2]]);
+  const [qs, am] = quasiStills(acc, wDeg, g, fs, S);
+  const pull = new Uint8Array(N);
+  for (let i = 0; i < N; i++) pull[i] = still[i] || qs[i] ? 1 : 0;
+  const [s0, e0] = runs[0];
+  const m0 = [0, 0, 0];
+  for (let i = s0; i <= e0; i++) for (let k = 0; k < 3; k++) m0[k] += acc[i][k];
+  const q0 = quatFromTo(m0.map((x) => x / (e0 + 1 - s0)), [0, 0, 1]);
+  const w = wDeg.map((r) => r.map((x) => (x * Math.PI) / 180));
+  const q = new Array(N);
+  const fwd = madgwick(t.slice(s0), am.slice(s0), w.slice(s0), pull.slice(s0), q0, pull.slice(s0), S);
+  for (let i = s0; i < N; i++) q[i] = fwd[i - s0];
+  if (s0) {
+    const idx = [];
+    for (let i = s0; i >= 0; i--) idx.push(i);
+    const back = madgwick(idx.map((i) => -t[i]), idx.map((i) => am[i]), idx.map((i) => w[i].map((x) => -x)),
+      idx.map((i) => pull[i]), q0, idx.map((i) => pull[i]), S);
+    for (let k = 0; k < idx.length; k++) q[idx[k]] = back[k];
+  }
+  const out = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    const [qw, qx, qy, qz] = q[i];
+    // world up in the sensor frame: the rotation matrix's third row
+    const ux = 2 * (qx * qz - qw * qy), uy = 2 * (qy * qz + qw * qx), uz = 1 - 2 * (qx * qx + qy * qy);
+    out[i] = acc[i][0] * ux + acc[i][1] * uy + acc[i][2] * uz - g;
+  }
+  return out;
+}
+
 /** Velocity with straight-line drift removed between each pair of still periods. */
 export function velocityBetweenAnchors(a, t, fs, runs) {
   const v = new Float64Array(a.length);
@@ -371,6 +541,7 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
   const minFrom = (i, j) => { let m = Infinity; for (let k = i; k <= j; k++) m = Math.min(m, x[k]); return m; };
   const maxFrom = (i, j) => { let m = -Infinity; for (let k = i; k <= j; k++) m = Math.max(m, x[k]); return m; };
   for (const w of windows) {
+    if (w.turns) continue;             // redone rep by rep (turnaroundVelocity)
     const { i0, i1 } = w;
     let tops = highs.filter((h) => h > i0 && h < i1);
     let bottoms = lows.filter((b) => b > i0 && b < i1);
@@ -449,6 +620,202 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
   return v;
 }
 
+
+// ---- turnaround anchors (D40): a window with no still between its reps, redone rep by rep ----
+
+/** Gaussian moving average (sigma in s), ends padded with the end values (np.convolve's order). */
+function gaussSmooth(y, fs, sigma) {
+  const n = Math.trunc(4 * sigma * fs);
+  const k = new Float64Array(2 * n + 1);
+  let ks = 0;
+  for (let j = 0; j <= 2 * n; j++) { k[j] = Math.exp(-0.5 * ((j - n) / (sigma * fs)) ** 2); ks += k[j]; }
+  for (let j = 0; j <= 2 * n; j++) k[j] /= ks;
+  const L = y.length;
+  const yp = new Float64Array(L + 2 * n);                   // padded with the end values, once
+  for (let i = 0; i < yp.length; i++) yp[i] = y[Math.min(Math.max(i - n, 0), L - 1)];
+  const kr = k.slice().reverse();                           // kr[j] = k[2n - j]: the same sums, same order
+  const out = new Float64Array(L);
+  for (let i = 0; i < L; i++) {
+    let acc = 0;
+    for (let j = 0; j <= 2 * n; j++) acc += yp[i + j] * kr[j];
+    out[i] = acc;
+  }
+  return out;
+}
+
+/** mask widened by n samples each way. */
+function dilate(mask, n) {
+  const out = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    for (let j = Math.max(i - n, 0); j <= Math.min(i + n, mask.length - 1); j++) out[j] = 1;
+  }
+  return out;
+}
+
+/** Samples within pad s of a jolt: |a| over IMPACT_A. */
+function jolts(a, fs, pad, S) {
+  return dilate(Uint8Array.from(a, (x) => (Math.abs(x) > S.IMPACT_A ? 1 : 0)), Math.trunc(pad * fs));
+}
+
+/** impact_mask() in reps.py: a jolt with the gyro (offset off) over IMPACT_W within IMPACT_NEAR. */
+function impactMask(a, gyro, runs, fs, S) {
+  if (!gyro) return Uint8Array.from(a, (x) => (Math.abs(x) > 25.0 ? 1 : 0));   // no gyro: a harder jolt alone
+  const still = stillMask(a.length, runs);
+  const m = [0, 0, 0];
+  let cnt = 0;
+  for (let i = 0; i < a.length; i++) if (still[i]) { for (let k = 0; k < 3; k++) m[k] += gyro[i][k]; cnt++; }
+  for (let k = 0; k < 3; k++) m[k] /= cnt;
+  const fast = Uint8Array.from(gyro, (r) => (Math.sqrt((r[0] - m[0]) ** 2 + (r[1] - m[1]) ** 2 + (r[2] - m[2]) ** 2) > S.IMPACT_W ? 1 : 0));
+  const near = dilate(fast, Math.trunc(S.IMPACT_NEAR * fs));
+  return Uint8Array.from(a, (x, i) => (Math.abs(x) > S.IMPACT_A && near[i] ? 1 : 0));
+}
+
+/** The still-to-still fix can't be trusted: the velocity left at the window's end is far too big. */
+function brokenWindow(v, w, S) {
+  if (w.anchored) return Math.abs(w.rawEnd) > S.TA_BROKEN_V;
+  return Math.abs(v[w.i1]) > S.TA_BROKEN_TAIL;
+}
+
+/** [start, end] of every run of truthy values in mask. */
+function runsOf(mask) {
+  const out = [];
+  let s = -1;
+  for (let i = 0; i <= mask.length; i++) {
+    const on = i < mask.length && mask[i];
+    if (on && s < 0) s = i;
+    else if (!on && s >= 0) { out.push([s, i - 1]); s = -1; }
+  }
+  return out;
+}
+
+/** find_pause() in reps.py: the pause at coarse turnaround k as [start, end], or null. */
+function findPause(a, t, xc, k, lo, hi, fs, flat, floor, S) {
+  const look = Math.trunc(S.COAST_LOOK * fs), reach = Math.trunc(S.TA_REACH * fs);
+  const move = Math.max(Math.abs(xc[k] - xc[lo]), Math.abs(xc[k] - xc[hi]));
+  let best = null;
+  for (let [rs, re] of runsOf(flat.subarray(lo, hi + 1))) {
+    rs += lo; re += lo;
+    if (re - rs < S.TA_PAUSE * fs || !(rs - reach <= k && k <= re + reach)) continue;
+    const into = speedChange(a, t, rs - look, rs), out = speedChange(a, t, re, re + look);
+    if (into * out < 0 && Math.min(Math.abs(into), Math.abs(out)) > S.TA_COAST_DV) continue;
+    if (Math.abs(xc[Math.floor((rs + re) / 2)] - xc[k]) > S.TA_NEAR_FRAC * move) continue;
+    const score = floor ? -(re - rs) : rs <= k && k <= re ? 0 : Math.min(Math.abs(rs - k), Math.abs(re - k));
+    if (best === null || score < best[0]) best = [score, [rs, re]];
+  }
+  return best === null ? null : best[1];
+}
+
+/** span_velocity() in reps.py: raw velocity less a straight line through the two anchors' zeros;
+ * on a floor lift (hit given) the span closes on height at the landing instead. */
+function spanVelocity(vr, tw, s, e, vs, ve, hit = null) {
+  const tt = Float64Array.from(tw.subarray(s, e + 1), (x) => x - tw[s]);
+  const v = Float64Array.from(vr.subarray(s, e + 1), (x) => x - vs);
+  const T = tt[tt.length - 1];
+  if (hit) {
+    let land = -1;
+    for (let i = 0; i < tt.length; i++) if (hit[s + i] && tt[i] > T / 2) land = i;
+    if (land >= 0) {
+      while (land > 0 && hit[s + land - 1]) land--;          // back to the onset of that last jolt
+      if (tt[land] > 0) {
+        const x = integrate(v.subarray(0, land + 1), tt.subarray(0, land + 1));
+        const c = (2 * x[land]) / tt[land] ** 2;
+        for (let i = 0; i <= land; i++) v[i] -= c * tt[i];   // height back to 0 at the landing
+      } else {
+        v.fill(0);                                           // the span starts in that jolt: on the floor
+      }
+      for (let i = land + 1; i < v.length; i++) v[i] = 0;
+      return v;
+    }
+  }
+  for (let i = 0; i < v.length; i++) v[i] -= ((ve - vs) * tt[i]) / T;
+  return v;
+}
+
+/** turnaround_velocity() in reps.py: velocity over a redone window, rep by rep (coarse pass for the
+ * rep structure, the lift's resting turnarounds as anchors, then section 6's line span by span). */
+function turnaroundVelocity(a, t, fs, w, lift, S) {
+  const { i0, i1 } = w;
+  const tw = Float64Array.from(t.subarray(i0, i1 + 1), (x) => x - t[i0]);
+  const aw = a.subarray(i0, i1 + 1);
+  const L = aw.length;
+  const floor = (S.TA_REST[lift] ?? "top") === "bottom";
+  // 1. coarse pass
+  const blank = jolts(aw, fs, S.IMPACT_PAD, S);
+  const am = Float64Array.from(aw, (x, i) => (blank[i] ? 0 : x));
+  const n = Math.max(1, Math.trunc(S.TA_FLAT_WIN * fs));
+  const fm = rolling(am, n).mean;
+  const flat = Uint8Array.from(fm, (x) => (Math.abs(x) < S.TA_FLAT_A ? 1 : 0));
+  const stops = runsOf(blank).map(([, je]) => je)
+    .filter((je) => runsOf(flat.subarray(je)).some(([rs, re]) => rs <= n && re - rs >= S.TA_PAUSE * fs));
+  let vc = new Float64Array(L);
+  const starts = [0, ...stops], ends = [...stops, L - 1];
+  for (let j = 0; j < starts.length; j++) {
+    const s = starts[j], e = ends[j];
+    const seg = integrate(am.subarray(s, e + 1), Float64Array.from(tw.subarray(s, e + 1), (x) => x - tw[s]));
+    for (let i = 0; i < seg.length; i++) vc[s + i] = seg[i];
+  }
+  const sm = gaussSmooth(vc, fs, S.TA_SIGMA);
+  vc = Float64Array.from(vc, (x, i) => x - sm[i]);
+  const xc = integrate(vc, tw);
+  const { lows, highs } = turningPoints(xc, S.TA_MIN_MOVE);
+  const turns = [...lows, ...highs].sort((p, q) => p - q);
+  // 2. anchors
+  let rests = [];
+  for (const k of floor ? lows : highs) {
+    const j = turns.indexOf(k);
+    const lo = j > 0 ? turns[j - 1] : 0;
+    const hi = j + 1 < turns.length ? turns[j + 1] : L - 1;
+    rests.push([k, findPause(am, tw, xc, k, lo, hi, fs, flat, floor, S)]);
+  }
+  let racked = false;
+  if (S.TA_RACKED.includes(lift)) {
+    let first = -1;
+    for (let i = 0; i < L; i++) {
+      if (Math.abs(aw[i]) > S.IMPACT_A && (!rests.length || i > rests[0][0])) { first = i; break; }
+    }
+    if (first >= 0) {
+      rests = rests.filter(([k, p]) => (p ? p[0] : k) < first);
+      racked = true;                                     // no rep in progress after it, live or not
+    }
+  }
+  const closed = w.anchored || racked;
+  const edge = Math.trunc(S.TA_EDGE * fs);
+  let anchors = [];
+  rests.forEach(([k, p], j) => {
+    if (p === null) { anchors.push([k, k, k]); return; }  // touch-and-go
+    let [ps, pe] = p;
+    if (j === 0 && rests.length > 1) ps = Math.max(ps, pe - 2 * edge);         // before rep 1: its end
+    else if (j === rests.length - 1 && j > 0) pe = Math.min(pe, ps + 2 * edge); // after the last: its start
+    anchors.push([Math.floor((ps + pe) / 2), ps, pe]);
+  });
+  // the window's own stills anchor the set's ends when they're part of it (see reps.py)
+  const end = L - 1;
+  if (anchors.length && anchors[0][0] <= S.TA_SET_EDGE * fs) {
+    anchors = [[0, 0, 0], ...anchors.filter((an) => an[0] > S.TA_REACH * fs)];
+  }
+  if (anchors.length && w.anchored && !racked && end - anchors[anchors.length - 1][0] <= S.TA_SET_EDGE * fs) {
+    anchors = [...anchors.filter((an) => an[0] < end - S.TA_REACH * fs), [end, end, end]];
+  }
+  w.anchors = anchors.map(([k]) => i0 + k);
+  w.rests = anchors.length ? [i0 + anchors[0][0], i0 + anchors[anchors.length - 1][0], closed] : null;
+  const v = new Float64Array(L);
+  if (!anchors.length) return v;
+  // 3. spans
+  const hit = jolts(aw, fs, S.JOLT_PAD, S);
+  const vr = integrate(Float64Array.from(aw, (x, i) => (hit[i] ? 0 : x)), tw);
+  const zero = anchors.map(([, s0, s1]) => { let m = 0; for (let i = s0; i <= s1; i++) m += vr[i]; return m / (s1 + 1 - s0); });
+  for (let j = 0; j + 1 < anchors.length; j++) {
+    const s = anchors[j][0], e = anchors[j + 1][0];
+    if (e > s) v.set(spanVelocity(vr, tw, s, e, zero[j], zero[j + 1], floor ? hit : null), s);
+  }
+  if (!closed) {
+    const s = anchors[anchors.length - 1][0];
+    for (let i = s; i < L; i++) v[i] = vr[i] - zero[zero.length - 1];
+  }
+  return v;
+}
+
 /** Median height of the turnaround bottoms, for lifts whose bottom repeats; else null. */
 /** Where a hard concentric sticks (analytics.md section 4): the deepest dip with a rise before and
  * after it, STICK_PROM x the rep's peak below the lower of those peaks, inside STICK_RANGE of the
@@ -516,13 +883,23 @@ export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopF
     if (found) {                       // on to v = 0, or to where a pause's drift floor begins
       while (end < hi && v[end] > S.V_ZERO && v[end + 1] < v[end]) end++;
     }
+    if (end <= start) continue;        // a flat stretch (turnaround anchors zero the walkout and rerack)
     const rom = x[end] - x[start];
     const dur = t[end] - t[start];
     let peak = -Infinity;
     for (let i = start; i <= end; i++) peak = Math.max(peak, v[i]);
     const flags = new Set();
+    let skip = false;
     for (const w of windows) {
       if (w.i0 <= end && w.i1 >= start) {
+        if (w.turns) {
+          // its reps lie between the first and the last resting turnaround (see reps.py)
+          const [first, last, closed] = w.rests ?? [w.i1, w.i0, true];
+          if (start < first || (end > last && closed)) skip = true;
+          flags.add("turnaround anchors");
+          if (end > last && !closed) flags.add("no end anchor");
+          continue;
+        }
         if (!w.anchored) flags.add("no end anchor");
         if (w.leveled) {
           if (w.topHeight !== undefined && Math.abs(x[hi] - (x[w.i0] + w.topHeight)) > S.LEVEL_FLAG) flags.add("uneven lockout");
@@ -532,6 +909,7 @@ export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopF
         if (w.anchored && Math.abs(w.rawEnd) > S.BIG_CORRECTION) flags.add("big drift correction");
       }
     }
+    if (skip) continue;
     const leveled = windows.some((w) => w.leveled && w.i0 <= end && w.i1 >= start);
     reps.push({ start, end, rom, dur, mcv: rom / dur, peak, leveled, flags: [...flags].sort() });
   }
@@ -574,16 +952,32 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
     runs = findStillRuns(aRaw, g, fs, S, stdMax, devMax);
     if (!runs.length) return { error: "No still periods found. Start with the phone still.", fs };
   }
-  const a = Float64Array.from(aRaw, (x) => x - g);
+  let a = Float64Array.from(aRaw, (x) => x - g);
   const nCandidates = runs.length;
   runs = confirmStillRuns(a, t, fs, runs, S);
   // Machine or free weight (D21). Stills don't depend on the lift, so this can wait till here.
   const mount = detectMount(imu, runs, fs, S);
   const lift = chooseLift(S.LIFT, mount, S);
   S = { ...S, LIFT: lift };
+  // A bar lift from the pod: the acceleration along up instead of |a| - g (D40)
+  const hasGyro = imu && imu.gx && [imu.gx, imu.gy, imu.gz].some((c) => c.some((x) => x !== 0));
+  const gyro = hasGyro ? Array.from({ length: t.length }, (_, i) => [imu.gx[i], imu.gy[i], imu.gz[i]]) : null;
+  if (gyro && S.TA_BAR.includes(lift) && fs >= S.VERTICAL_FS[0] && fs <= S.VERTICAL_FS[1]) {
+    const off = S.ACC_OFFSET ?? [0, 0, 0];
+    const acc = Array.from({ length: t.length }, (_, i) => [imu.ax[i] - off[0], imu.ay[i] - off[1], imu.az[i] - off[2]]);
+    a = verticalAccel(t, acc, gyro, runs, fs, S);
+  }
 
   const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
+  // Windows with no still between their reps get turnaround anchors (D40): a broken window, or a bar
+  // lift's window holding an impact. Not a hand-held phone test, nor a browser's 60 Hz
+  const real = lift !== "phone" && fs >= S.WALK_MIN_FS;
+  const hits = real ? impactMask(a, gyro, runs, fs, S) : null;
+  const turns = windows.filter((w) => real && w.dur >= S.TA_MIN_WIN
+    && (brokenWindow(v, w, S) || (S.TA_BAR.includes(lift) && hits.subarray(w.i0, w.i1 + 1).some((h) => h))));
+  for (const w of turns) w.turns = true;
   levelHeights(a, t, v, windows, S);
+  for (const w of turns) v.set(turnaroundVelocity(a, t, fs, w, lift, S), w.i0);
   const x = integrate(v, t);
   // the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
   const walk = lift !== "phone" && fs >= S.WALK_MIN_FS;

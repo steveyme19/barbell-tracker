@@ -28,14 +28,9 @@ from pathlib import Path
 import numpy as np
 
 import reps
+from reps import still_mask, quat_from_to, quat_to_mat, madgwick   # D33's filter, in reps.py since D40
 
-BETA_STILL = 0.2         # Madgwick gain while still (rad/s of correction): converge on gravity
-BETA_MOVE = 0.0          # while moving: the gyro alone. Madgwick's step is beta times a *normalized*
-                         # gradient, so once the true error is below the accel noise it still pushes at
-                         # full strength in a noise-picked direction: 0.005 added 0.45 deg over a 1.2 s
-                         # sleeve spin that the bias-corrected gyro alone tracked to 0.04 deg
-GATE_DEG = 3.0           # a still's accel must point within this of the estimated up to pull on it
-                         # (a steady push reads quiet but tips the accel; a real rest agrees) ...
+# Madgwick's gains and gate (BETA_STILL, BETA_MOVE, GATE_DEG) live in reps.py since D40, with the filter.
 ROLL_WINDOW = 2.0        # s: the roll gesture's length
 ROLL_ONE_AXIS = 0.9      # its turning must be at least this share about one axis ...
 ROLL_MIN_RATE = 20.0     # deg/s: ... and this fast (rms), or it isn't a roll gesture
@@ -43,84 +38,6 @@ STILL_ACC = 0.1          # m/s^2: a still's mean world acceleration, every axis 
 STILL_VEC_STD = 0.15     # m/s^2: the accel vector's wiggle in a still window (reps.STILL_STD, but per vector:
                          # |a| alone can't see horizontal motion, D9)
 STILL_GYRO = 2.0         # deg/s: the gyro's turning rate in a still window (about its median, the bias)
-
-
-def quat_from_to(a, b):
-    """The unit quaternion (w, x, y, z) that turns unit vector a onto unit vector b."""
-    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
-    c = np.dot(a, b)
-    if c < -0.999999:                                    # opposite: any axis at right angles
-        ax = np.cross(a, [1, 0, 0]) if abs(a[0]) < 0.9 else np.cross(a, [0, 1, 0])
-        return np.concatenate([[0.0], ax / np.linalg.norm(ax)])
-    q = np.concatenate([[1 + c], np.cross(a, b)])
-    return q / np.linalg.norm(q)
-
-
-def quat_to_mat(q):
-    """Rotation matrices (n, 3, 3), sensor -> world, from quaternions (n, 4) (w, x, y, z)."""
-    w, x, y, z = q.T
-    return np.stack([
-        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], -1),
-        np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], -1),
-        np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1)], -2)
-
-
-def madgwick(t, acc, gyr_rad, still, q0, trusted=None):
-    """Madgwick's IMU update (MadgwickAHRS.c, MadgwickAHRSupdateIMU) per sample. q maps sensor to
-    world: v_world = q v_sensor q*. still: per-sample bool, BETA_STILL there (if the accel agrees
-    with the estimate within GATE_DEG, or the sample is `trusted`: a still of reps.LONG_STILL or more,
-    so a gyro-scale error left after a spin can't lock the correction out), BETA_MOVE elsewhere. The
-    step from sample i-1 to i turns by the mean of their two gyro readings (the trapezoid): the end
-    reading alone lags the attitude by half a sample, 1.4 degrees in a 560 deg/s sleeve spin."""
-    n = len(t)
-    out = np.zeros((n, 4))
-    q0_, q1, q2, q3 = q0
-    out[0] = q0
-    cos_gate = np.cos(np.radians(GATE_DEG))
-    for i in range(1, n):
-        dt = t[i] - t[i - 1]
-        gx, gy, gz = 0.5 * (gyr_rad[i] + gyr_rad[i - 1])
-        ax, ay, az = acc[i]
-        beta = BETA_MOVE
-        if still[i]:
-            # the estimated up in the sensor frame (R^T z), against the measured accel's direction
-            ux, uy, uz = 2 * (q1 * q3 - q0_ * q2), 2 * (q0_ * q1 + q2 * q3), 1 - 2 * (q1 * q1 + q2 * q2)
-            na = (ax * ax + ay * ay + az * az) ** 0.5
-            if (trusted is not None and trusted[i]) or (na > 0 and (ux * ax + uy * ay + uz * az) / na > cos_gate):
-                beta = BETA_STILL
-        qd0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz)
-        qd1 = 0.5 * (q0_ * gx + q2 * gz - q3 * gy)
-        qd2 = 0.5 * (q0_ * gy - q1 * gz + q3 * gx)
-        qd3 = 0.5 * (q0_ * gz + q1 * gy - q2 * gx)
-        norm = (ax * ax + ay * ay + az * az) ** 0.5
-        if norm > 0:
-            ax, ay, az = ax / norm, ay / norm, az / norm
-            _2q0, _2q1, _2q2, _2q3 = 2 * q0_, 2 * q1, 2 * q2, 2 * q3
-            _4q0, _4q1, _4q2 = 4 * q0_, 4 * q1, 4 * q2
-            _8q1, _8q2 = 8 * q1, 8 * q2
-            q0q0, q1q1, q2q2, q3q3 = q0_ * q0_, q1 * q1, q2 * q2, q3 * q3
-            s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay
-            s1 = _4q1 * q3q3 - _2q3 * ax + 4 * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az
-            s2 = 4 * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az
-            s3 = 4 * q1q1 * q3 - _2q1 * ax + 4 * q2q2 * q3 - _2q2 * ay
-            sn = (s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3) ** 0.5
-            if sn > 0:
-                qd0 -= beta * s0 / sn
-                qd1 -= beta * s1 / sn
-                qd2 -= beta * s2 / sn
-                qd3 -= beta * s3 / sn
-        q0_, q1, q2, q3 = q0_ + qd0 * dt, q1 + qd1 * dt, q2 + qd2 * dt, q3 + qd3 * dt
-        qn = (q0_ * q0_ + q1 * q1 + q2 * q2 + q3 * q3) ** 0.5
-        q0_, q1, q2, q3 = q0_ / qn, q1 / qn, q2 / qn, q3 / qn
-        out[i] = (q0_, q1, q2, q3)
-    return out
-
-
-def still_mask(n, runs):
-    m = np.zeros(n, bool)
-    for s, e in runs:
-        m[s:e + 1] = True
-    return m
 
 
 def find_stills(acc, gyr_deg, fs):
