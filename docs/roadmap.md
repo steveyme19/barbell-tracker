@@ -88,6 +88,11 @@ Bluetooth to the XIAO (same time as 4.1).
       continues in steps 9-13.*
 - [ ] **1.5 Battery.** LiPo wiring, charging, runtime test. Read Seeed's battery docs
       carefully before wiring anything.
+      *10-30: the leads get soldered straight to the BAT pads, no connector or switch (D38;
+      the steps are in hardware/enclosure.md's assembly checklist). Still to do: the runtime
+      test, both sleep currents, the battery reading against a meter, the cutoff on the real
+      cell, that unplugging USB gives no new boot and plugging it in wakes the IMU-off sleep,
+      and D38's firmware guards (the cutoff while asleep, the IMU-not-found loop, imu_serial).*
 - [ ] **1.6 (optional) Laser bench test.** TF-Luna on the XIAO, powered from USB 5 V.
       Point it at the floor from known heights (tape measure): noise at a fixed height,
       error vs. height (linearity), black rubber vs. a lighter surface. Gives you real

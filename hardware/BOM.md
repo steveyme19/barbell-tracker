@@ -9,8 +9,8 @@ Plans change, and phase 4 depends on what phase 3 finds.
 | item | first needed | notes |
 |---|---|---|
 | Tape measure | 0.1 | to the mm |
-| Soldering iron + solder | 1.5 | battery wires, connectors |
-| Multimeter | 1.5 | **check battery polarity before plugging anything in** |
+| Soldering iron + solder | 1.5 | the battery leads to the BAT pads (D38); headers later (1.6) |
+| Multimeter | 1.5 | **check battery polarity before soldering it to the pads** |
 | Calipers | 4.4 | measuring the bar, sleeve, and magnets for the Fusion design |
 | 3D printer access | 1.3 | campus makerspace or a friend's printer |
 
@@ -33,7 +33,7 @@ Plans change, and phase 4 depends on what phase 3 finds.
 | 3D-printed pod (case + lid) | 1.3 | filament | Holds the XIAO and LiPo. Its flat, square faces make it the calibration cube for the 6-position calibration and the full-turn gyro test. See [enclosure.md](enclosure.md). |
 | M2 + M3 heat-set inserts and screws | 1.3 | est. ~$10 for a kit | lid: 4 M2 x 3 inserts (3.2 mm hole) + 4 **M2 x 5 countersunk (flat-head, ISO 7046 / DIN 965)** screws (x 6 bottoms out in the 4 mm hole); adapter interface: 2 M3 x 4 short inserts (4.0 mm hole) |
 | 3.7 V LiPo, ~400 mAh, **with protection circuit** | 1.5 | $9.15 each at Jameco (Adafruit #3898, sold in pairs) | JST-PH connector. Protection circuit cuts off at 3.0 V and blocks shorts. A spare is handy. The one on hand (2026-10-19) is a PL 602030, 30.5 x 19.7 x 7.6 mm measured, not the #3898 (enclosure.md). |
-| JST-PH 2-pin socket with pigtail wires | 1.5 | est. a few $ | The XIAO has battery solder pads, not a connector. Solder a socket on so the battery unplugs. |
+| JST-PH 2-pin socket with pigtail wires | 1.5 | not needed | The XIAO has battery solder pads, not a connector. *(Superseded 10-30: the printed pod has no room for a mated JST pair, so the battery's leads are soldered straight to the BAT pads, D38, enclosure.md.)* |
 | *Optional:* TF-Luna lidar | 1.6 | $30.99 (Waveshare) | UART or I2C, 3.3 V logic (works with the XIAO directly). Needs a **3.7 to 5.2 V supply**, so power it from the XIAO's 5 V pin while on USB for the bench test. |
 
 **Phase 1 total: ~$75 core (3-pack + a pair of LiPos + small parts), +$31 for the laser**
@@ -101,9 +101,11 @@ No new hardware.
 
 - **LiPo on a barbell:** use a protected cell, enclose it fully, never puncture or crush
   it, and don't charge it unattended. A drop or a crushed case is what makes them
-  dangerous.
-- **Battery polarity:** JST-PH polarity isn't the same across all sellers. Check with a
-  multimeter before plugging a battery in.
+  dangerous. The pod's cell is soldered on (D38), so every USB session charges it (unless it's
+  full): flashing, bench runs and the step 12 soak all do.
+- **Battery polarity:** JST-PH polarity isn't the same across all sellers. Check which lead is +
+  with a multimeter before soldering the battery to the pads, and cut the plug off one lead at a
+  time (both at once shorts the cell through the cutters).
 - **Anything mounted on a loaded bar** has to be secure. A case that flies off during a
   deadlift lockout is a projectile.
 

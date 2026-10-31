@@ -73,14 +73,20 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
 
 ## Hardware gotchas (for later)
 
-- XIAO nRF52840 battery: never drive P0.14 HIGH while charging (can damage P0.31).
+- XIAO nRF52840 battery: never drive P0.14 HIGH while charging (can damage P0.31). The pod's
+  cell is soldered on (D38), so any USB session can be charging: only `firmware/flash.py`
+  builds go on it.
   Charge current 50 mA default, 100 mA with P0.13 LOW.
 - Sample timestamps come from the device, not from when data arrived over BLE.
 - In the pod's sample path read the IMU with `imuRead()`, never Wire: with the radio on, Wire's
   CPU-triggered I2C STOP gets preempted and the IMU skips samples (D28).
 - The pod's watchdog keeps running through the soft reset of an upload: any other sketch flashed
-  over it must feed `NRF_WDT->RR[0]` (imu_serial does) or it resets 8 s after boot. A power
-  cycle (unplug) clears it.
+  over it must feed `NRF_WDT->RR[0]` (imu_serial does) or it resets 8 s after boot (once: by
+  the reset table that reset clears it). A reset press (pin reset) clears it too. Unplugging USB
+  isn't a power cycle any more: the battery is soldered on (D38).
+- With the battery soldered on, a sketch without the pod's sleep (imu_serial) keeps running from
+  the cell once USB is unplugged, past the 3.30 V cutoff to the protection board's trip. Flash
+  the pod firmware back before unplugging.
 - nRF pins: after reset and after `detachInterrupt()` the input buffer is off, so `digitalRead()`
   always says LOW. `pinMode(pin, INPUT)` first (D29: this made D26's INT1 checks see nothing).
 - BLE tests from the laptop: disconnect Bluetooth headphones first, the audio link starves BLE

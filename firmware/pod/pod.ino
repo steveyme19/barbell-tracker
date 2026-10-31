@@ -7,7 +7,7 @@
 //   - sleep now: lay the pod lid-down (chip side down), still, for FACE_DOWN_S. Only when no
 //     PC has the serial port open, so it can't end a recording or the chip-down calibration face
 //   - low battery: below LOW_BATT_V it sleeps with the IMU off; only USB power or reset wakes it,
-//     so the cell never gets run flat
+//     so the cell isn't run flat while the pod is awake (asleep it isn't checked: D38)
 //   - charging at 100 mA (FAST_CHARGE) instead of the default 50 mA
 //   - Bluetooth (ble.ino): the PodLink v1 service, docs/ble.md. Every sample also goes into a
 //     38 s ring, and the phone streams from it and resumes after a dropout without losing samples

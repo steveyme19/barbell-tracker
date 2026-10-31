@@ -2,6 +2,9 @@
 
 ![layout](layout_v1.png)
 
+*(Superseded 10-30, the first concept sketch: its battery, IMU spot and JST-PH box. The pod as
+printed is pod_v1 below, with the battery soldered to the pads, D38.)*
+
 One **pod** holds the electronics. Small **adapters** hold the pod on the bar. Every
 adapter screws to the same two holes on the pod, so one pod tests both mount spots in
 phase 2 (decision O3) and nothing gets redesigned until the final enclosure in 4.4.
@@ -34,7 +37,8 @@ printing anything that has to fit.
   RGB).
 - **Reset pinhole** over the reset button (double-tap enters the bootloader).
 - **JST-PH socket** wired to the XIAO's battery pads (underside of the board), with a
-  little channel so the wires don't get pinched.
+  little channel so the wires don't get pinched. *(Superseded 10-30: no socket. The leads are
+  soldered straight to the BAT pads, D38; see the assembly checklist.)*
 - **Lid:** 4 × M2 screws into heat-set inserts (or self-tapping M2 into plain holes for
   the first print).
 - **Adapter interface:** 2 × M3 heat-set inserts in the floor, 20 mm apart, centered
@@ -42,9 +46,10 @@ printing anything that has to fit.
 - **Power:** the XIAO has no switch. For v1, either unplug the JST to turn it off, or
   put a mini slide switch in the battery + lead (then it can't charge while switched
   off). Deep sleep with wake-on-motion is the phase 4 answer (hardware/README.md).
-  *(Superseded: no switch since 10-19, and the 10-21 print has no room for a JST pair: as
-  printed the battery is soldered to the pads, and off is the deep sleep (D26). See the assembly
-  checklist.)*
+  *(Superseded 10-30: no switch since 10-19, and no JST: the 10-21 print has no room for a mated
+  pair, so the battery is soldered straight to the pads (D38). Off is the deep sleep (D26); there's
+  no hard off short of desoldering, and unplugging USB doesn't power-cycle the board. See the
+  assembly checklist.)*
 
 ### XIAO axes (measured 2026-10-18, for the lid arrows)
 
@@ -112,7 +117,7 @@ For phase 3, stick the printed AprilTag on the pod's flat lid. No extra part.
   the IMU chip sits** (distance from two board edges). Where the antenna is.
 - LiPo: length × width × thickness *including* the protection board and where the wires
   come out. Pouch cells vary by a millimeter or two between sellers.
-- JST-PH plug and socket bodies.
+- JST-PH plug and socket bodies. *(Superseded 10-30: no JST in the pod, D38.)*
 - Pot magnets and heat-set inserts: check the insert's recommended hole size.
 - The gym bar: sleeve Ø, end face (flat? steel? raised cap?), shaft Ø where the saddle
   goes, how much bare sleeve is left past the collar with plates on, J-hook clearance.
@@ -127,7 +132,7 @@ For phase 3, stick the printed AprilTag on the pod's flat lid. No extra part.
 | Hook-and-loop strap 20 mm wide, or 2 small hose clamps | Adapter B |
 | TPU filament, or a scrap of rubber sheet | anti-slip pads |
 | Thin foam tape | battery pocket |
-| *Optional:* mini slide switch (SS12D00 type) | power |
+| *Optional:* mini slide switch (SS12D00 type) *(superseded 10-30: no switch since 10-19, and the battery is soldered to the pads, D38)* | power |
 
 ## Assembly checklist (2026-10-30, the parts arrived)
 
@@ -148,23 +153,107 @@ What the print was sized for (pod_v1.py's parameters), so check each part agains
 | magnet inserts + screws | 3 more short M3 inserts; M3 x 8 countersunk | |
 | puck to pod | 2 x M3 x 10 socket head | 6.8 mm through the puck, 3.2 mm into the pod's insert |
 | battery | at most 30.5 x 19.7 x 7.6 mm incl. the protection board, wires out of one end (the PL 602030) | pocket + 0.4 mm a side |
-| battery leads | as printed, soldered straight to the BAT pads under the board | no room for a JST-PH pair (below) |
+| battery leads | soldered straight to the BAT pads under the board (decided 10-30, D38) | no room for a JST-PH pair (below) |
 
-**Battery wiring, a decision before cutting anything.** The cell's leads leave its far end under
-the tray, run back over the cell in the 2 mm `batt_gap` and up through the window under the
-board to the BAT pads: that path is in the print. A mated JST-PH pair isn't. The free space above
-the tray at the far end (~10 x 8.5 mm, only 4.7 mm tall; a mated PH pair is ~4.5 mm thick) has no
-way in for the leads: the board covers the window, and the tray's far end leaves a 0.5 mm slot
-the lid's end wall would pinch them in. The tray's wire hole went with the switch (10-19,
-0f34569). So either:
-- **solder the battery straight to the pads** (cut the plug off), as the print is; the pod is
-  off when it deep-sleeps (D26), with no hard off short of desoldering; or
-- **reprint the case with a wire hole** in the tray past the fence (about 4 x 5 mm, where pod_v1
-  had one until 10-19) and test-fit the mated pair under the lid before relying on it.
+**Battery wiring (decided 10-30: soldered straight to the BAT pads, D38).** The cell's leads leave
+its far end under the tray, run back over the cell in the 2 mm `batt_gap` and up through the window
+under the board to the BAT pads: that path is in the print. A mated JST-PH pair isn't. The free
+space above the tray at the far end (~10 x 8.5 mm, only 4.7 mm tall; a mated PH pair is ~4.5 mm
+thick) has no way in for the leads: the board covers the window, and the tray's far end leaves a
+0.5 mm slot the lid's end wall would pinch them in. The tray's wire hole went with the switch
+(10-19, 0f34569). So the plug comes off. *(Not taken: reprint the case with a wire hole in the
+tray past the fence, about 4 x 5 mm, where pod_v1 had one until 10-19.)*
+
+What a soldered cell changes:
+- **No hard off.** Off is the deep sleep (D26). The lid-down sleep wakes on any bump, so for a
+  bag or a shelf use the IMU-off sleep, which only USB or the reset pinhole wakes: `o` typed
+  into a serial terminal that holds the port open (the Arduino Serial Monitor), or the phone's
+  SLEEP mode 1 (`barDebug.podSleep(1)` from the app's devtools console, during a running pod
+  session; no button yet).
+- **Unplugging USB should no longer be a power cycle:** by Seeed's schematic the cell takes over
+  the 3.3 V regulator as VBUS goes (not bench-checked yet, D38). The recovery is the reset
+  pinhole: a pin reset, which also clears a running watchdog.
+- **Every USB session charges the cell** (unless it's full), so the P0.14 rule is always live:
+  only builds from `python firmware/flash.py` (pod or imu_serial) go on this board, no Seeed
+  example sketches and no raw arduino-cli upload.
+- **imu_serial has no sleep and no low-battery cutoff,** and neither has the pod firmware stuck at
+  "IMU not found" on USB: unplugged, both run the cell down to the protection board's trip. Flash
+  the pod firmware back before unplugging imu_serial.
+- **The 3.30 V cutoff only runs while the pod is awake.** Charge it when the app says battery
+  low, and charge it before storing it. (Estimates from datasheets, not measured: about 16 uA
+  asleep with motion wake, 7 uA with the IMU off, so a full cell lasts over a year asleep; from
+  the cutoff only weeks.)
 
 Inserts: set them with a soldering iron (the insert maker's temperature for your filament),
-straight and flush, and let them cool before any screw goes in. **Before the battery goes near the board, check its polarity with the
-multimeter at the JST plug**: JST-PH LiPos aren't wired the same way by every seller.
+straight and flush, and let them cool before any screw goes in.
+
+**Soldering the battery, in order.** The board (21 x 17.8 mm) and the cell can't pass through the
+tray's window (19.4 x 16.2), but the JST plug can. So the cell goes into the case with its plug
+still on, the leads come up through the window, and the board is soldered while it's held just
+outside the case, then folded in.
+1. Set all 6 heat-set inserts first and let the case cool. None may poke into the battery pocket.
+   No iron on the case once the cell is in.
+2. Flash the pod firmware (`python firmware/flash.py`), then unplug USB. It stays out until the
+   checks below.
+3. Find the pads with the meter on continuity: BAT- (8.26 mm from the USB-C edge) beeps to the
+   USB-C shell or the GND edge pad, BAT+ (10.16 mm, the one farther from the USB-C end) doesn't.
+   They're 1.9 mm apart, right under the IMU on the other side. (A Sense, not a Sense Plus: the
+   Plus moved them.)
+4. Find the cell's + lead with the meter on DC volts at the plug's contacts and flag it with tape
+   near the cell (the plug end gets cut off). Don't go by wire color or the plug's pin order (it
+   varies by seller). It should read 3.0 to 4.2 V; less, or nothing, means a tripped or dead cell:
+   don't fit it. Write the voltage down.
+5. Foam first, while the cell is out: the cell has 2.4 to 4 mm of play under the tray. A pad on
+   the cell's top, on the 5V half under the solid far part of the tray, thick enough to just touch
+   it (the leads and their slack take the D0-D6 half). Not under the window: there it presses on
+   the board. Not checked in a fit.
+6. Thread the plug in at the far end, under the tray and up through the window. Slide the cell in
+   after it, leads last, with its lead corner on the D0-D6 side, and push it to the USB-end wall.
+7. Fold the leads flat: up the cell's end, then back over its top along the D0-D6 wall. At the
+   far end nothing may sit above the tray or past its edge: the lid's end wall comes down 0.5 mm
+   past it and pinches anything there. Lead them out through the USB-C slot (open at the top) and
+   test-fit the lid without screws.
+8. Mark each lead 15 mm above the rim, held straight up over its pad's spot (BAT+ about 10.6 mm
+   and BAT- 8.7 mm from the inside of the USB-end wall, both about 5.8 mm from the D0-D6 wall).
+   That needs about 55 mm of lead from the cell and leaves about 20 mm of slack inside. If the
+   leads are shorter, cut right at the plug and hold the board closer; don't splice.
+9. **Cut ONE lead at its mark and tape its cell-side end before cutting the other.** Cutting both
+   at once shorts the cell through the cutters.
+10. Strip about 1.5 mm off each and tin both. Check again with the meter which end is +, then tape
+    the - end.
+11. Flux and tin both pads with a small bump: the largest tip that fits one pad (a 1 to 1.5 mm
+    chisel heats the ground pad faster than a fine cone, so less heat soaks into the IMU), at your
+    usual temperature (about 330 C leaded, 350 C lead-free), under 3 s per touch, cool between.
+    Then continuity across the two pads: no beep.
+12. Hold the board pads-up just outside the case's D0-D6 wall, that edge toward the case and the
+    USB-C end toward the case's USB end. Cover the helping hand's jaws with Kapton or tape: a bare
+    jaw across the edge pads shorts 3V3 to GND (and 5V, once USB goes in).
+13. Solder + to BAT+ first. Then untape - and solder it to BAT-, keeping its tip clear of the live
+    BAT+ joint. The board boots now: one short green blink (the LEDs face down). Held still and
+    near flat pads-up is the lid-down gesture, so about 6 s later it blinks blue 3 times and
+    sleeps. Either means it runs from the cell.
+14. Meter the BAT+ joint against the USB-C shell or the GND pad, not across the two joints (a
+    slipped probe there is a dead short). It must read the voltage from step 4. Negative or near 0
+    means reversed or bridged: desolder, BAT- first.
+15. Kapton over each joint, then one piece across both. A dab of hot glue (or a Kapton strip)
+    holds the leads to the board 1 to 2 mm from the joints, at least 1.5 mm from the board's
+    edges (the ledge is under them).
+16. Turn the board in like a page about its D0-D6 edge, pushing the slack down through the window
+    as it goes. Lay the slack as one flat loop on the cell under the solid far part of the tray:
+    not in the window (it lifts the board, the calibration reference), not in the far-end fold.
+17. Press the board flat: USB-C in its slot, on the ledge all round, no rocking (rocking means wire
+    under it). Lid on with its 4 screws. A screw that needs force means something's pinched.
+    Shake it by your ear: no rattle.
+18. Lid up, plug USB in and open the port: `python analysis/log_serial.py COMx --seconds=70
+    --name=battery-check` (COMx: the port number changes per board, see the port list). About
+    every 30 s: `# battery X.XX V, USB yes, charging yes`. The voltage should be 3.6 to 4.3 V and
+    within about 0.15 V of step 4: the reading isn't checked against a meter yet (D38) and the
+    chip's ADC is good to a few percent, so it can't show the small rise from charging. "charging
+    yes" is what says it charges; "charging no" with a full cell is fine.
+19. Calibrate the assembled pod (`python analysis/calib_pod.py COMx`, roadmap 1.3): soldering
+    right under the IMU can shift its offsets, and the case's faces are the reference anyway.
+
+To take the cell off later: BAT- first, tape it, then BAT+.
 
 ## CAD
 
@@ -242,6 +331,7 @@ Changes from the sketch above, and why:
   board and the far screw bosses; it drops in from the top, the lever goes out through a slot
   in the end wall into a 1 mm recess, so the tip stays inside the face (`sw_*` parameters,
   MEASURE the switch). Battery + runs up the wire hole to the switch and back down to BAT+.
+  *(Removed 10-19, see "No switch" below.)*
 - **USB-C plug vs lid:** a 6.5 mm overmold reaches 1 mm above the rim, so the lid has a
   hidden pocket underneath at the USB end, open on the end face (0.8 mm of lid left over it).
 - Checked in Fusion: builds clean, Inspect > Interference with all parts: none, and changing
@@ -252,8 +342,8 @@ Changes from the sketch above, and why:
   at 24.5 mm tall. Axis arrows wait for the IMU orientation to be confirmed. Adapters next.
 - Not modeled yet: embossed X/Y/Z arrows, the JST socket (it fits in the
   ~10 x 9 mm space between the fence and the far bosses, over the wire hole).
-  *(Superseded 10-30: the wire hole went with the switch on 10-19, so the leads can't reach that
-  space; see the assembly checklist.)*
+  *(Superseded 10-30: no JST socket at all. The wire hole went with the switch on 10-19, so the
+  leads couldn't reach that space, and the battery is soldered to the pads (D38).)*
 
 ### Measured parts (2026-10-19, calipers in inches, converted)
 
@@ -319,7 +409,7 @@ board 20.955 x 17.780). Distances from the USB-C board edge / the D0-D6 edge, in
   the window to the pads. They don't need the tray's wire hole: that was only for routing
   battery + through the switch.
 
-- **No switch (2026-10-19):** removed the switch cradle, its lever slot and recess (case and lid), the `sw_*` parameters, and the tray's wire hole (it was half covered by the cradle, and the wires don't need it: they reach the BAT pads through the window under the board). `boss` back to 6 mm. To turn the pod off, unplug the battery (lid off) *(10-30: but the print has no room for the JST pair that needs, see the assembly checklist)*. A switch can come back in a v2 if that gets annoying. Offline checks: 31/31 pass. **Rerun pod_v1, then pod_export + stl_orient.py**: the STLs in `stl/` are from before this and before the IMU move. *(Done: the 10-21 export, oriented into `stl/` on 10-30.)*
+- **No switch (2026-10-19):** removed the switch cradle, its lever slot and recess (case and lid), the `sw_*` parameters, and the tray's wire hole (it was half covered by the cradle, and the wires don't need it: they reach the BAT pads through the window under the board). `boss` back to 6 mm. To turn the pod off, unplug the battery (lid off) *(Superseded 10-30: no JST, the battery is soldered to the pads, D38. Off is the deep sleep; for storage the IMU-off sleep)*. A switch can come back in a v2 if that gets annoying. Offline checks: 31/31 pass. **Rerun pod_v1, then pod_export + stl_orient.py**: the STLs in `stl/` are from before this and before the IMU move. *(Done: the 10-21 export, oriented into `stl/` on 10-30.)*
 
 ### Symmetric mount holes + Adapter A puck (2026-10-19)
 

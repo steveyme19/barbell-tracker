@@ -264,7 +264,8 @@ counter, 2.8% slow).
   (Adapter A). On the shaft saddle (Adapter B) a rolled bar could do it, hence the long hold; and
   it's off while a PC has the port open (recordings, calibration faces).
 - *Low battery: 3.30 V, 3 readings 5 s apart, on battery only* -> sleep with the IMU off; only
-  USB or reset wakes it, so the cell can't be run flat. Charging stays at 100 mA (0.25 C on
+  USB or reset wakes it, so the cell can't be run flat. *(Amended by D38: only while awake and
+  with a hard off; a soldered pod asleep at the cutoff still drains.)* Charging stays at 100 mA (0.25 C on
   400 mAh) so a flat pod is full in ~4 h.
 - *Wake threshold 2* (62.5 mg on the slope filter), from real pickup data, not the datasheet
   alone. Details and bench results: firmware/README.md.
@@ -653,6 +654,36 @@ hint and a refused spin's notice printed as they happen.
 *Open:* the first run on the assembled pod; applying it (the firmware's flash or the app's
 PodSource, "save both calibrations in firmware" in 1.3); gyro scale by a record player at 33 1/3
 rpm (200 deg/s) if one turns up (the steady-turn case already passes).
+
+**D38 (2026-10-30): the pod's LiPo is soldered straight to the XIAO's BAT pads: no connector, no
+switch, no hard off.**
+- The 10-21 print routes the leads from the cell's far end back over it in `batt_gap` and up
+  through the tray's window to the pads, and has no room or way in for a mated JST-PH pair
+  (hardware/enclosure.md, assembly checklist, with the soldering steps). Off is the deep sleep
+  (D26); for a bag or a shelf, the IMU-off sleep, which only USB or reset wakes (`o` from a
+  serial terminal holding the port, or the phone's SLEEP mode 1 from the app's devtools during a
+  pod session; no button yet).
+- Unplugging USB should no longer be a power cycle: the cell feeds the 3.3 V regulator through
+  Q1 as VBUS goes (Seeed's v1.1 schematic; not bench-checked). The recovery is the reset pinhole: a pin reset, which also
+  clears a running watchdog (Nordic's reset table: power-on, brownout, pin and watchdog resets
+  clear it; a soft reset, like an upload's, and a CPU lockup don't). So a sketch that doesn't
+  feed it resets once, about 8 s after the upload, and then runs unwatched.
+- Amends D26: its "the cell can't be run flat" held only with a hard off; see Not guarded yet.
+*Why:* a reprint with a wire hole, and a mated pair ~4.5 mm thick in a 4.7 mm space, would buy
+only a hard off, and the deep sleep is close to one: about 16 uA with motion wake and 7 uA with
+the IMU off (datasheet budget, not measured), over a year from a full 400 mAh cell either way.
+*Not guarded yet* (the unplug used to cover these): the 3.30 V cutoff only runs awake, so a pod
+that sleeps near it, or wakes lid-down and sleeps again in 6 s before its 3 readings, drains to
+the protection board's trip in weeks; setup()'s IMU-not-found loop on USB never rechecks USB, so
+unplugged it stays awake on the cell; imu_serial has no sleep or cutoff at all. And every USB
+session charges now, so the P0.14 rule is always live (only flash.py builds). Until the firmware
+guards these: charge on the app's battery-low warning, store it in the IMU-off sleep, and flash
+the pod firmware back before unplugging imu_serial.
+*Open:* both sleep currents, the battery reading against a meter, the cutoff on the real cell,
+a check that unplugging USB gives no new boot, and that plugging it in wakes the IMU-off sleep
+with the cell on (every bench wake so far was on USB-only power, where a replug was a power-on).
+The firmware guards. Whether the bootloader (every upload and reset) leaves P0.14 floating:
+through the 1 MOhm that's under 1 uA into P0.31, likely fine, unchecked.
 
 ## Proposed (say yes or no)
 

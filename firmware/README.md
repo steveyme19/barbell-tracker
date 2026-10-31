@@ -6,13 +6,14 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 | sketch | what |
 |---|---|
 | `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management (D26): auto-sleep after 10 min still on battery, wake on motion via the IMU's wake-up interrupt; lid-down and still for 6 s = sleep now (only when no PC has the port open and no phone holds a session; the pod has to lie within about 20° of flat until the 1.3 calibration, so a USB cable propping it up stops it); below 3.30 V on battery it sleeps with the IMU off until USB or reset; 100 mA charging; a battery/charging status line about every 30 s. Sampling (`sampler.ino`, D29): the IMU's data-ready pulse on INT1 is stamped in an interrupt and wakes a top-priority task that reads the sample and stores it in an 8192-sample ring (~38 s); loop() only sends from the ring, so neither the radio nor a USB host that stops reading can delay or drop a sample. A watchdog resets the board if loop() stops for 8 s. Before any sleep (every reason, and the phone's SLEEP command) a connected phone gets the rest of the stream, the reason and a deliberate disconnect (step 9, docs/ble.md 6). The ring goes out over Bluetooth as `BarPod-XXXX` (`ble.ino`, PodLink v1: `docs/ble.md`, D27/D28; check it from the laptop with `analysis/ble_check.py`, Bluetooth headphones off); `PKT_OVER_USB = true` also prints the frames over USB for `analysis/podlink.py --usb`. Bench commands over USB: `s` sleep, `o` sleep with the IMU off, `w` dry run of `s` (the phone side included, then a reset), `i` stop the IMU (the sampler restarts it after ~1 s: tests IMU_RESTART), `h` hang loop() (the watchdog resets it after 8 s). Every 30 s: `# ble` (link state) and `# ring` (since boot: missed and late samples, time holes, accel lag, I2C read errors, IMU restarts, worst stamp-to-store latency since the last line, CSV lines lost to a slow host, dropped commands and `#` lines). |
-| `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py` |
+| `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py`. **On the pod (battery soldered on, D38) it has no sleep and no low-battery cutoff: flash the pod firmware back before unplugging USB, or it runs the cell to the protection board's trip.** |
 
 ## Flashing from the terminal
 
 **Use `python firmware/flash.py [sketch] [port]`** (default `pod`, port found by USB ID). It first
 checks the installed core still drives P0.14 LOW at boot (the patch below) and refuses to build
-if a core update undid it, then compiles and uploads. The raw arduino-cli command still works:
+if a core update undid it, then compiles and uploads. The raw arduino-cli command still works
+(not on the pod: with its battery soldered on, D38, it skips the P0.14 check while charging):
 
 arduino-cli ships inside Arduino IDE 2
 (`%LOCALAPPDATA%\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe`):
@@ -57,7 +58,7 @@ them: the 6-position calibration (roadmap 1.3) fixes it. Axis directions:
 | IMU interrupt 1 | P0.11 (`PIN_LSM6DS3TR_C_INT1`, D18) | wake-up / tap / data-ready; INT2 isn't connected |
 | RGB LED | red P0.26 (D11), green P0.30 (D13), blue P0.06 (D12) | active LOW |
 | QSPI flash (P25Q16H, 2 MB) | SCK P0.21, CS P0.25, IO0-3 P0.20/24/22/23 | send 0xB9 (deep power-down) before System OFF, as Seeed's sleep example does |
-| bootloader / stuck upload | | reset once; if that fails double-tap reset; then replug |
+| bootloader / stuck upload | | reset once; if that fails double-tap reset; then replug (with the battery soldered on, D38, a replug only re-enumerates USB: it isn't a power cycle) |
 
 Standby: Seeed quotes < 5 uA. GPIO states hold through System OFF, which is why P0.14 LOW,
 P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a reset
