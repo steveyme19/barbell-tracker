@@ -141,7 +141,8 @@ for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : session
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
   const buf = readFileSync(file);
   const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-  const tracker = new SessionTracker({ liftFor: (k) => lifts[Math.min(k, lifts.length - 1)] });
+  const drops = [];
+  const tracker = new SessionTracker({ liftFor: (k) => lifts[Math.min(k, lifts.length - 1)], onDrop: (d) => drops.push(d) });
   for (let i = 0; i < rec.t.length; i++) {
     tracker.push({ t: rec.t[i], ax: rec.ax[i], ay: rec.ay[i], az: rec.az[i], gx: rec.gx[i], gy: rec.gy[i], gz: rec.gz[i] });
   }
@@ -164,6 +165,18 @@ for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : session
     });
     if (JSON.stringify(s.rpeEst) !== JSON.stringify(p.rpe_est)) problems.push(`set ${k + 1} RPE JS ${s.rpeEst} vs Python ${p.rpe_est}`);
   });
+  // what isn't a set still hands its raw samples to the app (P2): each drop non-empty, in time
+  // order, and clear of every set's reps
+  for (const d of drops) {
+    if (!d.samples.length || d.samples.length !== d.tAbs.length) problems.push(`a drop with ${d.samples.length} samples, ${d.tAbs.length} times`);
+    else if (d.tAbs.some((t, i) => i && t <= d.tAbs[i - 1])) problems.push("a drop's times go backwards");
+    else if (js.some((s) => d.tAbs[0] < s.endT && d.tAbs.at(-1) > s.startT)) problems.push(`a drop at ${d.tAbs[0].toFixed(1)} s overlaps a set's reps`);
+  }
+  // make_fake_session.py: the plate bumps come within SET_GAP of each rerack, so they join that set;
+  // the one segment with no reps is the unrack, step and rerack after set 2
+  if (rel.endsWith("fake_session_squat.csv") && lifts[0] === "squat" && drops.length !== 1) {
+    problems.push(`known answer: 1 no-rep rack walk dropped with its samples, got ${drops.length}`);
+  }
   if (expect && JSON.stringify(js.map((s) => s.reps.length)) !== JSON.stringify(expect)) {
     problems.push(`known answer: reps per set ${JSON.stringify(expect)}, got ${JSON.stringify(js.map((s) => s.reps.length))}`);
   }
@@ -177,7 +190,7 @@ for (const [rel, lifts, expect, truth] of process.argv.length > 2 ? [] : session
   }));
   const truthNote = truth ? `, MCV vs truth worst ${(worstTruth * 100).toFixed(1)}%` : "";
   if (problems.length) { failures++; console.log(`FAIL session ${rel}\n  ${problems.join("\n  ")}`); }
-  else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}${truthNote}`);
+  else console.log(`PASS session ${rel} [${lifts}]: ${js.length} sets (${js.map((s) => s.lift).join(", ")}), rests ${js.slice(1).map((s) => formatTime(s.restBefore)).join(" ")}${truthNote}, ${drops.length} dropped (samples kept)`);
 }
 
 // ---------- the rack filter's ends (analysis/sets.py drop_rack_moves vs webapp/sets.js) ----------

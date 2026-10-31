@@ -184,7 +184,8 @@ export class SessionTracker {
       samples.map((x) => x.az)), { ...SETTINGS, LIFT: named }, imuOf(samples));
     const lift = res.error ? named : res.lift;            // the name, or what the sensor saw (D21)
     const reps = res.error ? [] : closedSetReps(res.reps, lift);
-    if (!reps.length) { this.onDrop(); return; }          // plates, a bump, the sensor handled: not a set
+    // plates, a bump, the sensor handled: not a set. Its samples go along so the app can keep them (P2)
+    if (!reps.length) { this.onDrop({ samples, tAbs, lift, error: res.error ?? null }); return; }
     const set = { ...setSummary(lift, reps, tAbs), reps, samples, tAbs, analysis: res, index: this.sets.length };
     const prev = this.sets[this.sets.length - 1];
     set.restBefore = prev ? set.startT - prev.endT : null;

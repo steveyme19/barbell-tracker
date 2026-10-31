@@ -685,6 +685,20 @@ with the cell on (every bench wake so far was on USB-only power, where a replug 
 The firmware guards. Whether the bootloader (every upload and reset) leaves P0.14 floating:
 through the 1 MOhm that's under 1 uA into P0.31, likely fine, unchecked.
 
+**D39 (2026-10-31): a segment the tracker drops still gets its raw samples saved, as
+`drop-<lift>-<stamp>-<hhmmss>.csv` in the session folder.**
+- SessionTracker hands a dropped segment's samples (with its 2 s lead and trail) to the app's
+  onDrop, and the app saves them like a set's CSV whenever it autosaves (the Android app; the
+  browser has no autosave). Before, a segment with no reps, or one whose analysis failed ("No
+  still periods found"), vanished with its raw data.
+*Why:* P2, ahead of the first loaded-bar session (docs/gym-day.md). The readiness audit found the
+likeliest failure on Adapter A is the tracker missing a real set (uncalibrated x/y offsets make
+|a| at rest shift with the sleeve's roll, D37), and a missed set is exactly the data needed to fix
+it. `drop-`, not `bar-`, so nothing that reads `bar-*.csv` mistakes it for a set; reps.py still
+reads the lift from the name.
+*Guarded by* parity.mjs: every dropped segment arrives non-empty, in time order and clear of every
+set's reps, and the fake squat session drops exactly its one no-rep rack walk.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

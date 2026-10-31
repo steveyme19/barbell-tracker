@@ -163,12 +163,21 @@ function onSet(set) {
   render();
 }
 
-function onDrop() {     // motion that wasn't a set (plates, a bump)
+function onDrop(drop) {     // motion that wasn't a set (plates, a bump)
   live = null;
   pendingSeg = null;
   buzzed = false;
   vlAlerted = false;
   seg = null;
+  // Keep its raw samples anyway (P2): a real set the tracker missed is exactly the data that's
+  // needed to fix it. Named drop-..., so nothing that reads bar-*.csv mistakes it for a set.
+  const ses = session;
+  if (ses?.autosave && drop?.samples?.length) {
+    const d = new Date();
+    const hms = [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join("");
+    saveFile(ses.folder, `drop-${drop.lift}-${ses.stamp}-${hms}.csv`, toCSV(drop.samples))
+      .catch((err) => showError(`Couldn't save: ${err.message}`));
+  }
   render();
 }
 

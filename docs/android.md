@@ -145,7 +145,9 @@ can check it on the phone.
 
 - Start once; the screen stays on for the whole session (`keepScreenOn`). Each set is
   saved to `Documents/BarTracker/session-<stamp>/` as it finishes, plus `session.csv`.
-  Pull a whole session with `adb pull /sdcard/Documents/BarTracker/session-<stamp> analysis/data/`.
+  Motion the tracker didn't take as a set is saved too, as `drop-<lift>-<stamp>-<hhmmss>.csv`
+  (D39). Pull a whole session with `adb pull /sdcard/Documents/BarTracker/session-<stamp> analysis/data/`
+  (from Git Bash, set `MSYS_NO_PATHCONV=1` first or the `/sdcard` path gets mangled).
 - **If you lock the phone yourself mid-session**, Capacitor pauses the WebView: JS
   timers stop (rest timer display, live analysis), but sensor batches still arrive as
   events, so sets are still found and saved. Everything catches up when you wake it.
