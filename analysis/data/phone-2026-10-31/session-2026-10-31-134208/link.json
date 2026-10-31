@@ -1,0 +1,79 @@
+{
+ "name": "BarPod-E26C",
+ "serial": 1106187551,
+ "bootId": 2488658928,
+ "odr": 208,
+ "ringN": 8192,
+ "accelLsb": 0.0023928226437419653,
+ "gyroLsb": 0.03500000014901161,
+ "perPacket": 16,
+ "intervalMs": 48.75,
+ "mtu": 247,
+ "volts": 4.087,
+ "podLost": 0,
+ "battLow": false,
+ "lost": 0,
+ "gaps": 0,
+ "faults": [],
+ "stats": {
+  "samples": 9580,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 0,
+  "epochs": 2,
+  "clock_clamped": 0,
+  "stopped": 2
+ },
+ "linked": true,
+ "asleep": null,
+ "sleepMode": null,
+ "reconnects": 1,
+ "epochs": 2,
+ "linkEvents": [
+  {
+   "at": 1793468564625,
+   "kind": "asleep",
+   "reason": "command"
+  },
+  {
+   "at": 1793468578849,
+   "kind": "back",
+   "link": 2
+  }
+ ],
+ "epochList": [
+  {
+   "bootId": 2268491329,
+   "reboot": false,
+   "firstT": 0,
+   "tOffset": -5607.829833984375,
+   "wallBase": 1793462919593.0488,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 1187712,
+   "podLost": 0,
+   "missedDrdy": 0
+  },
+  {
+   "bootId": 2488658928,
+   "reboot": true,
+   "firstT": 49.81543920898457,
+   "tOffset": 49.81113623046895,
+   "wallBase": 1793468577164.4675,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 1792,
+   "podLost": 0,
+   "missedDrdy": 0
+  }
+ ],
+ "gapList": []
+}
