@@ -1,0 +1,65 @@
+{
+ "name": "BarPod-E26C",
+ "serial": 1106187551,
+ "bootId": 2488658928,
+ "odr": 208,
+ "ringN": 8192,
+ "accelLsb": 0.0023928226437419653,
+ "gyroLsb": 0.03500000014901161,
+ "perPacket": 16,
+ "intervalMs": 37.5,
+ "mtu": 247,
+ "volts": 4.066,
+ "podLost": 0,
+ "battLow": false,
+ "lost": 72,
+ "gaps": 1,
+ "faults": [],
+ "stats": {
+  "samples": 10560,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 0,
+  "epochs": 1,
+  "clock_clamped": 0,
+  "stopped": 1
+ },
+ "linked": true,
+ "asleep": null,
+ "sleepMode": null,
+ "reconnects": 0,
+ "epochs": 1,
+ "linkEvents": [],
+ "epochList": [
+  {
+   "bootId": 2488658928,
+   "reboot": false,
+   "firstT": 0,
+   "tOffset": -1511.3819885253906,
+   "wallBase": 1793468577145.5837,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 328579,
+   "podLost": 0,
+   "missedDrdy": 0
+  }
+ ],
+ "gapList": [
+  {
+   "kind": "stop-tail",
+   "n": 72,
+   "idx": 328580,
+   "t0": 50.177215576171875,
+   "t1": 52.351318359375,
+   "boot_id": 2488658928
+  }
+ ]
+}

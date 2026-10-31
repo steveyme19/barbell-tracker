@@ -1,0 +1,2 @@
+set,date,start,file,exercise,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv,vel_loss_pct,avg_rom_cm,rep_mcvs,to_failure,mount,paused_lockout,notes
+1,2026-10-31,14:47:22,bar-machine-2026-10-31-1447-set01-ham-curl.csv,Ham curl,machine,180,10,,,,0.385,0.205,47,38.2,0.38 0.39 0.33 0.37 0.35 0.34 0.32 0.33 0.32 0.20,,,,

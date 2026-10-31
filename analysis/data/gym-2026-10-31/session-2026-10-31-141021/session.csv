@@ -1,0 +1,2 @@
+set,date,start,file,exercise,lift,load_lb,reps,rpe,rpe_est,rest_before_s,best_mcv,last_mcv,vel_loss_pct,avg_rom_cm,rep_mcvs,to_failure,mount,paused_lockout,notes
+1,2026-10-31,14:10:52,bar-squat-2026-10-31-1410-set01.csv,Squat,squat,225,1,,<=5,,0.637,0.637,0,49.9,0.64,,,,

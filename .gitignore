@@ -8,6 +8,9 @@ analysis/out/
 analysis/data/fake_*.csv
 analysis/data/fake_*.json
 
+# Gym videos (ground truth for phase 3): kept on disk next to their session, too big for git
+analysis/data/**/video/
+
 # KiCad
 *-backups/
 fp-info-cache
