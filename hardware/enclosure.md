@@ -176,10 +176,12 @@ What a soldered cell changes:
 - **Every USB session charges the cell** (unless it's full), so the P0.14 rule is always live:
   only builds from `python firmware/flash.py` (pod or imu_serial) go on this board, no Seeed
   example sketches and no raw arduino-cli upload.
-- **imu_serial has no sleep and no low-battery cutoff,** and neither has the pod firmware stuck at
-  "IMU not found" on USB: unplugged, both run the cell down to the protection board's trip. Flash
-  the pod firmware back before unplugging imu_serial.
-- **The 3.30 V cutoff only runs while the pod is awake.** Charge it when the app says battery
+- **imu_serial, and the pod firmware stuck at "IMU not found" on USB,** switch off once USB goes in
+  the 10-31 firmware (D38). Until that's flashed and bench-checked, unplugged, both run the cell
+  down to the protection board's trip. Flash the pod firmware back before unplugging imu_serial
+  either way.
+- **The 3.30 V cutoff runs at every boot (10-31 firmware) and while awake, never while the pod is
+  asleep.** Charge it when the app says battery
   low, and charge it before storing it. (Estimates from datasheets, not measured: about 16 uA
   asleep with motion wake, 7 uA with the IMU off, so a full cell lasts over a year asleep; from
   the cutoff only weeks.)

@@ -8,6 +8,9 @@
 // Lines starting with # are messages, not data. analysis/log_serial.py saves the stream
 // as a CSV that reps.py and the app can read.
 //
+// USB only: without USB power it switches off (offIfOnBattery), since on the pod the cell is
+// soldered on (D38) and this sketch has no sleep or low-battery cutoff of its own.
+//
 // Arduino IDE: board package "Seeed nRF52 Boards" (not the mbed one), board
 // "Seeed XIAO nRF52840 Sense", library "Seeed Arduino LSM6DS3".
 
@@ -28,11 +31,63 @@ uint32_t rtcLast = 0;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);   // the Sense's built-in IMU (LSM6DS3TR-C)
 
+bool usbPowered() {
+  return NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk;
+}
+
+// A pin back to its reset state: input buffer disconnected, no pull. Nothing leaks through it.
+void pinDisconnect(uint8_t pin) {
+  uint32_t p = g_ADigitalPinMap[pin];
+  NRF_GPIO_Type* port = p >= 32 ? NRF_P1 : NRF_P0;
+  port->PIN_CNF[p & 31] = GPIO_PIN_CNF_INPUT_Disconnect << GPIO_PIN_CNF_INPUT_Pos;
+}
+
+// The QSPI flash's deep power-down (0xB9), bit-banged, as in firmware/pod: otherwise it idles
+// at standby current through System OFF.
+void flashDeepPowerDown() {
+  const uint8_t SCK = PIN_QSPI_SCK, CS = PIN_QSPI_CS, SI = PIN_QSPI_IO0;
+  pinMode(PIN_QSPI_IO2, OUTPUT); digitalWrite(PIN_QSPI_IO2, HIGH);  // WP off
+  pinMode(PIN_QSPI_IO3, OUTPUT); digitalWrite(PIN_QSPI_IO3, HIGH);  // HOLD off
+  pinMode(CS, OUTPUT);  digitalWrite(CS, HIGH);
+  pinMode(SCK, OUTPUT); digitalWrite(SCK, LOW);
+  pinMode(SI, OUTPUT);
+  digitalWrite(CS, LOW);
+  for (int bit = 7; bit >= 0; bit--) {           // SPI mode 0, MSB first
+    digitalWrite(SI, (0xB9 >> bit) & 1);
+    digitalWrite(SCK, HIGH);
+    digitalWrite(SCK, LOW);
+  }
+  digitalWrite(CS, HIGH);
+  delayMicroseconds(10);
+}
+
+// No USB power means the pod's cell is running this sketch (D38): switch off instead, System OFF
+// with the IMU unpowered (like the pod's IMU-off sleep). Plugging USB in or a reset wakes it, and
+// waking is a reset, so setup() runs again. No IMU register writes: before imu.begin() Wire1 is
+// off and a write would spin forever; cutting the IMU's power is enough. P0.14 stays LOW (pins
+// hold their state through System OFF) and System OFF stops a running watchdog.
+void offIfOnBattery() {
+  if (usbPowered()) return;
+  Wire1.end();
+  pinDisconnect(PIN_WIRE1_SDA);                  // the nRF's I2C pull-ups would feed the dead IMU rail
+  pinDisconnect(PIN_WIRE1_SCL);
+  pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
+  digitalWrite(PIN_LSM6DS3TR_C_POWER, LOW);      // IMU off completely
+  flashDeepPowerDown();
+  if (usbPowered()) NVIC_SystemReset();          // USB came back meanwhile: start over instead
+  uint8_t sd_en = 0;
+  (void)sd_softdevice_is_enabled(&sd_en);
+  if (sd_en) sd_power_system_off();
+  else NRF_POWER->SYSTEMOFF = 1;
+  while (true) {}                                // not reached
+}
+
 void setup() {
   // Battery safety (CLAUDE.md): P0.14 must never be HIGH while charging, or P0.31 sees the
   // full battery voltage. LOW is the safe state (it also switches on the battery reading).
   pinMode(VBAT_ENABLE, OUTPUT);
   digitalWrite(VBAT_ENABLE, LOW);
+  offIfOnBattery();
 
   Serial.begin(115200);
   uint32_t t0 = millis();
@@ -45,6 +100,7 @@ void setup() {
   imu.settings.gyroSampleRate = ODR_HZ;
   if (imu.begin() != 0) {
     while (true) {
+      offIfOnBattery();
       Serial.println("# IMU not found. Is this board the Sense version?");
       delay(1000);
     }
@@ -81,6 +137,7 @@ void loop() {
   // while waiting, so each sample is timestamped within one status read (~0.1 ms).
   uint8_t status;
   do {
+    offIfOnBattery();                            // in here: also while an IMU never says ready
     if (imu.readRegister(&status, LSM6DS3_ACC_GYRO_STATUS_REG) != 0) return;
   } while ((status & 0x03) != 0x03);
 

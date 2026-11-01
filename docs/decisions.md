@@ -264,8 +264,9 @@ counter, 2.8% slow).
   (Adapter A). On the shaft saddle (Adapter B) a rolled bar could do it, hence the long hold; and
   it's off while a PC has the port open (recordings, calibration faces).
 - *Low battery: 3.30 V, 3 readings 5 s apart, on battery only* -> sleep with the IMU off; only
-  USB or reset wakes it, so the cell can't be run flat. *(Amended by D38: only while awake and
-  with a hard off; a soldered pod asleep at the cutoff still drains.)* Charging stays at 100 mA (0.25 C on
+  USB or reset wakes it, so the cell can't be run flat. *(Amended by D38: that held only with a
+  hard off. Since 10-31 it also runs at every boot, but never while asleep, so a soldered pod
+  asleep near the cutoff still drains.)* Charging stays at 100 mA (0.25 C on
   400 mAh) so a flat pod is full in ~4 h.
 - *Wake threshold 2* (62.5 mg on the slope filter), from real pickup data, not the datasheet
   alone. Details and bench results: firmware/README.md.
@@ -668,22 +669,35 @@ switch, no hard off.**
   clears a running watchdog (Nordic's reset table: power-on, brownout, pin and watchdog resets
   clear it; a soft reset, like an upload's, and a CPU lockup don't). So a sketch that doesn't
   feed it resets once, about 8 s after the upload, and then runs unwatched.
-- Amends D26: its "the cell can't be run flat" held only with a hard off; see Not guarded yet.
+- Amends D26: its "the cell can't be run flat" held only with a hard off; see Guarded and Still not guarded.
 *Why:* a reprint with a wire hole, and a mated pair ~4.5 mm thick in a 4.7 mm space, would buy
 only a hard off, and the deep sleep is close to one: about 16 uA with motion wake and 7 uA with
 the IMU off (datasheet budget, not measured), over a year from a full 400 mAh cell either way.
-*Not guarded yet* (the unplug used to cover these): the 3.30 V cutoff only runs awake, so a pod
-that sleeps near it, or wakes lid-down and sleeps again in 6 s before its 3 readings, drains to
-the protection board's trip in weeks; setup()'s IMU-not-found loop on USB never rechecks USB, so
-unplugged it stays awake on the cell; imu_serial has no sleep or cutoff at all. And every USB
-session charges now, so the P0.14 rule is always live (only flash.py builds). Until the firmware
-guards these: charge on the app's battery-low warning, store it in the IMU-off sleep, and flash
-the pod firmware back before unplugging imu_serial.
+*Guarded (10-31, compiled clean, not yet flashed or bench-checked; the bench plan is in
+firmware/README.md)*, the gaps the unplug used to cover: the pod checks the cutoff at every boot
+before the radio, the sampler or the lid-down gesture can run (3 readings 20 ms apart; below
+3.30 V on battery it takes the IMU-off sleep), so a pod woken near empty, or reset while flat,
+blinks red 3 times and sleeps for good instead of running until a lid-down sleep 6 s later beat
+housekeeping's first reading; setup()'s IMU-not-found loop rechecks USB every pass and sleeps
+with the IMU off once it goes; imu_serial switches itself off (System OFF, the IMU unpowered)
+whenever VBUS is absent. VBUS wakes System OFF only on its rising edge (the 10-19 `o` on USB
+stayed off), so USB plugged in during a low-battery or IMU-lost sleep's ~0.7 s setup (the red
+blinks invite it) restarts the pod instead of leaving it dark on the cable.
+*Still not guarded:* a pod asleep with motion wake is only checked when it next wakes, so one
+left untouched near empty still drains to the protection board's trip (~16 uA; weeks). Firmware
+can slow this but not stop it: System OFF's only analog wake (LPCOMP) compares against fractions
+of VDD, and VDD comes off the cell through the 3.3 V regulator, so it sags with the cell near
+empty (from the nRF52840 datasheet; unchecked on this board). Whether a sleep entered below
+LOW_BATT_WARN_V (3.50 V, the app's battery-low warning) should take the IMU-off sleep instead
+(~7 uA, about twice as long, but no wake on a bump until USB or reset) is Quentin's call, open.
+Every USB session charges now, so the P0.14 rule is always live (only flash.py builds). Charge on
+the app's battery-low warning and store the pod in the IMU-off sleep.
 *Open:* both sleep currents, the battery reading against a meter, the cutoff on the real cell,
 a check that unplugging USB gives no new boot, and that plugging it in wakes the IMU-off sleep
 with the cell on (every bench wake so far was on USB-only power, where a replug was a power-on).
-The firmware guards. Whether the bootloader (every upload and reset) leaves P0.14 floating:
-through the 1 MOhm that's under 1 uA into P0.31, likely fine, unchecked.
+Bench-checking the guards, and the motion-wake call above. Whether the bootloader (every upload
+and reset) leaves P0.14 floating: through the 1 MOhm that's under 1 uA into P0.31, likely fine,
+unchecked.
 
 **D39 (2026-10-31): a segment the tracker drops still gets its raw samples saved, as
 `drop-<lift>-<stamp>-<hhmmss>.csv` in the session folder.**

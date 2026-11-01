@@ -6,8 +6,9 @@
 //     detector (INT1 -> P0.11) wakes it when the bar moves again
 //   - sleep now: lay the pod lid-down (chip side down), still, for FACE_DOWN_S. Only when no
 //     PC has the serial port open, so it can't end a recording or the chip-down calibration face
-//   - low battery: below LOW_BATT_V it sleeps with the IMU off; only USB power or reset wakes it,
-//     so the cell isn't run flat while the pod is awake (asleep it isn't checked: D38)
+//   - low battery: below LOW_BATT_V it sleeps with the IMU off; only USB power or reset wakes it.
+//     Checked at every boot before anything else can sleep it, then every 5 s while awake;
+//     asleep it isn't checked (D38)
 //   - charging at 100 mA (FAST_CHARGE) instead of the default 50 mA
 //   - Bluetooth (ble.ino): the PodLink v1 service, docs/ble.md. Every sample also goes into a
 //     38 s ring, and the phone streams from it and resumes after a dropout without losing samples
@@ -38,7 +39,8 @@ const uint32_t IDLE_SLEEP_S = 600;     // sleep after this long without motion (
 const uint32_t IDLE_SLEEP_STREAMING_S = 1800;   // the same while a phone holds a session (docs/ble.md 6)
 const uint32_t FACE_DOWN_S = 6;        // lid-down and still this long -> sleep now (long: a rolled
                                        // bar on the shaft saddle can leave the pod lid-down between sets)
-const float LOW_BATT_V = 3.30;         // below this (3 readings in a row, on battery) -> sleep for good
+const float LOW_BATT_V = 3.30;         // below this (3 readings in a row, on battery; at boot and
+                                       // awake) -> sleep for good
 const bool FAST_CHARGE = true;         // true: 100 mA (P0.13 LOW), false: 50 mA (P0.13 floating)
 const uint8_t WAKE_THS = 2;            // wake-up threshold, 31.25 mg per step at +-2 g. It acts on the slope
                                        // (a[n] - a[n-1]) / 2 at 12.5 Hz, i.e. on jerk, not on acceleration.
@@ -500,6 +502,10 @@ void goToSleep(bool motionWake, const char* why, uint8_t reason, bool dryRun = f
   flashDeepPowerDown();
   // P0.14 stays LOW (battery safety, and the divider only costs VBAT / 1.51 MOhm ~ 2.8 uA).
   // P0.13 keeps its state too, so charging still runs at the chosen current while asleep.
+  // USB plugged in during the setup above (likely: 3 red blinks say "charge me")? VBUS wakes
+  // System OFF only on its rising edge, so this sleep would stay dark on the cable: start over
+  // instead. Only the battery's own reasons: the bench's o and s sleep on USB on purpose.
+  if (usbPowered() && (reason == SLEEP_LOW_BATT || reason == SLEEP_IMU_LOST)) NVIC_SystemReset();
 
   if (motionWake) {
     systemOff(PIN_LSM6DS3TR_C_INT1, HIGH);                   // core helper: sense HIGH, then OFF
@@ -574,9 +580,10 @@ void setup() {
   Serial.begin(115200);                                      // the wait for a PC comes after the sampler starts
 
   if (!imuStart()) {
-    // On battery, don't sit here awake: sleep with the IMU off (USB or reset wakes it)
-    if (!usbPowered()) goToSleep(false, "IMU not found", SLEEP_IMU_LOST);
+    // On battery, don't sit here awake: sleep with the IMU off (USB or reset wakes it). Checked
+    // on every pass, so unplugging USB later sleeps it too: the cell is soldered on (D38).
     while (true) {
+      if (!usbPowered()) goToSleep(false, "IMU not found", SLEEP_IMU_LOST);
       wdtFeed();
       Serial.println("# IMU not found. Is this board the Sense version?");
       blink(LED_RED, 1);
@@ -587,7 +594,17 @@ void setup() {
   wdtFeed();
   uint8_t who = readReg(REG_WHO_AM_I);                       // before the sampler takes the bus
   analogCalibrateOffset();                                   // SAADC offset, once
-  lastBattV = batteryVolts();
+  // The cutoff, before anything can sleep the pod with the IMU watching (D38): housekeeping
+  // reads the cell only every 5 s, and the lid-down sleep can come 6 s after boot, so a pod that
+  // keeps waking near empty would never be checked. 3 readings in a row as in housekeeping, but
+  // 20 ms apart: the radio isn't on yet, so there's no load to wait out.
+  uint8_t lowReads = 0;
+  for (int i = 0; i < 3; i++) {
+    if (i) delay(20);
+    lastBattV = batteryVolts();
+    if (lastBattV < LOW_BATT_V) lowReads++;
+  }
+  if (lowReads == 3 && !usbPowered()) goToSleep(false, "low battery at boot, charge me", SLEEP_LOW_BATT);
 
   // Bluetooth (ble.ino), then the clock: the SoftDevice takes over the low-frequency clock as it
   // starts, so RTC2 starts after it and its count never pauses under a running stream.

@@ -5,8 +5,8 @@ Target: Seeed XIAO nRF52840 Sense, Arduino IDE. Board package **Seeed nRF52 Boar
 
 | sketch | what |
 |---|---|
-| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management (D26): auto-sleep after 10 min still on battery, wake on motion via the IMU's wake-up interrupt; lid-down and still for 6 s = sleep now (only when no PC has the port open and no phone holds a session; the pod has to lie within about 20° of flat until the 1.3 calibration, so a USB cable propping it up stops it); below 3.30 V on battery it sleeps with the IMU off until USB or reset; 100 mA charging; a battery/charging status line about every 30 s. Sampling (`sampler.ino`, D29): the IMU's data-ready pulse on INT1 is stamped in an interrupt and wakes a top-priority task that reads the sample and stores it in an 8192-sample ring (~38 s); loop() only sends from the ring, so neither the radio nor a USB host that stops reading can delay or drop a sample. A watchdog resets the board if loop() stops for 8 s. Before any sleep (every reason, and the phone's SLEEP command) a connected phone gets the rest of the stream, the reason and a deliberate disconnect (step 9, docs/ble.md 6). The ring goes out over Bluetooth as `BarPod-XXXX` (`ble.ino`, PodLink v1: `docs/ble.md`, D27/D28; check it from the laptop with `analysis/ble_check.py`, Bluetooth headphones off); `PKT_OVER_USB = true` also prints the frames over USB for `analysis/podlink.py --usb`. Bench commands over USB: `s` sleep, `o` sleep with the IMU off, `w` dry run of `s` (the phone side included, then a reset), `i` stop the IMU (the sampler restarts it after ~1 s: tests IMU_RESTART), `h` hang loop() (the watchdog resets it after 8 s). Every 30 s: `# ble` (link state) and `# ring` (since boot: missed and late samples, time holes, accel lag, I2C read errors, IMU restarts, worst stamp-to-store latency since the last line, CSV lines lost to a slow host, dropped commands and `#` lines). |
-| `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py`. **On the pod (battery soldered on, D38) it has no sleep and no low-battery cutoff: flash the pod firmware back before unplugging USB, or it runs the cell to the protection board's trip.** |
+| `pod/` | **The device firmware.** Same stream as `imu_serial` plus power management (D26): auto-sleep after 10 min still on battery, wake on motion via the IMU's wake-up interrupt; lid-down and still for 6 s = sleep now (only when no PC has the port open and no phone holds a session; the pod has to lie within about 20° of flat until the 1.3 calibration, so a USB cable propping it up stops it); below 3.30 V on battery it sleeps with the IMU off until USB or reset, checked at every boot before the radio or the sampler start (so a reset press on a flat pod gives 3 red blinks and it sleeps again) and every 5 s while awake, never while asleep (D38); IMU not found: on battery, or once USB goes, it sleeps with the IMU off; 100 mA charging; a battery/charging status line about every 30 s. Sampling (`sampler.ino`, D29): the IMU's data-ready pulse on INT1 is stamped in an interrupt and wakes a top-priority task that reads the sample and stores it in an 8192-sample ring (~38 s); loop() only sends from the ring, so neither the radio nor a USB host that stops reading can delay or drop a sample. A watchdog resets the board if loop() stops for 8 s. Before any sleep (every reason, and the phone's SLEEP command) a connected phone gets the rest of the stream, the reason and a deliberate disconnect (step 9, docs/ble.md 6). The ring goes out over Bluetooth as `BarPod-XXXX` (`ble.ino`, PodLink v1: `docs/ble.md`, D27/D28; check it from the laptop with `analysis/ble_check.py`, Bluetooth headphones off); `PKT_OVER_USB = true` also prints the frames over USB for `analysis/podlink.py --usb`. Bench commands over USB: `s` sleep, `o` sleep with the IMU off, `w` dry run of `s` (the phone side included, then a reset), `i` stop the IMU (the sampler restarts it after ~1 s: tests IMU_RESTART), `h` hang loop() (the watchdog resets it after 8 s). Every 30 s: `# ble` (link state) and `# ring` (since boot: missed and late samples, time holes, accel lag, I2C read errors, IMU restarts, worst stamp-to-store latency since the last line, CSV lines lost to a slow host, dropped commands and `#` lines). |
+| `imu_serial/` | IMU over USB at "208 Hz" (really 209 to 212, per board): `t_us,ax,ay,az,gx,gy,gz` per line (m/s^2, deg/s), `t_us` from RTC2 on the crystal (D25). Record it with `python analysis/log_serial.py COMx`, watch it live with `python analysis/live_plot.py`. **USB only:** without USB power it switches off (System OFF, the IMU unpowered; plugging USB in or reset wakes it, D38), since on the pod the cell is soldered on and this sketch has no battery reading or sleep of its own. Builds before 2026-10-31 ran the cell to the protection board's trip: flash the pod firmware back before unplugging anyway. |
 
 ## Flashing from the terminal
 
@@ -93,3 +93,58 @@ P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a r
   (original kept as `variant.cpp.orig`). `flash.py` refuses to build if a core update reverts
   it; redo the one-line change after updating the core. Checked: the guard accepts the patched
   core and refuses Seeed's original.
+
+### Battery guards (D38, 2026-10-31): bench plan
+
+Three guards for the soldered cell: the pod's cutoff at boot, the pod's IMU-not-found loop
+sleeping once USB goes, imu_serial switching off without USB. **Compiled clean** (both sketches,
+flash.py's core check, `--warnings all`: 0 warnings). **Not flashed or bench-checked yet.**
+
+Before any of it: the pod has to be free (not mid-session), Bluetooth headphones off, and only
+`python firmware/flash.py` builds go on it (every USB session charges, so the P0.14 rule is live).
+The two test builds below are one-line edits to `firmware/pod/pod.ino` (flash.py builds only from
+the repo; both edits compile clean, checked 10-31): revert each before committing anything. Each is
+useless on battery: **flash the normal pod build back, on USB, before the pod leaves the bench.** Every step that plugs USB into a sleeping pod also checks a D38 open item:
+that USB wakes a System OFF sleep with the cell on (`woke by: USB power (from sleep)`).
+
+**G1, the cutoff at boot (pod).** The real threshold can't be reached on the bench: the cell is at
+~4.06 V and soldered on, so there's no bench supply in its place, and running it down awake takes
+days. So a test build makes every cell "low": `LOW_BATT_V = 4.50` in pod.ino.
+1. Flash it on USB. It boots and streams as usual (no cutoff on USB power), `# battery 4.0x V`.
+2. Send `s` (motion-wake sleep: blue x3), then unplug USB. It should stay asleep. If it gives 3 red
+   blinks right at the unplug, the unplug rebooted it: note that (D38 open: does unplugging give a
+   new boot?) and go to step 4.
+3. Pick it up. **Expect 3 red blinks within ~1 s, then dark, and no `BarPod-XXXX` in
+   `python analysis/ble_check.py`'s scan.** This is D38's case: woken near empty. Before the
+   guard it booted, advertised, and could sleep again lid-down before its first reading.
+4. Pick it up again, shake it: nothing (the IMU is off).
+5. Press the reset pinhole: 3 red blinks again, instead of a normal boot's one green blink (a flat
+   pod answers a reset this way).
+6. Plug USB: it wakes and streams; the banner says `woke by: USB power (from sleep)`.
+7. The plug-in race: unplug (the awake cutoff sleeps it within ~15 s, red x3), press reset, and
+   plug USB in during the red blinks. **Expect it to come up streaming** (banner `power on /
+   upload`: the soft reset) instead of staying dark on the cable: VBUS wakes System OFF only on
+   its rising edge, so goToSleep() rechecks USB just before System OFF.
+8. Flash the normal build back (`LOW_BATT_V = 3.30`).
+Can't be checked on the bench: the cutoff at the real 3.30 V on the real cell, and how close
+`batteryVolts()` reads to a meter (D38 open).
+
+**G2, the IMU-not-found loop (pod).** Test build: in setup(), `if (!imuStart())` ->
+`if (!imuStart() || true)` (the IMU starts, then counts as missing).
+1. Flash it on USB: `# IMU not found...` and one red blink about every 1.2 s.
+2. Unplug USB. **Expect 3 red blinks within ~1.2 s, then dark**: asleep, the IMU off. Before the
+   guard the 1 Hz red blink ran on the cell until the protection board tripped.
+3. Plug USB: it wakes (VBUS) and the 1 Hz blink is back.
+4. Flash the normal build back.
+Fully checkable on the bench: the LED is the evidence.
+
+**G3, imu_serial off without USB.** No test build needed.
+1. `python firmware/flash.py imu_serial`, then `python analysis/log_serial.py COMx` (or any serial
+   terminal): samples at ~210 Hz, `t_us` counting up from 0 at boot.
+2. Unplug USB for ~30 s, plug it back, reopen the port. **Expect `t_us` to start again from a few
+   seconds** (a fresh boot: it was off and VBUS woke it). Before the guard it ran on the cell, so
+   `t_us` carried on from ~30 s past where it stopped. (The `#` header can be missed if the port
+   opens more than 5 s after the plug-in; `t_us` can't.)
+3. `python firmware/flash.py` (the pod firmware) before the pod is unplugged again.
+Can't be checked on the bench: the off current (imu_serial has no LED, and the cell is soldered on,
+so it needs a meter in the cell's lead; D38 open: both sleep currents).
