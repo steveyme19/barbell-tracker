@@ -39,9 +39,13 @@ const defaults = [
   "analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv",
   "analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv",
   "analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv",
-  "analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv",
+  // the deadlift also ended 1.4 s after its last set-down (End tapped, no still yet): the last rep must
+  // stay anchored (D41's open-end rule once dropped it: 4 reps)
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "deadlift", { cuts: [30.0], closed: { 30: 5 } }],
   "analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv",
   "analysis/data/fake_motion_squat_tng.csv",   // exact physics at the pod's rate: the same failure, known answer (D40)
+  "analysis/data/fake_motion_deadlift_pins.csv",   // the sleeve spinning through every rest: the quasi-stills hold it (D41)
+  "analysis/data/fake_motion_deadlift_creep.csv",  // slow floor breaks and hitches, rep 1 out of a still (D41)
   ["analysis/data/fake_session_squat.csv", "squat"],     // a whole session as one analysis: rests, guards
   ["analysis/data/fake_session_squat.csv", "machine"],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "free"],   // no rack cut (TA_RACKED)
@@ -58,7 +62,7 @@ const defaults = [
   ["analysis/data/bar-machine-2026-10-17-1334-set01-lat-raise.csv", "free"],
 ];
 const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
-  .map((f) => (Array.isArray(f) ? [path.resolve(ROOT, f[0]), f[1]] : [path.resolve(ROOT, f), null]))
+  .map((f) => (Array.isArray(f) ? [path.resolve(ROOT, f[0]), f[1], f[2] ?? {}] : [path.resolve(ROOT, f), null, {}]))
   .filter(([f]) => {
     if (existsSync(f)) return true;
     console.log(`skip (not found): ${path.relative(ROOT, f)}`);
@@ -66,13 +70,13 @@ const files = (process.argv.length > 2 ? process.argv.slice(2) : defaults)
   });
 
 let failures = 0;
-for (const [file, forced] of files) {
+for (const [file, forced, opts] of files) {
   const buf = readFileSync(file);
   const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
   const lift = forced ?? liftFromName(path.basename(file));   // bench / squat / deadlift in the name, else phone
   const S = { ...SETTINGS, LIFT: lift };
-  for (const frac of [null, 0.45, 0.7]) {
-  const until = frac === null ? null : frac * (rec.t[rec.t.length - 1] - rec.t[0]);
+  for (const frac of [null, 0.45, 0.7, ...(opts.cuts ?? []).map((sec) => ({ sec }))]) {
+  const until = frac === null ? null : frac.sec ?? frac * (rec.t[rec.t.length - 1] - rec.t[0]);
   let n = rec.t.length;
   if (until !== null) n = rec.t.findIndex((x) => x - rec.t[0] >= until);
   const name = path.relative(ROOT, file) + ` [${lift}]` + (until === null ? "" : ` (first ${until.toFixed(1)} s)`);
@@ -89,6 +93,9 @@ for (const [file, forced] of files) {
   else if (js.error) problems.push(`JS error: ${js.error}`);
   else if (js.reps.some((r) => !(r.dur > 0) || !Number.isFinite(r.mcv) || !Number.isFinite(r.rom))) {
     problems.push("a JS rep with no duration or a non-finite MCV/ROM");
+  }
+  else if (until !== null && opts.closed?.[until] !== undefined && closedSetReps(js.reps, js.lift).length !== opts.closed[until]) {
+    problems.push(`known answer: the set closed here has ${opts.closed[until]} reps, JS ${closedSetReps(js.reps, js.lift).length}`);
   }
   else if (js.lift !== py.lift) problems.push(`profile JS ${js.lift} vs Python ${py.lift}`);
   else if (!js.mount !== !py.mount || (js.mount && (js.mount.kind !== py.mount.kind ||
@@ -155,11 +162,18 @@ const sessions = [
   ["analysis/data/bar-deadlift-2026-10-23-1857-set01.csv", ["deadlift"], [5]],
   // 2026-10-31 at the gym (D40). Truth: the video, each rep's plate height synced to the pod (r 0.999,
   // ROM +-2 cm, MCV +-4%); squats read ~3% high (the pod's uncalibrated scale or the video's). The
-  // deadlift has no video: the pod's own forensics (calibrated, floor to floor), and its rep 1 is a
-  // known miss (it starts at the 6 cm hitch off the floor, +31%). The ham curl: today's numbers
+  // deadlift has no video: the pod's own forensics (calibrated, floor to floor); its rep 1 read +31% from
+  // the 6 cm hitch off the floor until TA_FLOOR_REACH (D41). The ham curl: today's numbers
   // make_fake_motion.py squat_tng: 6 touch-and-go squats at 208 Hz with a walkout, the sway, sleeve roll, the
   // pod's roll-dependent offset and a ringing rerack, exact truth (the old code found 2 of them)
   ["analysis/data/fake_motion_squat_tng.csv", ["squat"], [6], [[0.8714, 0.8400, 0.7412, 0.5895, 0.5182, 0.4000]], { tol: 0.08, mean: 0.05 }],
+  // make_fake_motion.py deadlift_pins: 10 dead-stop pulls from the pins at 208 Hz, the sleeve spinning 21 to 25 deg/s
+  // through every rest and the gyro 1.5% fast: only the quasi-stills hold the attitude (QS off or BAR_AXIS wrong: 7 reps)
+  ["analysis/data/fake_motion_deadlift_pins.csv", ["deadlift"], [10], [[0.4429, 0.4133, 0.3827, 0.3488, 0.3261, 0.3061, 0.2913, 0.2661, 0.2544, 0.2417]], { tol: 0.08, mean: 0.05 }],
+  // make_fake_motion.py deadlift_creep: 6 floor pulls at 208 Hz (accel calibrated): four creep off the floor
+  // (1 to 2.6 cm at 3.4 to 5.4 cm/s, |a| under 0.5: flat to TA_FLAT_WIN), two with a 6 cm hitch; rep 1 out of a
+  // 5.5 s still, the others after 1.5 s hands-on floor rests and a ringing set-down. Exact truth, liftoff to lockout
+  ["analysis/data/fake_motion_deadlift_creep.csv", ["deadlift"], [6], [[0.4194, 0.3732, 0.4370, 0.3636, 0.3400, 0.3537]], { tol: 0.05, mean: 0.03 }],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv", ["squat"], [8],
     [[0.83, 0.87, 0.87, 0.87, 0.92, 0.81, 0.87, 0.84]], { tol: 0.08, mean: 0.05 }],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv", ["squat"], [6],
@@ -167,7 +181,7 @@ const sessions = [
   ["analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv", ["squat"], [3],
     [[0.403, 0.318, 0.276]], { tol: 0.08, mean: 0.05 }],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", ["deadlift"], [5],
-    [[undefined, 0.55, 0.51, 0.54, 0.50]], { tol: 0.05 }],
+    [[0.501, 0.552, 0.510, 0.543, 0.504]], { tol: 0.05, mean: 0.03 }],
   // the same set as a nameless free lift: floor contacts between reps aren't a rerack (TA_RACKED)
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", ["free"], [5]],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv", ["machine"], [10],
@@ -239,34 +253,58 @@ for (const [rel, lifts, expect, truth, opt] of process.argv.length > 2 ? [] : se
 
 // ---------- live: the 2026-10-31 gym sets as the app sees them mid-set (D40) ----------
 // analyze() on a growing buffer every 0.25 s plus the rack filter, like app.js's live view. The
-// count may dip once (a rep re-anchored as the set goes on) but never twice, and never shows more
-// than the set's final count (the ham curl's old-path flicker shows one ahead once: its allowance).
+// count may dip at most its file's allowance (dips: a rep re-anchored as the set goes on; 0 unless
+// it's known) and never shows more than the set's final count (ahead: the ham curl's old-path flicker
+// shows one ahead once). mcv: each rep's MCV as the app shows it while it's the newest rep (the value
+// it shows most often) within LIVE_MCV of the truth; with lockouts (s from the file's start), at most
+// offMax passes from 0.3 s after a rep's true lockout on that show the newest rep over LIVE_OFF off
+// (D41: the open last floor rest's anchor, whose error shows at first and is fixed by the next rest).
+const LIVE_MCV = 0.08, LIVE_OFF = 0.10;
 const live = [
   ["analysis/data/fake_motion_squat_tng.csv", "squat", 6],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-140809/bar-squat-2026-10-31-1408-set01.csv", "squat", 8],
-  ["analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv", "squat", 6],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-141021/bar-squat-2026-10-31-1410-set01.csv", "squat", 6, { dips: 1 }],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv", "squat", 3],
-  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "deadlift", 5],
-  ["analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv", "machine", 10, 1],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "deadlift", 5, { mcv: [0.501, 0.552, 0.510, 0.543, 0.504],
+    // offMax 1: at 14.50 s drop_rack_moves takes rep 1 for handling while rep 2's first cm show (the count
+    // stays 1, so the dips don't see it): one pass shows rep 2's start alone
+    lockouts: [11.271, 14.968, 18.632, 22.029, 27.361], offMax: 1 }],
+  ["analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv", "machine", 10, { ahead: 1, dips: 1 }],
+  ["analysis/data/fake_motion_deadlift_pins.csv", "deadlift", 10],
+  // the open last floor rest on all of it (D41): anchored on its last 0.5 s, 17 passes showed a creeping break's rep
+  // +30 to +38% off (6 now: rep 3 +31% until the next rest anchors, its start on the threshold, V_STOP_FRAC)
+  ["analysis/data/fake_motion_deadlift_creep.csv", "deadlift", 6, { mcv: [0.4194, 0.3732, 0.4370, 0.3636, 0.3400, 0.3537],
+    lockouts: [9.74, 13.96, 17.95, 22.18, 26.48, 30.75], offMax: 8 }],
 ];
-for (const [rel, lift, final, ahead = 0] of process.argv.length > 2 ? [] : live) {
+for (const [rel, lift, final, { ahead = 0, dips: allowed = 0, mcv: truthMcv = null, lockouts = null, offMax = 0 } = {}] of process.argv.length > 2 ? [] : live) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
   const buf = readFileSync(file);
   const rec = await parseRecording(file, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
   const counts = [];
+  const shown = [];                     // shown[k]: the MCVs (1 mm/s) shown while rep k was the newest
+  let off = 0;                          // passes after the newest rep's lockout showing it over LIVE_OFF off
   for (let T = rec.t[0] + 3; T <= rec.t[rec.t.length - 1] + 1e-9; T += 0.25) {
     const n = rec.t.findIndex((x) => x > T);
     const k = n < 0 ? rec.t.length : n;
     const imu = Object.fromEntries(["ax", "ay", "az", "gx", "gy", "gz"].map((c) => [c, rec[c].slice(0, k)]));
     const r = analyze(rec.t.slice(0, k), magnitude(imu.ax, imu.ay, imu.az), { ...SETTINGS, LIFT: lift }, imu);
-    counts.push(r.error ? 0 : dropRackMoves(r.reps, r.lift).length);
+    const rr = r.error ? [] : dropRackMoves(r.reps, r.lift);
+    counts.push(rr.length);
+    if (rr.length) (shown[rr.length - 1] ??= []).push(Math.round(rr[rr.length - 1].mcv * 1000) / 1000);
+    const j = rr.length - 1;
+    if (lockouts && j >= 0 && j < lockouts.length && T - rec.t[0] >= lockouts[j] + 0.3 && Math.abs(rr[j].mcv / truthMcv[j] - 1) > LIVE_OFF) off++;
   }
   const dips = counts.filter((c, i) => i && c < counts[i - 1]).length;
   const most = Math.max(...counts);
-  const bad = dips > 1 || most > final + ahead || counts.at(-1) !== final;
+  const mode = (xs) => xs.reduce((best, x) => (xs.filter((y) => y === x).length > xs.filter((y) => y === best).length ? x : best), xs[0]);
+  const held = truthMcv ? truthMcv.map((want, k) => (shown[k] ? mode(shown[k]) / want - 1 : null)) : [];
+  const offMcv = held.filter((e) => e === null || Math.abs(e) > LIVE_MCV);
+  const bad = dips > allowed || most > final + ahead || counts.at(-1) !== final || offMcv.length > 0 || (lockouts && off > offMax);
   if (bad) failures++;
-  console.log(`${bad ? "FAIL" : "PASS"} live ${path.basename(rel)} [${lift}]: ${counts.length} passes, final ${counts.at(-1)} (want ${final}), most ${most}, dips ${dips}`);
+  const heldNote = (truthMcv ? `, shown MCV vs truth ${held.map((e) => (e === null ? "none" : `${(e * 100).toFixed(1)}%`)).join(" ")}` : "") +
+    (lockouts ? `, ${off} passes after a lockout showing it over ${LIVE_OFF * 100}% off (allowed ${offMax})` : "");
+  console.log(`${bad ? "FAIL" : "PASS"} live ${path.basename(rel)} [${lift}]: ${counts.length} passes, final ${counts.at(-1)} (want ${final}), most ${most}, dips ${dips} (allowed ${allowed})${heldNote}`);
 }
 
 // ---------- the vertical (D40): its gate, JS = Python per sample, and no chaos ----------
@@ -282,6 +320,8 @@ const gate = [
   ["analysis/data/gym-2026-10-31/session-2026-10-31-141346/bar-squat-2026-10-31-1413-set01.csv", true],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", true],
   ["analysis/data/fake_motion_squat_tng.csv", true],
+  ["analysis/data/fake_motion_deadlift_pins.csv", true],
+  ["analysis/data/fake_motion_deadlift_creep.csv", true],
 ];
 const PY_VERT = [
   "import sys, json, numpy as np, reps",

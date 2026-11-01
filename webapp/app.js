@@ -10,7 +10,8 @@ import { askPersist, putSession, getSession, listSessions, putSetSamples, getSet
   deleteSetSamples, importSessions, COLS } from "./store.js";
 import { toExport, fromExport } from "./export.js";
 import { fitProfile } from "./lv.js";
-import { fitCalibration, applyCalibration, CalibrationRun, G_LOCAL } from "./calib.js";
+import { fitCalibration, applyCalibration, applyPodCalibration, podCalibrationFor, podCalibrationProblem, podHex,
+  CalibrationRun, G_LOCAL } from "./calib.js";
 import { drawPlot } from "./plot.js";
 
 const $ = (id) => document.getElementById(id);
@@ -151,6 +152,7 @@ function onSet(set) {
   set.index = session.sets.reduce((m, s) => Math.max(m, s.index + 1), 0);
   set.wallStart = session.t0Wall + set.startT * 1000;
   set.wallEnd = session.t0Wall + set.endT * 1000;
+  set.part = session.part;                               // its part's calibration (session.calibration)
   const prev = session.sets[session.sets.length - 1];
   if (prev?.restored && set.restBefore === null) set.restBefore = (set.wallStart - prev.wallEnd) / 1000;
   set.exercise = seg?.exercise ?? exercise;
@@ -212,7 +214,7 @@ function newSession({ autosave, persist = false, from = null }) {
     // seconds in the id/folder: two sessions in the same minute must not overwrite each other
     const id = `session-${stamp}${pad(d.getSeconds())}`;
     session = { id, stamp, date: stamp.slice(0, 10), startedAt: d, folder: id,
-      autosave, persist, ended: false, sets: [], part: 1 };
+      autosave, persist, ended: false, sets: [], part: 1, calibration: {} };
   }
   tracker = new SessionTracker({
     liftFor: () => seg?.lift ?? lift,
@@ -278,11 +280,15 @@ async function startSession(from = null) {
     newSession({ autosave: native, persist: true });
   }
   if (pod) {
-    // The pod: raw counts scaled by its INFO, no phone calibration (D27, until roadmap 1.3). In
-    // the app, the PodLink plugin (it finds and remembers the pod itself, and keeps the link with
-    // the screen off); in a browser, Web Bluetooth.
+    // The pod: raw counts scaled by its INFO (D27), then its own calibration if the app has this pod's
+    // (D42), never the phone's. In the app, the PodLink plugin (it finds and remembers the pod itself,
+    // and keeps the link with the screen off); in a browser, Web Bluetooth.
+    await podCalReady;
+    podCalNote = "";
     const opts = { onEvent: onPodEvent, capture: Boolean(window.barDebug?.podCapture) };
-    source = native ? new PodNativeSource(onSample, { ...opts, any: podPickNew }) : new PodWebSource(onSample, podDevice, opts);
+    const feed = (s) => onSample(applyPodCalibration(s, podCalFor(src)));
+    const src = native ? new PodNativeSource(feed, { ...opts, any: podPickNew }) : new PodWebSource(feed, podDevice, opts);
+    source = src;
     sourceName = native ? "pod" : `pod ${source.name}`;
     $("hint").textContent = native ? "Connecting to the pod… (the first time, allow Nearby devices)" : "Connecting to the pod…";
   } else {
@@ -309,6 +315,12 @@ async function startSession(from = null) {
     return;
   }
   starting = false;
+  // What this part's samples were corrected with, in the stored record and so in the export (D30, D42):
+  // the pod's calibration if it's this pod's (decided at its INFO, before start() resolved at the first
+  // sample), or the phone's 6-face one (D23). null: raw.
+  session.calibration = { ...session.calibration, [session.part]: pod
+    ? { source: "pod", serial: source.linkInfo().serial, calibration: podCalFor(source) }
+    : { source: "phone", calibration: cal } };
   // Stored only once it runs: a failed start must not leave an empty "unfinished" session
   // that hides the real one from the resume offer.
   session.ended = false;
@@ -316,7 +328,10 @@ async function startSession(from = null) {
   askPersist();
   if (pod) {
     $("hint").textContent = "";
-    if (fgsError) showError(fgsError);              // the connect's hint covered it: it still holds
+    // the connect's hint covered these, and the first sample's "another pod's calibration" came inside
+    // start(), just before that hint was cleared: they still hold
+    const notes = [fgsError, podCalNote].filter(Boolean).join(" ");
+    if (notes) showError(notes);
     sourceName = `pod ${source.name}`;                // the app's plugin knows the name only now
     if (native) {
       podName = source.name;
@@ -327,7 +342,9 @@ async function startSession(from = null) {
     }
   }
   // What the samples were scaled with, next to the set files, so the raw readings can be recovered.
-  if (pod && session.autosave) saveFile(session.folder, partName("pod"), JSON.stringify(source.linkInfo(), null, 1)).catch(() => {});
+  if (pod && session.autosave) {
+    saveFile(session.folder, partName("pod"), JSON.stringify({ ...source.linkInfo(), calibration: podCalFor(source) }, null, 1)).catch(() => {});
+  }
   else if (cal && session.autosave) saveFile(session.folder, partName("calibration"), JSON.stringify(cal, null, 1)).catch(() => {});
   begin();
   if (!pod) {
@@ -411,9 +428,10 @@ function showSource() {
   $("podBtn").textContent = pod && name ? `Pod: ${name}` : pod && native ? "Pod" : "Connect pod";
   $("podBtn").classList.toggle("on", pod && (native || Boolean(podDevice)));
   $("phoneBtn").hidden = !pod;
-  // The 6-face calibration is the phone's (D23); the pod's comes with roadmap 1.3.
+  // The 6-face calibration here is the phone's (D23); the pod's is made over USB (calib_pod.py, D42).
   $("calBtn").disabled = pod && !calRun;
-  $("calBtn").title = pod ? "Phone only: the pod's calibration comes with roadmap 1.3" : "";
+  $("calBtn").title = pod ? "Phone only: the pod's is made over USB with analysis/calib_pod.py" : "";
+  showCal();
 }
 
 async function startReplay(file) {
@@ -493,13 +511,17 @@ async function finishSession(ses, src) {
 
 // ---------- stored sessions: history, resume ----------
 
-const SET_FIELDS = ["index", "exercise", "load", "rpe", "file", "restBefore", "wallStart", "wallEnd",
+const SET_FIELDS = ["index", "part", "exercise", "load", "rpe", "file", "restBefore", "wallStart", "wallEnd",
   "lift", "nReps", "bestMcv", "lastMcv", "velLoss", "avgRom", "rpeEst", "gaps"];
 
+// calibration: per part, what its samples were corrected with (startSession): { "1": { source: "pod",
+// serial, calibration: the pod-calibration.json applied or null }, "2": { source: "phone", calibration } }.
+// Each set says its part, so sessions.py can tell which set CSVs are already corrected (D42).
 function sessionRecord(ses = session) {
   return {
     id: ses.id, stamp: ses.stamp, date: ses.date, folder: ses.folder, parts: ses.part ?? 1,
     startedAtMs: ses.startedAt.getTime(), ended: Boolean(ses.ended), autosave: ses.autosave,
+    calibration: ses.calibration ?? {},
     sets: ses.sets.map((s) => Object.fromEntries(SET_FIELDS.map((k) => [k, s[k] ?? null]))),
   };
 }
@@ -513,7 +535,7 @@ function persistSession(ses = session) {
 
 function sessionFromRecord(rec, { autosave, persist }) {
   return { id: rec.id, stamp: rec.stamp, date: rec.date, folder: rec.folder, startedAt: new Date(rec.startedAtMs),
-    autosave, persist, ended: rec.ended, sets: [], part: rec.parts ?? 1 };
+    autosave, persist, ended: rec.ended, sets: [], part: rec.parts ?? 1, calibration: { ...rec.calibration } };
 }
 
 // Load a stored session's sets back in: raw samples from the store, re-analyzed (same
@@ -658,7 +680,7 @@ async function saveSummary(ses = session) {
 // link.json next to the set files: the pod's link story (epochs, gaps, reconnects; P2).
 async function saveLink(ses = session, src = source) {
   if (!(src instanceof PodSource) || !ses?.autosave) return null;
-  return (await saveFile(ses.folder, partName("link", ses), JSON.stringify(src.linkJSON(), null, 1))).uri;
+  return (await saveFile(ses.folder, partName("link", ses), JSON.stringify({ ...src.linkJSON(), calibration: podCalFor(src) }, null, 1))).uri;
 }
 
 // A resumed session runs in parts, each with its own source: pod.json, then pod-2.json, ...
@@ -1135,9 +1157,51 @@ const FACE_NAMES = { "z+": "screen up", "z-": "screen down", "x+": "right edge u
 let cal = null;            // { bias, scale, residual, date } or null
 let calRun = null;         // the 6-face collection in progress
 let calSource = null;
+// The pod's calibration (D42): calib_pod.py --install writes webapp/pod-calibration.json, the build ships it
+let podCal = null;
+let podCalBad = "";               // the build has one, but it won't parse or hasn't the shape: why
+let podCalReady = Promise.resolve();
+const podCalOf = new WeakMap();   // pod source -> the calibration its samples get (null: none)
+let podCalNote = "";              // "another pod's" for this start: the start's hint-clear must not wipe it
+
+/** The calibration this pod source's samples get, decided once its INFO has said which pod it is (no
+ * INFO yet: no samples yet either). Another pod's isn't applied, and that's said once. */
+function podCalFor(src) {
+  if (!podCalOf.has(src)) {
+    const serial = src.linkInfo().serial;
+    if (serial === null) return null;
+    const used = podCalibrationFor(podCal, serial);
+    podCalOf.set(src, used);
+    if (podCal && !used) {
+      podCalNote = `The pod calibration in this build is pod ${podHex(podCal.pod)}'s, not this one's (${podHex(serial)}): its samples aren't corrected.`;
+      showError(podCalNote);
+    }
+    showCal();
+  }
+  return podCalOf.get(src);
+}
 
 function showCal() {
-  const pct = (s) => `${s >= 1 ? "+" : ""}${((s - 1) * 100).toFixed(1)}%`;
+  // a phone calibration collecting faces owns the card (startCalibration); stopCalibration redraws it
+  if (calRun) return;
+  const pct = (s) => (s === null ? "none" : `${s >= 1 ? "+" : ""}${((s - 1) * 100).toFixed(1)}%`);
+  if (sourceKind === "pod") {
+    // the last pod source's decision (podCalFor): null is another pod's calibration, not applied
+    const other = podCal && source instanceof PodSource && podCalOf.get(source) === null ? source.linkInfo().serial : null;
+    $("calStatus").textContent = podCalBad
+      ? `The pod calibration in this build can't be used (${podCalBad}): the pod's samples aren't corrected. ` +
+        "python analysis/calib_pod.py --install again, then rebuild the app."
+      : other !== null
+      ? `The pod calibration in this build is pod ${podHex(podCal.pod)}'s; this pod (${podHex(other)}) isn't calibrated, ` +
+        "its samples aren't corrected. Calibrate it: python analysis/calib_pod.py COM5, --install, rebuild."
+      : podCal
+      ? `Pod calibrated ${podCal.made.slice(0, 10)} over USB${podCal.pod != null ? ` (pod ${podHex(podCal.pod)})` : " (any pod: no serial)"}: accel scale ` +
+        `x ${pct(podCal.accel.scale[0])}, y ${pct(podCal.accel.scale[1])}, z ${pct(podCal.accel.scale[2])}; gyro scale ` +
+        `x ${pct(podCal.gyro.scale[0])}, y ${pct(podCal.gyro.scale[1])}, z ${pct(podCal.gyro.scale[2])}.`
+      : "Pod not calibrated: python analysis/calib_pod.py COM5 with the pod on USB, then --install, then rebuild the app.";
+    $("calReset").disabled = true;
+    return;
+  }
   $("calStatus").textContent = cal
     ? `Calibrated ${new Date(cal.date).toLocaleDateString()}: scale x ${pct(cal.scale[0])}, y ${pct(cal.scale[1])}, z ${pct(cal.scale[2])}; ` +
       `offset x ${cal.bias[0].toFixed(2)}, y ${cal.bias[1].toFixed(2)}, z ${cal.bias[2].toFixed(2)} m/s²; fit error ${cal.residual.toFixed(3)} m/s².`
@@ -1279,6 +1343,25 @@ $("calReset").addEventListener("click", () => {
   showCal();
 });
 try { cal = JSON.parse(localStorage.getItem("calibration") || "null"); } catch { cal = null; }
+// None installed (a 404) is fine: the pod's samples go uncorrected, as before D42. One that's there but
+// won't parse or hasn't the shape --install writes (podCalibrationProblem) isn't applied, and that's said
+// once here and on the calibration card. No answer at all (offline, no server): as none.
+podCalReady = fetch("pod-calibration.json", { cache: "no-store" })
+  .then(async (r) => {
+    if (r.status === 404) return;
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    let c;
+    try { c = JSON.parse(await r.text()); } catch (err) { throw new Error(`it doesn't parse: ${err.message}`); }
+    const why = podCalibrationProblem(c);
+    if (why) throw new Error(why);
+    podCal = c;
+  }, () => {})
+  .catch((err) => {
+    podCalBad = err.message;
+    showError(`webapp/pod-calibration.json isn't used: ${podCalBad}. The pod's samples aren't corrected.`);
+  })
+  .finally(showCal)
+  .catch((err) => console.error(err));   // only the card's redraw can get here: a pod Start awaits this, it must resolve
 try { sourceKind = localStorage.getItem("source") === "pod" ? "pod" : "phone"; } catch { /* storage blocked */ }
 try { podName = localStorage.getItem("podName") || ""; } catch { /* storage blocked */ }
 showCal();

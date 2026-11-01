@@ -9,12 +9,18 @@ load(path) -> [{"record": {...}, "sets": [{"index", "n", "t", "ax", ..., "gz", "
 columns as numpy arrays with the exact values the app stored (t and tAbs float64, the sensor
 readings float32: the app's live CSVs were written from the readings before that, so a CSV from
 here can differ from the live one in the 7th significant digit).
+
+The app stores what it corrected each part's samples with (the record's "calibration": the pod's
+pod-calibration.json, D42, or the phone's 6-face one, D23) and each set's part. --csv writes that
+next to the sets as <session id>-calibration.json (calibration_json), so nothing corrects them twice
+(reps.py --calib refuses).
 """
 
 import base64
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +74,41 @@ def set_csv(st):
     return HEADER + "\n" + "\n".join(rows) + "\n"
 
 
+def csv_name(record, index):
+    """A stored set's CSV name: the record's, or one like the app's for a set the record hasn't got."""
+    meta = next((x for x in record["sets"] if x["index"] == index), {})
+    return meta.get("file") or f"bar-{meta.get('lift') or 'free'}-{record['stamp']}-set{index + 1:02d}.csv"
+
+
+def calibration_json(s):
+    """<session id>-calibration.json for a loaded session: what the app corrected each part's samples with
+    (the record's "calibration": {part: {"source": "pod" | "phone", "serial", "calibration": what was
+    applied, or None for raw}}) and each set CSV's part (None: a set stored before the app said it).
+    None for a record from before D42 (no "calibration")."""
+    r = s["record"]
+    if not r.get("calibration"):
+        return None
+    part = {x["index"]: x.get("part") for x in r["sets"]}
+    return {"what": "what the app corrected this session's samples with, per part (D42): a set CSV whose part's "
+                    "calibration isn't null is corrected already",
+            "session": r["id"], "parts": r["calibration"],
+            "sets": {csv_name(r, st["index"]): part.get(st["index"]) for st in s["sets"]}}
+
+
+def part_text(p):
+    """One part's calibration, for the listing: "pod 0x41ef151f, corrected (calibration made 2026-10-31)"."""
+    p = p or {}
+    who = p.get("source", "?")
+    if who == "pod" and isinstance(p.get("serial"), int):
+        who += f" 0x{p['serial']:08x}"                # as podlink.py prints it
+    c = p.get("calibration")
+    if not c:
+        return f"{who}, raw (no calibration applied)"
+    # the pod's says when it was made (ISO); the phone's has the date it was taken (ms)
+    made = c.get("made") or (datetime.fromtimestamp(c["date"] / 1000).isoformat() if isinstance(c.get("date"), (int, float)) else "?")
+    return f"{who}, corrected (calibration made {made[:10]})"
+
+
 def main():
     sys.stdout.reconfigure(errors="replace")      # a cp1252 console can't print every typed exercise name
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -79,16 +120,22 @@ def main():
         by_index = {x["index"]: x for x in r["sets"]}
         print(f"{r['id']}: {len(s['sets'])} sets stored, {len(r['sets'])} in the record"
               f"{'' if r.get('ended') else ' (unfinished)'}")
+        for k, p in sorted((r.get("calibration") or {}).items(), key=lambda kv: int(kv[0])):
+            print(f"  part {k}: {part_text(p)}")
         for st in s["sets"]:
             meta = by_index.get(st["index"], {})
-            name = meta.get("file") or f"bar-{meta.get('lift') or 'free'}-{r['stamp']}-set{st['index'] + 1:02d}.csv"
+            name = csv_name(r, st["index"])
             print(f"  set {st['index'] + 1}: {meta.get('exercise') or meta.get('lift') or '?'}, {meta.get('nReps')} reps, "
                   f"{st['n']} samples, {name}")
             if out_dir is not None:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 (out_dir / name).write_text(set_csv(st))
+        cj = calibration_json(s)
+        if out_dir is not None and cj:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / f"{r['id']}-calibration.json").write_text(json.dumps(cj, indent=1), encoding="utf-8")
     if out_dir is not None:
-        print(f"wrote the sets to {out_dir}")
+        print(f"wrote the sets to {out_dir}, with each session's calibration (<session id>-calibration.json)")
 
 
 if __name__ == "__main__":

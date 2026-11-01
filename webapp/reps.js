@@ -51,13 +51,13 @@ export const SETTINGS = {
   TA_FLAT_A: 0.5,        // m/s^2  this of 0
   TA_PAUSE: 0.25,        // s: a flat stretch this long next to a turnaround can be a pause ...
   TA_REACH: 0.5,         // s: ... if it reaches to within this of the coarse turnaround ...
+  TA_FLOOR_REACH: 1.0,   // s: ... or, on the floor, ends within this before it (rep 1's low lands at a hitch)
   TA_COAST_DV: 0.35,     // m/s: ... isn't a coast (speed changes of opposite sign, both over this) ...
   TA_NEAR_FRAC: 0.4,     // ... and is at the turnaround's height (within this x the bigger move)
   TA_EDGE: 0.25,         // s: the first/last pause's anchor averages 2 x this next to the set
   TA_SET_EDGE: 3.0,      // s: a window still this close to the first/last anchor is part of the set
   // The vertical (D40): bar lifts at the pod's rate use the acceleration along up (Madgwick, D33)
   VERTICAL_FS: [150, 300],   // Hz: only at the pod's rate (a 402 Hz hand-held phone stays on |a|)
-  ACC_OFFSET: null,      // m/s^2 [x, y, z]: the pod's accel offsets (D37), taken off first; null: not yet
   QS_AVG: 0.1,           // s: accel and gyro averaged over this for the quasi-still test
   QS_DEV: 0.15,          // m/s^2: | |mean accel| - g | under this ...
   QS_GYRO: 3.0,          // deg/s: ... and the mean turning (bias off, not about the bar) under this ...
@@ -692,11 +692,12 @@ function runsOf(mask) {
 /** find_pause() in reps.py: the pause at coarse turnaround k as [start, end], or null. */
 function findPause(a, t, xc, k, lo, hi, fs, flat, floor, S) {
   const look = Math.trunc(S.COAST_LOOK * fs), reach = Math.trunc(S.TA_REACH * fs);
+  const back = floor ? Math.trunc(S.TA_FLOOR_REACH * fs) : reach;   // how far before k the run may end
   const move = Math.max(Math.abs(xc[k] - xc[lo]), Math.abs(xc[k] - xc[hi]));
   let best = null;
   for (let [rs, re] of runsOf(flat.subarray(lo, hi + 1))) {
     rs += lo; re += lo;
-    if (re - rs < S.TA_PAUSE * fs || !(rs - reach <= k && k <= re + reach)) continue;
+    if (re - rs < S.TA_PAUSE * fs || !(rs - reach <= k && k <= re + back)) continue;
     const into = speedChange(a, t, rs - look, rs), out = speedChange(a, t, re, re + look);
     if (into * out < 0 && Math.min(Math.abs(into), Math.abs(out)) > S.TA_COAST_DV) continue;
     if (Math.abs(xc[Math.floor((rs + re) / 2)] - xc[k]) > S.TA_NEAR_FRAC * move) continue;
@@ -704,6 +705,12 @@ function findPause(a, t, xc, k, lo, hi, fs, flat, floor, S) {
     if (best === null || score < best[0]) best = [score, [rs, re]];
   }
   return best === null ? null : best[1];
+}
+
+/** confirmed_at() in reps.py: the first sample after the turnaround k that's minMove from it. */
+function confirmedAt(x, k, minMove) {
+  for (let i = k; i < x.length; i++) if (Math.abs(x[i] - x[k]) >= minMove) return i;
+  return x.length;
 }
 
 /** span_velocity() in reps.py: raw velocity less a straight line through the two anchors' zeros;
@@ -758,7 +765,18 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   const sm = gaussSmooth(vc, fs, S.TA_SIGMA);
   vc = Float64Array.from(vc, (x, i) => x - sm[i]);
   const xc = integrate(vc, tw);
-  const { lows, highs } = turningPoints(xc, S.TA_MIN_MOVE);
+  let { lows, highs } = turningPoints(xc, S.TA_MIN_MOVE);
+  if (floor && !w.anchored) {
+    // no end still yet (live): a turnaround the high-pass confirms only in the last TA_SIGMA waits, but
+    // the last low once the bar has landed (a stop between the high before it and TA_REACH after it; see reps.py)
+    const cut = xc.length - 1 - Math.trunc(S.TA_SIGMA * fs);
+    const reach = Math.trunc(S.TA_REACH * fs);
+    const lastLow = lows[lows.length - 1];
+    const before = (k) => highs.reduce((m, h) => (h < k ? Math.max(m, h) : m), -1);
+    const landed = (k) => k === lastLow && stops.some((je) => before(k) < je && je <= k + reach);
+    lows = lows.filter((k) => confirmedAt(xc, k, S.TA_MIN_MOVE) <= cut || landed(k));
+    highs = highs.filter((k) => confirmedAt(xc, k, S.TA_MIN_MOVE) <= cut);
+  }
   const turns = [...lows, ...highs].sort((p, q) => p - q);
   // 2. anchors
   let rests = [];
@@ -786,6 +804,7 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
     if (p === null) { anchors.push([k, k, k]); return; }  // touch-and-go
     let [ps, pe] = p;
     if (j === 0 && rests.length > 1) ps = Math.max(ps, pe - 2 * edge);         // before rep 1: its end
+    else if (j === rests.length - 1 && j > 0 && floor && !closed) { /* open, on the floor: all of it (see reps.py) */ }
     else if (j === rests.length - 1 && j > 0) pe = Math.min(pe, ps + 2 * edge); // after the last: its start
     anchors.push([Math.floor((ps + pe) / 2), ps, pe]);
   });
@@ -963,8 +982,7 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
   const hasGyro = imu && imu.gx && [imu.gx, imu.gy, imu.gz].some((c) => c.some((x) => x !== 0));
   const gyro = hasGyro ? Array.from({ length: t.length }, (_, i) => [imu.gx[i], imu.gy[i], imu.gz[i]]) : null;
   if (gyro && S.TA_BAR.includes(lift) && fs >= S.VERTICAL_FS[0] && fs <= S.VERTICAL_FS[1]) {
-    const off = S.ACC_OFFSET ?? [0, 0, 0];
-    const acc = Array.from({ length: t.length }, (_, i) => [imu.ax[i] - off[0], imu.ay[i] - off[1], imu.az[i] - off[2]]);
+    const acc = Array.from({ length: t.length }, (_, i) => [imu.ax[i], imu.ay[i], imu.az[i]]);
     a = verticalAccel(t, acc, gyro, runs, fs, S);
   }
 

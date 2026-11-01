@@ -29,6 +29,16 @@ the mount, noise and roll gesture above, and a loaded bar has none of those):
               racked, unrack, walkout, 6 reps (one with a 0.85 s lockout pause), walk-in, a clanging
               rerack, racked. Writes data/fake_motion_squat_tng.csv, its per-sample _truth.csv and
               _truth.json with every rep's concentric start/end, ROM and MCV from the exact path
+    deadlift_pins  10 dead-stop deadlifts from the pins (a rack pull), Adapter A: between reps the bar
+              sits on the pins with hands on it (the 10-31 floor rests' 20 Hz: no still from the grip to
+              the let-go) and every set-down leaves the sleeve spinning on its bearing, 2.5 turns in all.
+              The gyro reads 1.5% fast, so without the quasi-still pulls (or with BAR_AXIS wrong) the
+              attitude drifts 10 deg and the set falls apart; with them it holds. Same three files
+    deadlift_creep  6 deadlifts from the floor, Adapter A, the accel calibrated: four leave the floor
+              creeping (1 to 2.6 cm at 3.5 to 5.5 cm/s on average, |a| under 0.5: the 0.37 s flat test
+              runs on into the pull), two with a 6 cm hitch (0.3 s at 2 to 3 cm/s, then the pull: 10-31's
+              rep 1). Rep 1 comes out of a 5.5 s quiet setup (a true still: the window starts at the pull),
+              the others after 1.5 s on the floor with hands on the bar and the set-down ringing. Same three files
 """
 
 import sys
@@ -425,7 +435,276 @@ def squat_tng(seed=1, fs=FS):
     return t, acc, gyro, {"pos": pos_w, "v_up": v_up, "R": R, "reps": reps, "events": ev}
 
 
-GYM = {"squat_tng": squat_tng}
+# ---- deadlift_pins: what the quasi-stills are for (reps.quasi_stills, BAR_AXIS; D40's "weakly guarded") ----
+# Between a deadlift's reps the bar never holds still (the 10-31 floor rests rang at 20 Hz, 0.5 to 2
+# m/s^2 std, as long as hands were on the bar), so the attitude is pulled onto gravity only at the
+# quasi-stills, and a sleeve spinning on its bearing passes those only because the turn about the bar
+# is left out. On the pins (a rack pull) the plates hang free, so a set-down leaves the sleeve
+# spinning (5 to 25 deg/s at rest, reps.QS_GYRO's note). Then a gyro scale error builds with every
+# turn: 1.5% of 2.5 turns is 13 deg (10 by the last rep here, the stills' median taking a little of it
+# back), and a vertical that far off breaks the anchors.
+# The accel is the pod's own (offset, scale, noise, LSB) with its calibration taken back out, as the app
+# applies it (D42): uncalibrated, its roll-dependent offset moves the vertical at rest by up to 0.37
+# m/s^2 as the sleeve turns (the 10 deg move it 0.15), and on its own costs the current code this set's
+# last rep (sets.py: 9 of 10, in every variant of this set tried). That's a test of its own; this one
+# is the attitude
+POD_GYRO_SCALE = 1.015           # the gyro's scale, uncalibrated (spec'd to a few %; D37 took 1.5% as its case)
+PIN_REPS = [                     # concentric s, ROM m, lockout hold s, lowering s, rest on the pins after s:
+    (0.70, 0.31, 0.3, 0.9, 1.8), # slowing from 0.44 to 0.24 m/s (10-31's deadlift: 0.50 to 0.55 from
+    (0.75, 0.31, 0.3, 0.9, 1.8), # the floor, 53 cm); 1.0 s on the pins after the last, then hands off
+    (0.81, 0.31, 0.3, 0.9, 1.8),
+    (0.86, 0.30, 0.3, 0.9, 1.8),
+    (0.92, 0.30, 0.3, 0.9, 1.8),
+    (0.98, 0.30, 0.3, 0.9, 1.8),
+    (1.03, 0.30, 0.3, 0.9, 1.8),
+    (1.09, 0.29, 0.3, 0.9, 1.8),
+    (1.14, 0.29, 0.3, 0.9, 1.8),
+    (1.20, 0.29, 0.3, 0.9, 1.0),
+]
+PIN_HIT, PIN_STOP = -0.30, 0.02  # m/s onto the pins, stopped in 20 ms (peak 30 m/s^2: a jolt)
+PIN_SPIN, PIN_DRAG = 25.0, 1.0   # deg/s: each set-down spins the sleeve up to this in 60 ms; deg/s^2: the
+                                 # bearing's dry friction slows it (21 deg/s by the next set-down)
+CONTACT_HZ, CONTACT_A = 20.5, 1.0   # the bar on its supports with hands on it: Hz, m/s^2 up (0.8 x fore-aft)
+
+
+def deadlift_pins(seed=1, fs=FS):
+    """The set: t, accel (calibrated, D42), gyro (+1.5%) and the truth, like squat_tng's. Heights are
+    above the pins; a rep is liftoff (v = 0, at rest on the pins) to lockout (v = 0, a soft stop)."""
+    rng = np.random.default_rng(seed)
+    first = 8.0                                    # still till 3, a touch (3 to 3.6), still, grip at 6
+    ev = dict(still=(0.0, 3.0), touch=(3.0, 3.6), grip=(6.0, first))
+    z_knots = [(0.0, 0.0, 0, 0)]
+    reps, holds, lands, t_now = [], [], [], first
+    p_hit = -PIN_HIT * PIN_STOP / 2
+    for k, (tc, rom, hold, te, rest) in enumerate(PIN_REPS):
+        t_top = t_now + tc
+        t_hit = t_top + hold + te
+        # lowered at up to ~0.5 m/s and slowed into the pins: -0.45 m/s and +1.5 m/s^2 0.2 s before the
+        # hit (accel falling to 0 at it, so the knot's height is the trapezoid's less a T^2/12 term)
+        ta, va, aa = 0.2, -0.45, 1.5
+        z_knots += [(t_now, 0.0, 0, 0), (t_top, rom, 0, 0), (t_top + hold, rom, 0, 0),
+                    (t_hit - ta, p_hit - (va + PIN_HIT) / 2 * ta - aa * ta * ta / 12, va, aa),
+                    (t_hit, p_hit, PIN_HIT, 0), (t_hit + PIN_STOP, 0.0, 0, 0)]
+        reps.append(dict(rep=k + 1, t_start=t_now, t_end=t_top, ecc_start=t_top + hold, z_bottom=0.0, z_top=rom))
+        holds.append((t_top, t_top + hold))
+        lands.append(t_hit)
+        t_now = t_hit + rest
+    ev.update(reps=(first, lands[-1]), lands=tuple(lands), let_go=t_now)
+    total = t_now + 3.5                            # on the pins, sleeve still spinning, hands off
+    n = int(round(total * fs)) + 1
+    t = np.arange(n) / fs
+    z = through(t, z_knots)
+    for th in lands:
+        on = (t >= th) & (t < th + PIN_STOP)
+        land = landing(t, th, PIN_HIT, PIN_STOP)
+        z = tuple(np.where(on, land[i], z[i]) for i in range(3))
+    # the bar comes 2.5 cm back toward the hips at the top; the sleeve turns back 12 deg as it rises (the
+    # 10-31 deadlift: -14 to -44 deg/s up, +25 down), the bar tilts and yaws a degree
+    lin = lambda c: (c * z[0], c * z[1], c * z[2])
+    # the 20 Hz while the bar sits on its supports with hands on it (the touch, the grip, every rest
+    # until the next liftoff, the last until the let-go), and a light sway at the lockout (no still there)
+    contact = [ev["touch"], ev["grip"]] + [(th + PIN_STOP, r["t_start"]) for th, r in zip(lands, reps[1:])]
+    contact.append((lands[-1] + PIN_STOP, t_now))
+    w2 = lambda hz: (2 * np.pi * hz) ** 2
+    vib_z = add(*[sway(t, a, b, CONTACT_A / w2(CONTACT_HZ), hz=CONTACT_HZ, ramp=0.15) for a, b in contact])
+    vib_x = add(*[sway(t, a, b, 0.8 * CONTACT_A / w2(1.05 * CONTACT_HZ), hz=1.05 * CONTACT_HZ, ramp=0.15, phase=0.7)
+                  for a, b in contact])
+    sway_z = add(*[sway(t, a, b, 0.001, ramp=(b - a) / 2) for a, b in holds])
+    sway_x = add(*[sway(t, a, b, 0.0015, ramp=(b - a) / 2, phase=0.0) for a, b in holds])
+    # each set-down clangs like squat_tng's rerack (steel on steel)
+    ring_z = add(*[ring(t, th, 22 / w2(23), 23) for th in lands])
+    ring_x = add(*[ring(t, th, 18 / w2(26), 26) for th in lands])
+    ring_y = add(*[ring(t, th, 6 / w2(41), 41) for th in lands])
+    pos = [add(lin(-0.08), vib_x, sway_x, ring_x), ring_y, add(z, vib_z, sway_z, ring_z)]
+
+    # the sleeve's spin about the bar (deg): kicked to PIN_SPIN at each set-down, then dry friction
+    s_knots, ang, w = [(0.0, 0.0, 0.0, 0.0)], 0.0, 0.0
+    for j, th in enumerate(lands):
+        s_knots.append((th, ang, w, -PIN_DRAG if w > 0 else 0.0))
+        ang += (w + PIN_SPIN) / 2 * 0.06
+        s_knots.append((th + 0.06, ang, PIN_SPIN, -PIN_DRAG))
+        T = (lands[j + 1] if j + 1 < len(lands) else total + 1.0) - (th + 0.06)
+        w = max(PIN_SPIN - PIN_DRAG * T, 0.0)
+        assert w > 0, "the sleeve stops between set-downs: give it a knot at rest"
+        ang += (PIN_SPIN + w) / 2 * T
+    s_knots.append((total + 1.0, ang, w, -PIN_DRAG))
+    spin = through(t, s_knots)
+    deg_per = lambda hz: 1 / (2 * np.pi * hz)
+    roll = add(spin, lin(-40.0), *[ring(t, th, 50 * deg_per(29), 29) for th in lands])
+    roll = (roll[0] + 5.0, roll[1], roll[2])       # on the pins at 5 deg
+    tilt = add(lin(3.0), *[ring(t, th, 110 * deg_per(37), 37) for th in lands])
+    yaw = add(lin(-2.0), *[ring(t, th, 260 * deg_per(31), 31) for th in lands])
+    # the same composition as squat_tng: R = Rz(yaw) Rx(tilt) R_POD Rz(-roll), exact body rate
+    phi, phi_rate = -np.radians(roll[0]), -np.radians(roll[1])
+    Ry, Rt, Rp = rots([0, 0, 1], np.radians(yaw[0])), rots([1, 0, 0], np.radians(tilt[0])), rots([0, 0, 1], phi)
+    R = Ry @ Rt @ R_POD @ Rp
+    w_world = np.einsum("nji,j->ni", Rt, [0, 0, 1.0]) * np.radians(yaw[1])[:, None] + np.outer(np.radians(tilt[1]), [1, 0, 0])
+    w_b = np.einsum("nji,nj->ni", Rp, w_world @ R_POD) + np.outer(phi_rate, [0, 0, 1])
+
+    acc_w = np.column_stack([p[2] for p in pos])
+    f_s = np.einsum("nji,nj->ni", R, acc_w + np.array([0, 0, G]))
+    raw = POD_ACC_SCALE * f_s + POD_ACC_OFFSET + rng.normal(0, 1, f_s.shape) * POD_ACC_NOISE
+    raw = np.clip(np.round(raw / POD_ACC_LSB) * POD_ACC_LSB, -POD_ACC_MAX, POD_ACC_MAX)
+    acc = (raw - POD_ACC_OFFSET) / POD_ACC_SCALE   # the app's correction, (raw - bias) / scale (D42)
+    gyro = POD_GYRO_SCALE * np.degrees(w_b) + POD_GYRO_BIAS + rng.normal(0, POD_GYRO_NOISE, w_b.shape)
+    gyro = np.clip(np.round(gyro / POD_GYRO_LSB) * POD_GYRO_LSB, -POD_GYRO_MAX, POD_GYRO_MAX)
+
+    for r in reps:                                 # up all the way, down all the way (as squat_tng)
+        tf = np.linspace(r["t_start"], r["t_end"], 4001)
+        vf = through(tf, z_knots)[1]
+        assert (vf[1:-1] > 0).all(), f"rep {r['rep']} doesn't go up all the way"
+        td = np.linspace(r["ecc_start"], ev["lands"][r["rep"] - 1], 4001)
+        assert (through(td, z_knots)[1][1:-1] < 0).all(), f"rep {r['rep']}'s lowering doesn't go down all the way"
+        r.update(rom=r["z_top"] - r["z_bottom"], dur=r["t_end"] - r["t_start"], peak_v=float(vf.max()),
+                 t_peak=float(tf[np.argmax(vf)]))
+        r["mcv"] = r["rom"] / r["dur"]
+    pos_w = np.column_stack([p[0] for p in pos])
+    sensor = dict(acc="the pod's raw accel (offset and scale below, noise, LSB) with its calibration taken back out (D42)",
+                  acc_offset=POD_ACC_OFFSET.tolist(), acc_scale=POD_ACC_SCALE, acc_noise=POD_ACC_NOISE.tolist(),
+                  gyro_bias=POD_GYRO_BIAS.tolist(), gyro_scale=POD_GYRO_SCALE, gyro_noise=POD_GYRO_NOISE,
+                  acc_lsb=POD_ACC_LSB, gyro_lsb=POD_GYRO_LSB)
+    return t, acc, gyro, {"pos": pos_w, "v_up": pos[2][1], "R": R, "reps": reps, "events": ev, "lift": "deadlift",
+                          "note": "exact path: a rep is its liftoff from the pins to its lockout (v = 0 at both, continuous "
+                                  "time); i_start/i_end are the nearest samples. Heights are above the pins; rom = z_top, "
+                                  "mcv = rom / dur",
+                          "extra": dict(spin_deg=float(spin[0][-1]), spin_kick=PIN_SPIN, spin_drag=PIN_DRAG),
+                          "sensor": sensor}
+
+
+# ---- deadlift_creep: how a floor pull breaks (reps.find_pause on the floor, TA_FLAT_WIN, TA_FLOOR_REACH) ----
+# A deadlift doesn't always leave the floor at once. It can creep: the sleeve rises 1 to 2.6 cm over 0.27
+# to 0.48 s at a nearly steady few cm/s with |a| under 0.5 m/s^2, so TA_FLAT_WIN's 0.37 s average reads it
+# flat and the floor's flat run goes on into the pull (a review's case: the anchor then averages a bar
+# that's already moving). Or it can hitch: a fast 6 cm rise, ~0.3 s under 0.05 m/s, then the pull (10-31's
+# rep 1, +31% from the hitch until TA_FLOOR_REACH). Rep 1 comes out of a quiet 5.5 s setup, long and still
+# enough for the still test, so the window starts at the pull itself (inside the creep); every other rep
+# after 1.5 s on the floor with hands on the bar (CONTACT_HZ) and the set-down's clang ringing. The truth:
+# a rep is liftoff (v = 0, on the floor) to lockout (v = 0), the creep or the hitch included.
+# The accel is calibrated as in deadlift_pins (the pod's offset and scale put in, then taken back out,
+# D42). The gyro has the pod's bias and noise but no scale error: the plates sit on the floor, so the
+# sleeve doesn't spin, and only the floor is under test here
+FLOOR_HIT, FLOOR_STOP = -0.50, 0.015   # m/s onto the floor, stopped in 15 ms (peak 67 m/s^2: 10-31's landings 67 to 76)
+DL_FLOOR_REPS = [                # how it leaves the floor, then the pull s and ROM m (10-31: ~1 s, 51 to 54 cm)
+    (("creep", 0.016, 0.36), 0.88, 0.52),              # creep: rises m in s (rep 1: out of the 5.5 s still)
+    (("hitch", 0.060, 0.32, 0.03, 0.30), 0.80, 0.53),  # hitch: rises m in s, then m/s for s
+    (("creep", 0.010, 0.29), 0.90, 0.52),              # (0.27 s would peak at 0.54 m/s^2)
+    (("creep", 0.026, 0.48), 0.95, 0.52),
+    (("hitch", 0.060, 0.30, 0.02, 0.35), 0.85, 0.51),
+    (("creep", 0.021, 0.42), 1.05, 0.52),
+]
+DL_HOLD, DL_LOWER, DL_REST = 0.3, 1.0, 1.5   # s: at lockout, lowering, on the floor before the next pull
+
+
+def deadlift_creep(seed=1, fs=FS):
+    """The set: t, accel (calibrated, D42), gyro and the truth, like deadlift_pins'. Heights are above
+    the bar at rest on the floor; a rep is liftoff (v = 0) to lockout (v = 0)."""
+    rng = np.random.default_rng(seed)
+    first = 8.5                                    # still till 2, the grip (2 to 3), the quiet setup, rep 1
+    ev = dict(still=(0.0, 2.0), grip=(2.0, 3.0), setup=(3.0, first))
+    z_knots = [(0.0, 0.0, 0, 0)]
+    reps, holds, lands, breaks, t_now = [], [], [], [], first
+    p_hit = -FLOOR_HIT * FLOOR_STOP / 2
+    for k, (brk, tm, rom) in enumerate(DL_FLOOR_REPS):
+        z_knots.append((t_now, 0.0, 0, 0))         # liftoff
+        if brk[0] == "creep":
+            # the review's creep: it ends at its mean speed with a = 0 as the pull starts (v peaks at 1.5x
+            # that 60% of the way, |a| at 3.94 rise / s^2). Low and smooth, so an anchor that averages it
+            # takes the creep's speed for zero, and the rep's start lands where the pull begins
+            _, d, tb = brk
+            vb = d / tb
+            z_knots.append((t_now + tb, d, vb, 0))
+        else:
+            _, d0, tr, vb, tp = brk
+            tb, d = tr + tp, d0 + vb * tp
+            z_knots += [(t_now + tr, d0, vb, 0), (t_now + tb, d, vb, 0)]
+        t_top = t_now + tb + tm
+        t_hit = t_top + DL_HOLD + DL_LOWER
+        # lowered at up to ~0.8 m/s, slowing to FLOOR_HIT: -0.7 m/s and +2 m/s^2 0.2 s before (deadlift_pins' knot)
+        ta, va, aa = 0.2, -0.7, 2.0
+        z_knots += [(t_top, rom, 0, 0), (t_top + DL_HOLD, rom, 0, 0),
+                    (t_hit - ta, p_hit - (va + FLOOR_HIT) / 2 * ta - aa * ta * ta / 12, va, aa),
+                    (t_hit, p_hit, FLOOR_HIT, 0), (t_hit + FLOOR_STOP, 0.0, 0, 0)]
+        reps.append(dict(rep=k + 1, t_start=t_now, t_end=t_top, ecc_start=t_top + DL_HOLD, z_bottom=0.0, z_top=rom))
+        breaks.append(dict(rep=k + 1, kind=brk[0], rise=d, dur=tb, v=vb, t_pull=t_now + tb))
+        holds.append((t_top, t_top + DL_HOLD))
+        lands.append(t_hit)
+        t_now = t_hit + (DL_REST if k + 1 < len(DL_FLOOR_REPS) else 1.0)   # 1 s after the last, then hands off
+    ev.update(reps=(first, lands[-1]), lands=tuple(lands), let_go=t_now)
+    total = t_now + 3.5                            # the bar on the floor, nobody touching it
+    n = int(round(total * fs)) + 1
+    t = np.arange(n) / fs
+    z = through(t, z_knots)
+    for th in lands:
+        on = (t >= th) & (t < th + FLOOR_STOP)
+        land = landing(t, th, FLOOR_HIT, FLOOR_STOP)
+        z = tuple(np.where(on, land[i], z[i]) for i in range(3))
+    lin = lambda c: (c * z[0], c * z[1], c * z[2])
+    # the 20 Hz with hands on the bar and the plates on the floor: the grip, each rest from the set-down to
+    # the next liftoff, the last till the let-go (not the quiet setup: that's the still). A light sway at lockout
+    contact = [ev["grip"]] + [(th + FLOOR_STOP, r["t_start"]) for th, r in zip(lands, reps[1:])]
+    contact.append((lands[-1] + FLOOR_STOP, t_now))
+    w2 = lambda hz: (2 * np.pi * hz) ** 2
+    vib_z = add(*[sway(t, a, b, CONTACT_A / w2(CONTACT_HZ), hz=CONTACT_HZ, ramp=0.15) for a, b in contact])
+    vib_x = add(*[sway(t, a, b, 0.8 * CONTACT_A / w2(1.05 * CONTACT_HZ), hz=1.05 * CONTACT_HZ, ramp=0.15, phase=0.7)
+                  for a, b in contact])
+    sway_z = add(*[sway(t, a, b, 0.001, ramp=(b - a) / 2) for a, b in holds])
+    sway_x = add(*[sway(t, a, b, 0.0015, ramp=(b - a) / 2, phase=0.0) for a, b in holds])
+    # each set-down clangs like deadlift_pins' (its jolt and the gyro's ring make reps.impact_mask fire)
+    ring_z = add(*[ring(t, th, 22 / w2(23), 23) for th in lands])
+    ring_x = add(*[ring(t, th, 18 / w2(26), 26) for th in lands])
+    ring_y = add(*[ring(t, th, 6 / w2(41), 41) for th in lands])
+    pos = [add(lin(-0.08), vib_x, sway_x, ring_x), ring_y, add(z, vib_z, sway_z, ring_z)]
+
+    # the sleeve turns back 21 deg as it rises (deadlift_pins' 40 deg/m), the bar tilts and yaws a degree,
+    # the clangs ring; no spin (the plates are on the floor)
+    deg_per = lambda hz: 1 / (2 * np.pi * hz)
+    roll = add(lin(-40.0), *[ring(t, th, 50 * deg_per(29), 29) for th in lands])
+    roll = (roll[0] + 5.0, roll[1], roll[2])       # on the floor at 5 deg
+    tilt = add(lin(3.0), *[ring(t, th, 110 * deg_per(37), 37) for th in lands])
+    yaw = add(lin(-2.0), *[ring(t, th, 260 * deg_per(31), 31) for th in lands])
+    # the same composition as squat_tng: R = Rz(yaw) Rx(tilt) R_POD Rz(-roll), exact body rate
+    phi, phi_rate = -np.radians(roll[0]), -np.radians(roll[1])
+    Ry, Rt, Rp = rots([0, 0, 1], np.radians(yaw[0])), rots([1, 0, 0], np.radians(tilt[0])), rots([0, 0, 1], phi)
+    R = Ry @ Rt @ R_POD @ Rp
+    w_world = np.einsum("nji,j->ni", Rt, [0, 0, 1.0]) * np.radians(yaw[1])[:, None] + np.outer(np.radians(tilt[1]), [1, 0, 0])
+    w_b = np.einsum("nji,nj->ni", Rp, w_world @ R_POD) + np.outer(phi_rate, [0, 0, 1])
+
+    acc_w = np.column_stack([p[2] for p in pos])
+    f_s = np.einsum("nji,nj->ni", R, acc_w + np.array([0, 0, G]))
+    raw = POD_ACC_SCALE * f_s + POD_ACC_OFFSET + rng.normal(0, 1, f_s.shape) * POD_ACC_NOISE
+    raw = np.clip(np.round(raw / POD_ACC_LSB) * POD_ACC_LSB, -POD_ACC_MAX, POD_ACC_MAX)
+    acc = (raw - POD_ACC_OFFSET) / POD_ACC_SCALE   # the app's correction, (raw - bias) / scale (D42)
+    gyro = np.degrees(w_b) + POD_GYRO_BIAS + rng.normal(0, POD_GYRO_NOISE, w_b.shape)
+    gyro = np.clip(np.round(gyro / POD_GYRO_LSB) * POD_GYRO_LSB, -POD_GYRO_MAX, POD_GYRO_MAX)
+
+    for r, b in zip(reps, breaks):                 # up all the way, down all the way (as deadlift_pins)
+        tf = np.linspace(r["t_start"], r["t_end"], 4001)
+        vf = through(tf, z_knots)[1]
+        assert (vf[1:-1] > 0).all(), f"rep {r['rep']} doesn't go up all the way"
+        td = np.linspace(r["ecc_start"], ev["lands"][r["rep"] - 1], 4001)
+        assert (through(td, z_knots)[1][1:-1] < 0).all(), f"rep {r['rep']}'s lowering doesn't go down all the way"
+        if b["kind"] == "creep":                   # what makes it a creep: the flat test can't see it
+            tc = np.linspace(r["t_start"], b["t_pull"], 4001)
+            assert np.abs(through(tc, z_knots)[2]).max() < 0.5, f"rep {r['rep']}'s creep isn't under 0.5 m/s^2"
+        r.update(rom=r["z_top"] - r["z_bottom"], dur=r["t_end"] - r["t_start"], peak_v=float(vf.max()),
+                 t_peak=float(tf[np.argmax(vf)]))
+        r["mcv"] = r["rom"] / r["dur"]
+    pos_w = np.column_stack([p[0] for p in pos])
+    sensor = dict(acc="the pod's raw accel (offset and scale below, noise, LSB) with its calibration taken back out (D42)",
+                  acc_offset=POD_ACC_OFFSET.tolist(), acc_scale=POD_ACC_SCALE, acc_noise=POD_ACC_NOISE.tolist(),
+                  gyro_bias=POD_GYRO_BIAS.tolist(), gyro_scale=1.0, gyro_noise=POD_GYRO_NOISE,
+                  acc_lsb=POD_ACC_LSB, gyro_lsb=POD_GYRO_LSB)
+    return t, acc, gyro, {"pos": pos_w, "v_up": pos[2][1], "R": R, "reps": reps, "events": ev, "lift": "deadlift",
+                          "note": "exact path: a rep is its liftoff from the floor to its lockout (v = 0 at both, "
+                                  "continuous time), the creep or the hitch included (breaks: how each leaves the "
+                                  "floor, t_pull where the pull proper starts); i_start/i_end are the nearest samples. "
+                                  "Heights are above the floor rest; rom = z_top, mcv = rom / dur. The accel is "
+                                  "calibrated (the pod's offset and scale taken back out, D42); the gyro has no scale error",
+                          "extra": dict(breaks=breaks, floor_hit=FLOOR_HIT, floor_stop=FLOOR_STOP),
+                          "sensor": sensor}
+
+
+GYM = {"squat_tng": squat_tng, "deadlift_pins": deadlift_pins, "deadlift_creep": deadlift_creep}
 
 
 def write_gym(name, seed=1):
@@ -443,17 +722,20 @@ def write_gym(name, seed=1):
     np.savetxt(OUT / f"fake_motion_{name}_truth.csv", np.column_stack([t, truth["pos"], up, tilt, truth["v_up"], roll]),
                delimiter=",", header="t,x_fwd,y_bar,z_up,up_sx,up_sy,up_sz,tilt_deg,v_up,roll_deg", comments="", fmt="%.6f")
     fs = 1 / (t[1] - t[0])
-    keys = ("rep", "t_start", "t_end", "dur", "rom", "mcv", "peak_v", "t_peak", "short_of_standing", "pause_after")
-    out = dict(scenario=name, lift="squat", fs=fs, seed=seed, samples=len(t),
-               note="exact path: a rep is its bottom turnaround to its top one (v = 0 at both, continuous time); "
-                    "i_start/i_end are the nearest samples. Heights are above the hooks; rom = z_top - z_bottom, "
-                    "mcv = rom / dur",
+    # squat_tng's fields are the defaults; another scenario says its own lift, note, extras and sensor
+    keys = [k for k in ("rep", "t_start", "t_end", "dur", "rom", "mcv", "peak_v", "t_peak", "short_of_standing",
+                        "pause_after") if k in truth["reps"][0]]
+    out = dict(scenario=name, lift=truth.get("lift", "squat"), fs=fs, seed=seed, samples=len(t),
+               note=truth.get("note", "exact path: a rep is its bottom turnaround to its top one (v = 0 at both, continuous "
+                                      "time); i_start/i_end are the nearest samples. Heights are above the hooks; rom = "
+                                      "z_top - z_bottom, mcv = rom / dur"),
                reps=[dict({k: r[k] for k in keys}, i_start=int(round(r["t_start"] * fs)), i_end=int(round(r["t_end"] * fs)),
                           z_bottom=r["z_bottom"], z_top=r["z_top"]) for r in truth["reps"]],
-               events=truth["events"], stand_height=STAND, roll_deg_range=[float(roll.min()), float(roll.max())],
-               sensor=dict(acc_offset=POD_ACC_OFFSET.tolist(), acc_scale=POD_ACC_SCALE, acc_noise=POD_ACC_NOISE.tolist(),
-                           gyro_bias=POD_GYRO_BIAS.tolist(), gyro_noise=POD_GYRO_NOISE, acc_lsb=POD_ACC_LSB,
-                           gyro_lsb=POD_GYRO_LSB))
+               events=truth["events"], **truth.get("extra", dict(stand_height=STAND)),
+               roll_deg_range=[float(roll.min()), float(roll.max())],
+               sensor=truth.get("sensor") or dict(acc_offset=POD_ACC_OFFSET.tolist(), acc_scale=POD_ACC_SCALE,
+                                                  acc_noise=POD_ACC_NOISE.tolist(), gyro_bias=POD_GYRO_BIAS.tolist(),
+                                                  gyro_noise=POD_GYRO_NOISE, acc_lsb=POD_ACC_LSB, gyro_lsb=POD_GYRO_LSB))
     rnd = lambda o: round(o, 6) if isinstance(o, float) else [rnd(v) for v in o] if isinstance(o, (list, tuple)) else \
         {k: rnd(v) for k, v in o.items()} if isinstance(o, dict) else o
     (OUT / f"fake_motion_{name}_truth.json").write_text(json.dumps(rnd(out), indent=1))

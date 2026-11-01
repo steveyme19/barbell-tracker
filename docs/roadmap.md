@@ -76,8 +76,9 @@ Bluetooth to the XIAO (same time as 4.1).
       zero-velocity correction can't catch. Then calibrate **gyro scale** per axis
       with full-turn tests (algorithm.md §1). Save both calibrations in firmware.
       *(2026-10-30: `analysis/calib_pod.py` built, D37: one guided USB recording, rest + 6 faces + whole
-      turns, self-tested on a synthetic pod with planted errors. Waits for the assembled pod; then
-      applying it, firmware or app.)*
+      turns, self-tested on a synthetic pod with planted errors. 2026-10-31: applied in the app, D42:
+      `calib_pod.py --install`, then rebuild; it corrects that pod's samples. Waits for the pod's
+      calibration run.)*
 - [x] **1.4 BLE streaming.** Custom service, several samples batched per
       notification, each batch with a sequence counter and device timestamp. Receive
       with bleak. Prove you aren't dropping samples. Output files use the same columns

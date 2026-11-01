@@ -22,7 +22,9 @@ Cross-rep and cross-session stuff (consistency, RPE) lives in
 *Phone, 2026-10-17 (D23): Tools > Sensor calibration does the 6-face accelerometer part
 (`analysis/calib.py`, `webapp/calib.js`); live samples are corrected before anything else.*
 *Pod, 2026-10-30 (D37): `analysis/calib_pod.py COM5` guides one USB recording (rest, 6 faces, whole
-turns about each axis) and writes the accel and gyro bias and scale to a JSON; not applied yet.*
+turns about each axis) and writes the accel and gyro bias and scale to a JSON. Since D42
+`calib_pod.py --install` puts it in the app, which corrects that pod's samples (accel and gyro)
+before anything else, like the phone's; `reps.py --calib=` does the same to an older recording.*
 
 Subtract each axis's bias and divide by its scale factor (from the 6-position
 calibration in step 1.3).
@@ -351,8 +353,10 @@ for every lift but phone at 150 Hz or more (on |a| wherever there's no vertical)
    onto gravity at the stills and at *quasi-stills* (accel and gyro averaged over 0.1 s, |a| within
    0.15 of g, turning under 3 deg/s about anything but the bar for 0.25 s: the ring and the sway
    average out), the gyro alone in between. The acceleration along up replaces |a| - g: no
-   rectified clang, no sway rectification, and the uncalibrated pod's roll-dependent |a|
-   (9.67 to 10.03 at rest, 10-31) stops mattering. Never a velocity anchor: a quasi-still can be
+   rectified clang, no sway rectification. The uncalibrated pod's roll-dependent offset doesn't
+   go away, though: at rest the vertical is about |a|(roll) - g (9.67 to 10.03 at rest on 10-31,
+   +0.2 to +0.34 m/s^2 at some rolls), and only a calibration takes it out (D42; with it left in,
+   make_fake_motion.py deadlift_pins loses its last rep). Never a velocity anchor: a quasi-still can be
    a coast. Phone, machine, 60 Hz browsers and 402 Hz hand-held phones stay on |a|. Madgwick's
    normalized pull is floored (SN_FLOOR): near convergence it's proportional instead of a full
    step in a noise-picked direction, which had made the vertical chaotic in roundoff (1e-15 of
@@ -367,12 +371,20 @@ for every lift but phone at 150 Hz or more (on |a| wherever there's no vertical)
    - the lift's resting turnarounds are the anchors (lockouts; the floor for a deadlift). A pause
      (0.25 s or more with the 0.37 s-averaged acceleration under 0.5, not a coast by §5's local
      test, at the turnaround's height) anchors on its own average velocity; a touch-and-go top on
-     the coarse zero crossing;
+     the coarse zero crossing. On the floor a pause may end up to 1.0 s before the coarse low
+     (D41): rep 1 is pulled after a setup with no set-down jolt to restart the coarse pass, so the
+     high-pass bends the height down into the pull and the low lands late, at a hitch just off the
+     floor;
    - §6's straight line runs span by span between neighbouring anchors; a floor lift closes on
      height at the landing (the bar is back on the floor); before the first anchor and after the
      last is the unrack, walkout, walk-in and rerack: v = 0, no reps there. A squat or bench set
      also ends at the first jolt after its first lockout (the rack); a nameless free lift doesn't
-     (a row touches the floor between reps).
+     (a row touches the floor between reps);
+   - live (no end still yet), a floor lift's last rest anchors on all of it (a deadlift has no
+     walk-in, and a slow break creeps out of the rest's end), and a coarse turnaround the high-pass
+     confirms only in the window's last 0.75 s waits: near the buffer's end it fakes a low
+     mid-descent, just before the plates land. The floor after the last rep doesn't wait once the
+     bar has landed and rests: nothing after it may ever confirm it (D41).
 
 **Why this isn't §7's mistake.** §7 refuses turnarounds as anchors because their times come from
 the drifting velocity they would correct. Here the times come from the coarse pass, whose drift
@@ -381,11 +393,12 @@ stopped; and a touch-and-go anchor is a lockout, never a squat's bottom (a top t
 5 m/s², a bottom at 5 to 13, so a timing error there costs 2 to 3x less). Bottoms stay outputs.
 
 **Scored against video** (frame-level plate tracking synced to the pod, r 0.999): 8/8, 6/6, 3/3
-squats and 5/5 deadlifts; squat MCV +3.2/+3.9/+1.9% mean, worst +6.8%; ROM within 1 to 2 cm on
-average, rep boundaries within 4 to 12 ms. Live (every 0.25 s mid-set) the count never jumps
-ahead and dips at most once. Known misses: the deadlift's rep 1 starts at the 6 cm hitch off the
-floor (+31%); squats read ~3% high (the pod's scale or the video's; the 6-face calibration will
-tell). Three designs were prototyped and judged (turnaround anchors on |a|, quasi-still ZUPTs,
+squats and 5/5 deadlifts; squat MCV +3.2/+3.9/+1.9% mean, worst +6.8%; deadlift MCV within 1.4%
+(its rep 1 read +31% from the hitch until D41); ROM within 1 to 2 cm on average, rep boundaries
+within 4 to 12 ms. Live (every 0.25 s mid-set) the count never jumps ahead and dips at most once
+(the deadlift: never). Known miss: squats read ~3% high, and not from the pod's scale: its x/y
+scale, estimated from its stills (D42), is +0.46%, and correcting it takes +3.18% to +2.84%. What's
+left is the video's scale or where a rep starts and ends. Three designs were prototyped and judged (turnaround anchors on |a|, quasi-still ZUPTs,
 a high-passed vertical); this is the judge's graft of the first and third.
 
 ## 7. Turnarounds are outputs, never anchors

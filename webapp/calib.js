@@ -1,6 +1,7 @@
 // Accelerometer calibration from 6 still positions (algorithm.md section 1). Port of
 // analysis/calib.py. Per axis: scale = (up - down) / 2g, bias = (up + down) / 2,
-// corrected = (raw - bias) / scale. Applied to every live sample (D23).
+// corrected = (raw - bias) / scale. Applied to every live sample (D23). The pod's calibration is made
+// over USB by analysis/calib_pod.py and ships with the app (pod-calibration.json, D42).
 
 export const G_LOCAL = 9.80;   // m/s^2 (West Lafayette ~9.801)
 
@@ -36,6 +37,52 @@ export function applyCalibration(s, cal) {
     ax: (s.ax - cal.bias[0]) / cal.scale[0],
     ay: (s.ay - cal.bias[1]) / cal.scale[1],
     az: (s.az - cal.bias[2]) / cal.scale[2] };
+}
+
+/** A pod's serial the way podlink.py prints it: 0x41ef151f. */
+export const podHex = (n) => `0x${(n >>> 0).toString(16).padStart(8, "0")}`;
+
+export const POD_SCALE_OK = 0.05;   // calib_pod.SCALE_OK: --install refuses a scale further than this from 1
+
+/** Why a pod-calibration.json can't be applied, or null if it can: the shape calib_pod.py --install
+ * writes (install_problem there checks the same). Accel bias and scale 3 finite numbers each, gyro scale
+ * 3 (a null: that axis left as it is), every scale within POD_SCALE_OK of 1, gyro bias null or 3 numbers
+ * (or nulls), the pod's serial null or a 32-bit number, and when it was made. */
+export function podCalibrationProblem(c) {
+  const num = (x) => typeof x === "number" && Number.isFinite(x);
+  const three = (x, ok) => Array.isArray(x) && x.length === 3 && x.every(ok);
+  const scale = (s) => num(s) && Math.abs(s - 1) <= POD_SCALE_OK;
+  const pct = `${POD_SCALE_OK * 100}%`;
+  if (typeof c !== "object" || c === null || Array.isArray(c)) return "it isn't a JSON object";
+  if (!three(c.accel?.bias, num)) return "its accel bias isn't 3 numbers";
+  if (!three(c.accel?.scale, scale)) return `its accel scale isn't 3 numbers within ${pct} of 1`;
+  if (!three(c.gyro?.scale, (s) => s === null || scale(s))) return `its gyro scale isn't 3 numbers (or nulls) within ${pct} of 1`;
+  if (!(c.gyro.bias == null || three(c.gyro.bias, (b) => b === null || num(b)))) return "its gyro bias isn't null or 3 numbers (or nulls)";
+  if (!(c.pod == null || (Number.isInteger(c.pod) && c.pod >= 0 && c.pod <= 0xffffffff))) return "its pod serial isn't null or a 32-bit number";
+  if (typeof c.made !== "string" || !c.made) return "it has no \"made\" time";
+  return null;
+}
+
+/** The pod's calibration if it's this pod's (D42): one made on another pod (calib_pod.py read its serial
+ * off the USB port; this one's INFO says another, D27) isn't applied. One with no serial is. */
+export function podCalibrationFor(pc, serial) {
+  if (!pc) return null;
+  return pc.pod === null || pc.pod === undefined || pc.pod === serial ? pc : null;
+}
+
+/** A pod sample with its calibration applied, accel and gyro: corrected = (raw - bias) / scale per axis
+ * (calib_pod.apply() in Python). A gyro bias or scale it hasn't got (no rest, no turn about that axis)
+ * is skipped. */
+export function applyPodCalibration(s, pc) {
+  if (!pc) return s;
+  const a = pc.accel, gb = pc.gyro.bias ?? [null, null, null], gs = pc.gyro.scale;
+  return { ...s,
+    ax: (s.ax - a.bias[0]) / a.scale[0],
+    ay: (s.ay - a.bias[1]) / a.scale[1],
+    az: (s.az - a.bias[2]) / a.scale[2],
+    gx: (s.gx - (gb[0] ?? 0)) / (gs[0] ?? 1),
+    gy: (s.gy - (gb[1] ?? 0)) / (gs[1] ?? 1),
+    gz: (s.gz - (gb[2] ?? 0)) / (gs[2] ?? 1) };
 }
 
 /**

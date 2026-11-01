@@ -5,7 +5,10 @@ Do it on the assembled pod: its flat faces are the calibration cube, and it catc
 sitting crooked in the case.
 
     python calib_pod.py COM5                     # guided, live over USB; keeps the raw CSV + the result
-    python calib_pod.py data/bar-xiao-....csv    # the same analysis on a recording
+    python calib_pod.py data/bar-xiao-....csv    # the same analysis on a recording (the pod: see below)
+    python calib_pod.py data/bar-xiao-....csv --pod=0x41ef151f    # ... made on this pod
+    python calib_pod.py --install                # the newest complete result goes to the app (D42), then rebuild it
+    python calib_pod.py --install data/pod-calibration-....json   # or this one
     python calib_pod.py --selftest               # a synthetic pod with known errors must come back out
 
 The steps (the guide prints them and ticks them off as it sees them):
@@ -31,10 +34,20 @@ Gyro: corrected = (raw - bias) / scale, the bias from the stills (the app re-est
 still anyway), the scale = the angle about the turn's own axis / (360 x the number of turns). A
 turn counts when it's mostly about one axis (OFF_AXIS), within TURN_TOL of a whole number of
 turns, its start and end gravity agree within GRAV_TOL, and (about the vertical) it wasn't turned
-back after it stopped (NUDGE_MAX). Saves data/pod-calibration-YYYY-MM-DD-HHMM.json.
+back after it stopped (NUDGE_MAX). Saves data/pod-calibration-YYYY-MM-DD-HHMM.json, with the pod's
+serial: live, read off the USB port before the recording starts; from a recording, the one an
+earlier result from that same CSV has (its "from"), or --pod=0x... (podlink.py and the app print it).
+
+--install checks a result (complete, the faces' fit good, accel bias and scale and gyro scale 3
+finite numbers each, every scale within SCALE_OK of 1) and writes webapp/pod-calibration.json, which
+the app ships: it applies it to that pod's samples (applyPodCalibration in webapp/calib.js, the same
+formula as apply() here), so saved recordings are corrected ones, and the calibration goes into each
+session's pod.json and link.json and its stored record (so the export, D30) (D42). With no file it
+takes the newest complete result. One with no pod serial applies to any pod: it says so, loudly.
 """
 
 import json
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +69,10 @@ OFF_AXIS = 0.15       # the other two axes may turn at most this x the main one
 GRAV_TOL = 2.0        # deg: gravity before and after a turn must agree this well
 BACK_NEAR = 45.0      # deg: a roll done face by face is one turn once gravity is back this near its start
 NUDGE_MAX = 2.0       # deg: a spin about the vertical turned back more than this after it stopped is refused
+SCALE_OK = 0.05      # --install refuses a scale more than this from 1 (the pod's are spec'd to a few %: that's
+                      # units or a botched fit, not a calibration)
+APP_CAL = Path(__file__).resolve().parent.parent / "webapp" / "pod-calibration.json"
+DATA = Path(__file__).parent / "data"
 FACES = ["+x", "-x", "+y", "-y", "+z", "-z"]
 FACE_NAME = {"+z": "lid up", "-z": "lid down", "+x": "USB-C end down (at the table's edge, plug over it)",
              "-x": "USB-C end up", "+y": "5V/GND/3V3 side up", "-y": "D0-D6 side up"}
@@ -269,18 +286,159 @@ def summary(res):
     return "\n".join(lines)
 
 
-def result_json(res, source):
+def result_json(res, source, pod=None):
     return {"what": "the pod's IMU calibration (roadmap 1.3): corrected = (raw - bias) / scale, per axis",
-            "made": datetime.now().isoformat(timespec="seconds"), "from": source, "complete": done(res),
+            "made": datetime.now().isoformat(timespec="seconds"), "from": source, "pod": pod, "complete": done(res),
             "accel": None if not res["accel"] else {"bias": res["accel"]["bias"], "scale": res["accel"]["scale"],
                                                     "residual": res["accel"]["residual"], "ok": accel_ok(res)},
             "gyro": {"bias": res["gyro"]["bias"], "scale": res["gyro"]["scale"], "turns": res["turns"]},
             "rest": res["rest"], "faces": res["faces"], "rejected": res["rejected"]}
 
 
-def save(res, source):
-    out = Path(__file__).parent / "data" / f"pod-calibration-{datetime.now():%Y-%m-%d-%H%M}.json"
-    out.write_text(json.dumps(result_json(res, source), indent=1), encoding="utf-8")
+def save(res, source, pod=None):
+    out = DATA / f"pod-calibration-{datetime.now():%Y-%m-%d-%H%M}.json"
+    out.write_text(json.dumps(result_json(res, source, pod), indent=1), encoding="utf-8")
+    return out
+
+
+def serial_from_usb(sn):
+    """The pod's serial as its Bluetooth INFO says it (FICR DEVICEID[0], D27) from its USB serial number,
+    which the core prints as "%08lX%08lX" of DEVICEID[1], DEVICEID[0]: the last 8 hex digits. None if
+    it isn't one of those."""
+    if not isinstance(sn, str) or len(sn) != 16:
+        return None
+    try:
+        int(sn, 16)
+    except ValueError:
+        return None
+    return int(sn[-8:], 16)
+
+
+def pod_serial(port):
+    """The serial of the pod on this port, from the port's USB descriptor (nothing is opened), or None."""
+    from serial.tools import list_ports
+    return serial_from_usb(next((p.serial_number for p in list_ports.comports() if p.device.lower() == port.lower()), None))
+
+
+def parse_pod(text):
+    """--pod's value, the serial as podlink.py and the app print it ("0x41ef151f", or without the 0x), or None
+    if it isn't a 32-bit hex number."""
+    try:
+        n = int(text, 16)
+    except (TypeError, ValueError):
+        return None
+    return n if 0 <= n <= 0xFFFFFFFF else None
+
+
+def hex_pod(pod):
+    """A pod serial the way podlink.py prints it, or 'not recorded'."""
+    return "not recorded" if pod is None else f"0x{pod:08x}"
+
+
+def _results(data=None):
+    """Every saved result in data/ (or that folder), newest first: [(path, the parsed JSON or None if it won't read)]."""
+    out = []
+    for p in sorted((DATA if data is None else Path(data)).glob("pod-calibration-*.json"), reverse=True):
+        try:
+            out.append((p, json.loads(p.read_text(encoding="utf-8"))))
+        except (OSError, ValueError):
+            out.append((p, None))
+    return out
+
+
+def pod_of_recording(name, data=None):
+    """(serial, result file) from the newest earlier result made from this same recording (its "from") that
+    has the pod's serial (the live run read it off USB), or (None, None)."""
+    for p, c in _results(data):
+        if isinstance(c, dict) and c.get("from") == name and c.get("pod") is not None:
+            return c["pod"], p.name
+    return None, None
+
+def apply(cal, acc, gyro=None):
+    """A recording's accel (and gyro), n x 3, with a calibration applied: corrected = (raw - bias) / scale
+    per axis. The app does the same to the pod's samples (applyPodCalibration, webapp/calib.js). A gyro
+    bias or scale that's missing (no rest, no turn about that axis) is left out."""
+    a = (np.asarray(acc, float) - np.array(cal["accel"]["bias"])) / np.array(cal["accel"]["scale"])
+    if gyro is None:
+        return a, None
+    gb = np.array([0.0 if b is None else b for b in (cal["gyro"]["bias"] or [None] * 3)])
+    gs = np.array([1.0 if s is None else s for s in cal["gyro"]["scale"]])
+    return a, (np.asarray(gyro, float) - gb) / gs
+
+
+def _num(x):
+    """A finite number: not a bool, not NaN or Infinity (Python's json reads those; the app's JSON.parse doesn't)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _three(x, ok=_num):
+    return isinstance(x, list) and len(x) == 3 and all(ok(v) for v in x)
+
+
+def _complete(cal):
+    """A whole result: every face, turn and the rest in, and the faces' fit good."""
+    return isinstance(cal, dict) and bool(cal.get("complete")) and isinstance(cal.get("accel"), dict) and bool(cal["accel"].get("ok"))
+
+
+def install_problem(cal):
+    """Why a saved result can't go to the app, or None. The app checks its copy the same way
+    (podCalibrationProblem, webapp/calib.js)."""
+    if not isinstance(cal, dict):
+        return "it isn't a JSON object"
+    a, g = cal.get("accel"), cal.get("gyro")
+    if not cal.get("complete"):
+        return "it's incomplete (the turns or a face are missing)"
+    if not (isinstance(a, dict) and a.get("ok")):
+        return "the faces' fit isn't good (a face wasn't flat)"
+    if not (_three(a.get("bias")) and _three(a.get("scale")) and isinstance(g, dict) and _three(g.get("scale"))):
+        return (f"the accel bias, accel scale and gyro scale must be 3 finite numbers each: {a.get('bias')}, "
+                f"{a.get('scale')}, {g.get('scale') if isinstance(g, dict) else g}")
+    scales = a["scale"] + g["scale"]
+    if any(abs(s - 1) > SCALE_OK for s in scales):
+        return f"a scale is more than {SCALE_OK:.0%} from 1: {scales}"
+    if not (g.get("bias") is None or _three(g["bias"], lambda b: b is None or _num(b))):
+        return f"the gyro bias must be none or 3 finite numbers (or nones): {g.get('bias')}"
+    pod = cal.get("pod")
+    if not (pod is None or (isinstance(pod, int) and not isinstance(pod, bool) and 0 <= pod <= 0xFFFFFFFF)):
+        return f"the pod's serial must be none or a 32-bit number: {pod!r}"
+    if not (isinstance(cal.get("made"), str) and cal["made"]):
+        return "it has no \"made\" time"
+    return None
+
+
+def install(src=None, dest=None, data=None):
+    """Check a saved calibration (default: the newest complete one in data/) and write the app's copy
+    (default: APP_CAL). Exits on a bad one."""
+    dest = APP_CAL if dest is None else dest
+    if src is None:
+        found = _results(data)
+        if not found:
+            sys.exit("No data/pod-calibration-*.json yet: run python calib_pod.py COM5 first")
+        newer = []
+        for p, c in found:
+            if _complete(c):
+                src = p
+                break
+            newer.append(p.name)
+        if src is None:
+            sys.exit(f"No complete result in data/ (every face flat, every turn and the rest in): {', '.join(newer)}")
+        if newer:
+            print(f"Not the newest: {', '.join(newer)} {'is' if len(newer) == 1 else 'are'} incomplete (or won't read). "
+                  f"Using {src.name}.")
+    try:
+        cal = json.loads(Path(src).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        sys.exit(f"{Path(src).name}: not installed, it won't read ({e})")
+    why = install_problem(cal)
+    if why:
+        sys.exit(f"{Path(src).name}: not installed, {why}")
+    a, g = cal["accel"], cal["gyro"]
+    out = {"what": "the pod's IMU calibration, applied by the app (calib_pod.py --install, D42): "
+                   "corrected = (raw - bias) / scale, per axis",
+           "made": cal["made"], "from": Path(src).name, "pod": cal.get("pod"),
+           "accel": {"bias": a["bias"], "scale": a["scale"]}, "gyro": {"bias": g.get("bias"), "scale": g["scale"]}}
+    # allow_nan=False: a NaN that got past the checks above must not reach the app (its JSON.parse refuses it)
+    Path(dest).write_text(json.dumps(out, indent=1, allow_nan=False) + "\n", encoding="utf-8")
     return out
 
 
@@ -293,12 +451,20 @@ def load_csv(path):
     return np.asarray(t, float), np.asarray(acc, float), np.asarray(gyro, float)
 
 
-def live(port):
+def live(port, pod=None):
     """Guided: records like log_serial.py (the raw CSV is kept, P2) and reruns the analysis every
-    second on what it has, printing what's done and what's left, and any turn it couldn't use."""
+    second on what it has, printing what's done and what's left, and any turn it couldn't use.
+    pod: --pod's serial, used if the port's USB descriptor has none."""
     import log_serial as L
+    # The pod's serial now, before the recording: an unplug or a reset mid-run takes the port away
+    usb = pod_serial(port)
+    if usb is not None and pod is not None and usb != pod:
+        sys.exit(f"--pod={hex_pod(pod)}, but the pod on {port} says {hex_pod(usb)} over USB: which is it?")
+    pod = usb if usb is not None else pod
+    print(f"The pod on {port}: {hex_pod(pod)}" + ("" if pod is not None else
+          " (its USB serial number isn't one: --install would apply this to any pod; pass --pod=0x...)"))
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
-    csv = Path(__file__).parent / "data" / f"bar-xiao-{stamp}-calib.csv"
+    csv = DATA / f"bar-xiao-{stamp}-calib.csv"
     print("The steps " + __doc__.split("The steps ")[1].split("Accelerometer")[0].strip(), "\n")
     print(f"Recording {port} to {csv.name}. Ctrl+C when you're done (it stops by itself once everything is in).")
     t_l, a_l, g_l = [], [], []
@@ -356,8 +522,10 @@ def live(port):
         print(f"\n{port} went away at {t_l[-1]:.0f} s ({gone}): the result from what came in")
     res = analyze(np.array(t_l), np.array(a_l), np.array(g_l))
     print("\n" + summary(res))
-    out = save(res, csv.name)
+    out = save(res, csv.name, pod)
     print(f"\nRaw recording: {csv}\nCalibration: {out}" + ("" if done(res) else "  (incomplete: see what's left above)"))
+    if done(res):
+        print("For the app: python calib_pod.py --install, then rebuild it (docs/android.md)")
 
 
 A_BIAS, A_SCALE = np.array([0.08, -0.05, 0.12]), np.array([1.012, 0.994, 1.006])   # the synthetic pod's errors
@@ -607,6 +775,84 @@ def selftest():
     want = [None, None, None, "one axis", None, "didn't end"]   # the first two: the face moves, whole rolls about y and x
     check(len(seq) == 6 and all((w is None and y is None) or (w and y and w in y) for y, w in zip(seq, want)),
           f"edges: 11% off-axis and 1.5 deg used, 20% and 2.6 deg refused: {seq}")
+    # The result as the app gets it (--install) and applied (apply(), the app's formula): the planted errors
+    # come back out of the main session's raw samples (to 0.001 m/s^2 and 0.002 deg/s here: a bias or a scale
+    # left out is 0.1 and 5). A bad result is refused, each for its own reason, and nothing is written. With no
+    # file, the newest complete result. The pod's serial: the USB serial's last 8 digits, an earlier result
+    # from the same recording, --pod.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        src, dest = Path(d) / "pod-calibration-test.json", Path(d) / "app.json"
+        src.write_text(json.dumps(result_json(res, "synthetic", pod=0x41EF151F)), encoding="utf-8")
+        install(src, dest)
+        app = json.loads(dest.read_text(encoding="utf-8"))
+        ac, gc = apply(app, acc, gyro)
+        da = np.abs(ac - (acc - A_BIAS) / A_SCALE).max()
+        dg = np.abs(gc - (gyro - G_BIAS) / G_SCALE).max()
+        check(app["pod"] == 0x41EF151F and da < 0.01 and dg < 0.05,
+              f"--install and apply(): accel within {da:.4f} m/s^2 of the truth (0.01), gyro {dg:.4f} deg/s (0.05), pod {hex_pod(app['pod'])}")
+        good = result_json(res, "synthetic")
+        ga, gg = good["accel"], good["gyro"]
+        cases = (("incomplete", {"complete": False}, "incomplete"),
+                 ("fit", {"accel": {**ga, "ok": False}}, "fit"),
+                 ("scale 8% high", {"accel": {**ga, "scale": [1.08, 1.0, 1.0]}}, "% from 1"),
+                 ("scale 8% low", {"accel": {**ga, "scale": [1.0, 0.92, 1.0]}}, "% from 1"),
+                 ("gyro scale off", {"gyro": {**gg, "scale": [1.0, 1.0, 1.07]}}, "% from 1"),
+                 ("gyro scale missing", {"gyro": {**gg, "scale": [1.0, None, 1.0]}}, "3 finite"),
+                 ("NaN bias", {"accel": {**ga, "bias": [float("nan"), 0.0, 0.0]}}, "3 finite"),
+                 ("NaN scale", {"accel": {**ga, "scale": [1.0, float("nan"), 1.0]}}, "3 finite"),
+                 ("Infinity gyro bias", {"gyro": {**gg, "bias": [0.0, float("inf"), 0.0]}}, "gyro bias"),
+                 ("2 scales", {"accel": {**ga, "scale": [1.0, 1.0]}}, "3 finite"),
+                 ("4 gyro scales", {"gyro": {**gg, "scale": [1.0, 1.0, 1.0, 1.0]}}, "3 finite"),
+                 ("2 gyro biases", {"gyro": {**gg, "bias": [0.1, 0.2]}}, "gyro bias"),
+                 ("a bool for a bias", {"accel": {**ga, "bias": [True, 0.0, 0.0]}}, "3 finite"),
+                 ("the serial as text", {"pod": "0x41ef151f"}, "serial"),
+                 ("no made", {"made": None}, "made"))
+        refused = []
+        for name, bad, why in cases:
+            dest.unlink(missing_ok=True)
+            src.write_text(json.dumps({**good, **bad}), encoding="utf-8")   # NaN and Infinity as Python's json writes them
+            try:
+                install(src, dest)
+            except SystemExit as e:
+                if why in str(e.code) and not dest.exists():
+                    refused.append(name)
+        want = [c[0] for c in cases]
+        check(refused == want, f"--install refuses each bad result for its reason, writing nothing: {refused}"
+              + ("" if refused == want else f", NOT {[w for w in want if w not in refused]}"))
+        src.write_text(json.dumps({**good, "gyro": {**gg, "bias": None}}), encoding="utf-8")
+        nobias = install(src, dest)
+        check(nobias["gyro"]["bias"] is None, "--install takes a result with no gyro bias (no rest): the app's gyro bias is left out")
+        # no file: the newest complete result in data/, not the newest file
+        data = Path(d) / "data"
+        data.mkdir()
+        older = {**result_json(res, "bar-xiao-2026-01-01-0900-calib.csv", pod=0x41EF151F), "made": "2026-01-01T09:10:00"}
+        newer = result_json(res, "bar-xiao-2026-01-02-0900-calib.csv", pod=0x41EF151F)
+        (data / "pod-calibration-2026-01-01-0910.json").write_text(json.dumps(older), encoding="utf-8")
+        (data / "pod-calibration-2026-01-02-0910.json").write_text(json.dumps({**newer, "complete": False}), encoding="utf-8")
+        (data / "pod-calibration-2026-01-03-0910.json").write_text(json.dumps({**newer, "accel": {**ga, "ok": False}}), encoding="utf-8")
+        (data / "pod-calibration-2026-01-04-0910.json").write_text("{ half a file", encoding="utf-8")
+        picked = install(None, dest, data)
+        check(picked["from"] == "pod-calibration-2026-01-01-0910.json",
+              f"--install with no file: the newest complete result, past an incomplete one, a bad fit and a broken file: {picked['from']}")
+        empty = Path(d) / "none"
+        empty.mkdir()
+        (empty / "pod-calibration-2026-01-02-0910.json").write_text(json.dumps({**newer, "complete": False}), encoding="utf-8")
+        try:
+            install(None, dest, empty)
+            check(False, "--install with no complete result: installed one anyway")
+        except SystemExit as e:
+            check("No complete" in str(e.code), f"--install with no complete result refuses: {e.code}")
+        # re-analysing a recording: the pod from an earlier result of the same CSV (the newest that has one)
+        (data / "pod-calibration-2026-01-05-0910.json").write_text(json.dumps({**older, "pod": None}), encoding="utf-8")
+        found = [pod_of_recording("bar-xiao-2026-01-01-0900-calib.csv", data), pod_of_recording("bar-xiao-other.csv", data)]
+        check(found == [(0x41EF151F, "pod-calibration-2026-01-01-0910.json"), (None, None)],
+              f"a recording's pod from an earlier result of the same CSV (a newer one without it skipped), none for another: {found}")
+    sn = [serial_from_usb(x) for x in ("0123ABCD41EF151F", "41ef151f", None, "0123ABCD41EF151G")]
+    check(sn == [0x41EF151F, None, None, None], f"the pod's serial from its USB serial number: {sn}")
+    pods = [parse_pod(x) for x in ("0x41ef151f", "41EF151F", "0x1ffffffff", "-0x1", "zz", None)]
+    check(pods == [0x41EF151F, 0x41EF151F, None, None, None, None] and hex_pod(0x41EF151F) == "0x41ef151f",
+          f"--pod: 32-bit hex, with or without 0x: {pods}, printed {hex_pod(0x41EF151F)}")
     print("PASS" if ok else "FAIL")
     return ok
 
@@ -616,15 +862,39 @@ def main():
     if "--selftest" in sys.argv:
         sys.exit(0 if selftest() else 1)
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    given = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--pod=")), None)
+    pod = parse_pod(given) if given is not None else None
+    if given is not None and pod is None:
+        sys.exit(f"--pod={given}: not a pod serial (32-bit hex, as podlink.py and the app print it: --pod=0x41ef151f)")
+    if "--install" in sys.argv:
+        out = install(args[0] if args else None)
+        pct = lambda s: f"{(s - 1) * 100:+.2f}%"
+        print(f"Installed {out['from']} (pod {hex_pod(out['pod'])}) as {APP_CAL}\n"
+              f"  accel scale {' '.join(pct(s) for s in out['accel']['scale'])}, gyro scale {' '.join(pct(s) for s in out['gyro']['scale'])}\n"
+              "Now rebuild and install the app (docs/android.md); the browser app picks it up on a reload.")
+        if out["pod"] is None:
+            print("\n!!! WARNING: this calibration has no pod serial, so the app applies it to ANY pod it connects to.\n"
+                  "!!! If it was made on this pod: python calib_pod.py data/<its CSV> --pod=0x........ and --install\n"
+                  "!!! that result (the serial: podlink.py, or the app's mismatch message).")
+        return
     if not args:
         sys.exit(__doc__)
     if args[0].lower().endswith(".csv"):
+        name = Path(args[0]).name
+        # the pod it was made on: an earlier result from this same recording knows it (the live run read it
+        # off USB), or --pod says it
+        known, seen = pod_of_recording(name)
+        if known is not None and pod is not None and known != pod:
+            sys.exit(f"--pod={hex_pod(pod)}, but {seen} (from this same recording) says {hex_pod(known)}: which is it?")
+        pod = pod if pod is not None else known
         t, acc, gyro = load_csv(args[0])
         res = analyze(t, acc, gyro)
         print(summary(res))
-        print(f"\nCalibration: {save(res, Path(args[0]).name)}" + ("" if done(res) else "  (incomplete)"))
+        print(f"\nCalibration: {save(res, name, pod)}" + ("" if done(res) else "  (incomplete)"))
+        print(f"The pod: {hex_pod(pod)}" + (f" (from {seen})" if pod is not None and seen and pod == known else "") +
+              ("" if pod is not None else ": --install would apply this to any pod; pass --pod=0x... if you know it"))
     else:
-        live(args[0])
+        live(args[0], pod)
 
 
 if __name__ == "__main__":

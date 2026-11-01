@@ -6,10 +6,12 @@
 //   2. malformed exports are refused with a reason (format, version, a missing column, a short one)
 //   3. analysis/sessions.py reads the same JSON to the same values (sequential sums equal) and
 //      writes the same set CSV as the app's toCSV (to its 7 significant digits)
+//   4. the record's calibration per part (D42) comes through, and sessions.py --csv writes it next to
+//      the set CSVs (<session id>-calibration.json) with each CSV's part
 // Set PYTHON to the venv's python (an absolute path) if `python` isn't it.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,10 +45,16 @@ const rec = (id, nSets) => ({ id, stamp: id.slice(8), date: id.slice(8, 18), fol
   ended: true, autosave: true, sets: Array.from({ length: nSets }, (_, k) => ({ index: k, exercise: "Squat", lift: "squat", nReps: 5,
     file: `bar-squat-${id.slice(8)}-set${String(k + 1).padStart(2, "0")}.csv` })) });
 
+// a resumed session's two parts (app.js sessionRecord): the first from a calibrated pod, the second raw
+const POD_CAL = { what: "the pod's IMU calibration", made: "2026-10-31T23:10:00", from: "pod-calibration-2026-10-31-2310.json",
+  pod: 0x41ef151f, accel: { bias: [0.08, -0.05, 0.12], scale: [1.012, 0.994, 1.006] }, gyro: { bias: [0.6, -0.4, 0.25], scale: [1.008, 0.993, 1.015] } };
+const CALIBRATION = { 1: { source: "pod", serial: 0x41ef151f, calibration: POD_CAL }, 2: { source: "pod", serial: 0x12345678, calibration: null } };
 const sessions = [
   // a typed name Python must read as UTF-8 (accents and an emoji: the night review)
-  { record: { ...rec("session-2026-10-26-0100", 2), sets: rec("session-2026-10-26-0100", 2).sets.map((s, k) => (k ? s : { ...s, exercise: "Développé couché \u{1F3CB}" })) },
+  { record: { ...rec("session-2026-10-26-0100", 2), calibration: CALIBRATION, parts: 2,
+    sets: rec("session-2026-10-26-0100", 2).sets.map((s, k) => (k ? { ...s, part: 2 } : { ...s, part: 1, exercise: "Développé couché \u{1F3CB}" })) },
     rows: [row("session-2026-10-26-0100", 0, 1500), row("session-2026-10-26-0100", 1, 2301)] },
+  // a record from before D42: no calibration, no parts on its sets
   { record: rec("session-2026-10-26-0200", 1), rows: [row("session-2026-10-26-0200", 0, 7)] },
 ];
 const text = JSON.stringify(toExport(sessions, COLS));
@@ -92,9 +100,15 @@ const py = spawnSync(PYTHON, ["-c", [
   "            for x in st[c]: acc += float(x)",
   "            sums[c] = acc",
   "        out.append({'id': s['record']['id'], 'index': st['index'], 'n': st['n'], 'sums': sums, 'csv': S.set_csv(st),",
-  "                    'names': [x.get('exercise') for x in s['record']['sets']]})",
+  "                    'names': [x.get('exercise') for x in s['record']['sets']], 'cal': S.calibration_json(s)})",
   "print(json.dumps(out))",
 ].join("\n"), path, join(ROOT, "analysis")], { encoding: "utf8", maxBuffer: 1 << 26 });
+// and the command line: --csv writes the set CSVs and each session's calibration next to them
+const csvDir = join(dir, "csv");
+const cli = spawnSync(PYTHON, [join(ROOT, "analysis", "sessions.py"), path, `--csv=${csvDir}`], { encoding: "utf8" });
+const calFile = join(csvDir, "session-2026-10-26-0100-calibration.json");
+const written = cli.status === 0 && existsSync(calFile) ? JSON.parse(readFileSync(calFile, "utf8")) : null;
+const oldWritten = existsSync(join(csvDir, "session-2026-10-26-0200-calibration.json"));
 rmSync(dir, { recursive: true, force: true });
 if (py.status !== 0) {
   check(false, `sessions.py failed: ${py.stderr.slice(-400)}`);
@@ -118,6 +132,14 @@ if (py.status !== 0) {
   check(sums, "sessions.py reads the same values (every column's sequential sum equal, bit for bit)");
   check(got[0].names[0] === "Développé couché \u{1F3CB}", `sessions.py reads a typed name as UTF-8: "${got[0].names[0]}"`);
   check(csv && worst < 1e-6, `sessions.py's set CSV matches the app's toCSV: same rows, worst relative difference ${worst.toExponential(1)}`);
+  // the calibration per part, and which part each CSV is from (an old record: none)
+  const want = { parts: JSON.parse(JSON.stringify(CALIBRATION)), sets: { "bar-squat-2026-10-26-0100-set01.csv": 1, "bar-squat-2026-10-26-0100-set02.csv": 2 } };
+  const cal = got[0].cal;
+  check(cal && JSON.stringify(cal.parts) === JSON.stringify(want.parts) && JSON.stringify(cal.sets) === JSON.stringify(want.sets) &&
+    got[0].cal.parts["1"].calibration.pod === 0x41ef151f && got[2].cal === null,
+    `sessions.py's calibration per part: part 1 corrected (pod 0x41ef151f), part 2 raw, each CSV's part ${JSON.stringify(cal?.sets)}; an old record: ${got[2].cal}`);
+  check(written && JSON.stringify(written.parts) === JSON.stringify(want.parts) && JSON.stringify(written.sets) === JSON.stringify(want.sets) && !oldWritten,
+    `sessions.py --csv writes session-2026-10-26-0100-calibration.json next to the CSVs (none for the old record)${cli.status === 0 ? "" : `: ${cli.stderr.slice(-300)}`}`);
 }
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

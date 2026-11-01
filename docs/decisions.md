@@ -756,11 +756,111 @@ hand-held test, still 5 reps, rep 1 MCV +5.9%, the rest within 1.5%; the 12:10 h
 fake_session_squat's whole-session reps.py run as machine (six NaN reps gone). sets.py on the fake
 sessions is unchanged.
 *Open:* tuned on one day, one lifter, one mount, an uncalibrated pod. The deadlift's rep 1 starts at
-its 6 cm hitch (+31%). Squats read ~3% high (scale: the 6-face calibration, D37). On the vertical
+its 6 cm hitch (+31%; fixed by D41). Squats read ~3% high (scale: the 6-face calibration, D37). On the vertical
 only an impact triggers the redo, so a set with none (a soft rerack, a recording cut before the
 rerack) falls back to the old path. Weakly guarded: the quasi-stills and BAR_AXIS barely move any
 final number here (only a live dip notices them going); a deadlift-like synthetic set with a gyro
-scale error would pin them. Untested on bench and on Adapter B.
+scale error would pin them (D41's make_fake_motion.py deadlift_pins does). Untested on bench and on Adapter B.
+
+**D41 (2026-10-31): on the floor a pause may end up to 1.0 s before its coarse turnaround; with no end
+still yet, a floor lift's last rest anchors on all of it, and a turnaround the high-pass confirms only in
+the window's last 0.75 s waits, unless it's the floor the bar has landed on after the last rep.**
+- The 10-31 paused deadlift's rep 1 read +31% (ROM 40 cm, true 53). It's pulled after a 2.2 s setup with
+  no set-down jolt to restart the coarse pass, so the 0.75 s high-pass bends the coarse height down into
+  the pull and the low lands at the 6 cm hitch, 0.59 s after the floor rest ends. TA_REACH (0.5 s) then
+  left only the hitch's own 0.29 s flat run, which became the floor. TA_FLOOR_REACH 1.0 s, on the floor
+  and on the side before the low only: the floor rest is a candidate again and wins as the longest. Rep
+  1 now -0.7% (ROM 53 cm), the set's worst rep -1.4%; 0.75 to 1.5 s give the same answer.
+- That alone took the live replay (every 0.25 s) from 1 dip to 3, two ways the window's open end misleads
+  a floor lift. An open window's last floor rest was anchored on its first 0.5 s (a rule for a squat's
+  walk-in), so the next pull integrated 3 s of drift and rep 5 came and went: now it anchors on all of
+  it. And near the buffer's end the high-pass fakes a low mid-descent, just before the plates land, and
+  the coast there became the "floor" (rep 1 at 13.0 s and rep 4 at 22.75 s vanished for a pass; the
+  second was D40's one dip): now a floor lift's turnaround confirmed (TA_MIN_MOVE away) only in the
+  window's last TA_SIGMA waits. 0 dips, each rep shown 0.25 to 0.75 s after its lockout.
+- Review (9 agents; the fixes scored as 6 variants on the reviewers' 30 synthetic floor sets, 6 creeping
+  breaks and the real set): the wait first dropped the last low that nothing confirms, the floor after
+  the last rep, so a set closed within 1.9 s of its last set-down (End tapped), or whose drift ran the
+  other way (+0.08 m/s^2 on the vertical), lost its last rep (HEAD kept it). Now that low is kept once
+  the bar has landed (a coarse stop, a jolt it then rests after, between the high before it and TA_REACH
+  after it): closed from 29.5 s on, 5 reps (29.0 and 29.25 s, still ringing: 4); the offsets: 5. The
+  open last rest first anchored on its last 0.5 s, which a creeping break (1 to 2.6 cm over 0.27 to
+  0.48 s, under TA_FLAT_A) runs into: the shown rep read +20 to +45% on most live passes of those sets;
+  on all of it, 9 to 17 such passes of 70 (from 69), and the real set is unchanged.
+- Considered and left (numbers in the session log): the first floor rest on all of it too fixes a
+  creeping break's final rep 1 (19 to 26% high on the synthetic sets, 2 to 3% with it) but moves the
+  usual bottom on the real set, where rep 3 then shows +23.5% for 0.75 s; and the window-start merge at
+  TA_FLOOR_REACH rescues a set whose floor rest is a true still (the window starting at the pull) with a
+  hitch on every pull, but takes a touch-and-go creep from 3.8% to 12%. Both need real slow pulls.
+*Why:* the low comes late only on the floor and only before the first rep: every later rep's low is at
+its set-down, where the jolt restarts the coarse pass. On the floor the height check (TA_NEAR_FRAC)
+still keeps a lockout or a mid-descent hover out. The open-end rules wait for evidence instead of
+guessing: a rep in the open tail still counts from the raw velocity until its rest is anchored, flagged
+"no end anchor" (the app counts it as the rep in progress).
+*Guarded by* parity.mjs: the deadlift's 5 reps each within 5% of the truth and the mean within 3% (rep
+1 was left out before); the same set cut at 30.0 s, 1.4 s after its last set-down, must close with 5
+reps; its live replay with no dip at all (each live file now has its own allowance), each rep's MCV as
+shown while it's the newest within 8% of the truth, and at most one pass (that 14.50 s one) showing the
+newest rep over 10% off once its true lockout is 0.3 s past; make_fake_motion.py deadlift_creep (six floor
+pulls: four creeping breaks, two 6 cm hitches, rep 1 out of a 5.5 s still): 6 reps, each within 5%, and
+at most 8 such passes (7; anchored on the rest's last 0.5 s, 18; without the landed-floor rule, 17). Each
+rule, reverted alone, fails one of these. Over 726 older results nothing moved.
+make_fake_motion.py deadlift_pins (10 dead-stop pulls, the sleeve spinning 21 to 25 deg/s through every
+rest, the gyro 1.5% fast) pins D40's quasi-stills and BAR_AXIS: 10 reps, worst +2.8%; with the
+quasi-still pulls off or BAR_AXIS wrong, 7.
+*Open:* one paused deadlift, one lifter; untested on real touch-and-go deadlifts, a pull with no hitch,
+a failed first pull, a slow pull. Found on the way, not fixed: the gyro's bias is the median over the
+stills, and a sleeve spinning on its bearing passes the |a| still test, so when spinning stills are the
+majority the bias becomes the spin (deadlift_pins: 37% of still samples, 0.045 deg/s; a prototype with
+still lockouts reached 178 deg); and the height check scales with the rep's size while the coarse pass's
+error in a long pause doesn't (a 3.3 s rest on the pins in a 30 cm set fails it, the next rep -65%);
+and live, at 14.50 s on 10-31, drop_rack_moves takes rep 1 for handling for one pass while rep 2's first
+centimetres show (the count stays 1).
+
+**D42 (2026-10-31): the pod's calibration is applied in the app, to the pod it was made on:
+`calib_pod.py --install` writes webapp/pod-calibration.json, the build ships it, and that pod's samples
+are corrected before anything else, like the phone's (D23).**
+- calib_pod.py records the pod's serial before it records (an unplug mid-run can't lose it): its USB
+  serial number's last 8 hex digits are FICR DEVICEID[0], the serial in its Bluetooth INFO (D27); a CSV
+  analysed again takes it from the earlier result of that CSV, or --pod=. --install (with no file: the
+  newest complete result, saying which newer ones it skipped) refuses an incomplete result, a bad face
+  fit, a scale more than 5% from 1 either way, anything but 3 finite numbers per bias and scale, no
+  "made"; one with no serial gets a warning that it applies to any pod. The app fetches the file at
+  startup and checks the same shape (podCalibrationProblem; a broken file is said once, on the card too;
+  none at all is silent). Once a pod's INFO says which pod it is, its samples get corrected = (raw - bias)
+  / scale per axis, accel and gyro (the gyro bias too: each still re-estimates whatever is left).
+  Another pod's calibration isn't applied, and the app says so after the connect (the hint used to wipe
+  it) and on the card, serials in hex.
+- What was applied is kept with the data (P2: raw = corrected x scale + bias): pod.json and link.json
+  (the app's folders), the session record per part (so the D30 export has it; each set says its part),
+  and sessions.py --csv writes <session id>-calibration.json next to the set CSVs. Saved recordings are
+  corrected ones, like the phone's.
+- `reps.py --calib=<json>` applies one to a recording made before (the 10-31 gym sets), and refuses one
+  that something next to it says is already corrected. ACC_OFFSET (D40, never set) is gone: the offsets
+  come in with the samples.
+*Why:* the app, not the firmware (roadmap 1.3 said firmware): no firmware or protocol change, the live
+view and every saved file get the same numbers, and a new calibration is a rebuild, not a flash. The
+serial check because the app connects to the nearest pod. In the samples, not in the analysis: one
+sample format for every source (rule 2).
+*Guarded by* calib_pod.py --selftest (the synthetic pod's planted errors come back out through --install
+and apply(), accel within 0.01 m/s^2 and gyro 0.05 deg/s; 15 refusals, each for its own reason and writing
+nothing; the newest complete pick; the serial from an earlier result and from --pod), webapp/test/calib_pod.mjs
+(applyPodCalibration = calib_pod.apply() bit for bit, missing gyro entries, the serial gate, the app's shape
+check against --install's on 14 cases, the installed file if any) and webapp/test/export.mjs (the export
+and sessions.py's sidecar carry each part's calibration).
+- Measured the same night without a calibration run (a 60 s lid-down rest over USB plus every still the
+  pod has recorded; analysis/data/pod-calib-estimate-2026-10-31.json, deliberately not --install-able):
+  the pod is board 3 of the three tried on 10-18 (gyro bias is the fingerprint: (+0.7, -3.3, +2.2) deg/s;
+  the 10-18 axis-* 6-face set is another board). Accel x bias -0.179 m/s^2, scale +0.46% (two methods
+  agree to 0.001); y -0.041, +0.45% (moderate); z about +0.20, -0.5%, not pinned: the lid-up reading went
+  10.10, 9.93, 9.98 m/s^2 across assembly day, so the case is still settling. Gyro z scale +1.0% +- 0.4%
+  (the sleeve's rolls against gravity turning in x-y). Applied with --calib to the 10-31 sets: squats
+  +3.18% to +2.84% against the video, so the pod's scale isn't their +3%; the gyro's calibration moves
+  MCV under 0.05% (vertical_accel takes the gyro's offset at the stills itself). The USB serial check
+  holds on the real pod: 88C8E98A41EF151F, INFO 1106187551 (0x41EF151F).
+*Open:* the real run (calib_pod.py over USB) once the case has settled, lid-up and lid-down back to back,
+and again a few days later to see whether z still moves; then --install, rebuild, a session. The app's
+wiring (feed, pod.json) was checked in a browser without a pod; with the pod it's untested.
 
 ## Proposed (say yes or no)
 

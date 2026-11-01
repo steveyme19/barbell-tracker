@@ -55,7 +55,9 @@ can check it on the phone.
   adb install -r app\build\outputs\apk\debug\app-debug.apk
   ```
   `adb` is `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`. Run `cap sync` after
-  every change in `webapp/`, because the app ships a copy of it.
+  every change in `webapp/`, because the app ships a copy of it. That includes a new pod
+  calibration: `python analysis/calib_pod.py --install` writes `webapp/pod-calibration.json`
+  (D42), then sync, build and install.
 
 ## A2. Native sensors
 

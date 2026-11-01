@@ -66,7 +66,8 @@ End session. Bring the phone back to the laptop; the session folder is
   rep on its turnarounds, so touch-and-go squats and floor-to-floor deadlifts count without a
   still between reps. Still: leave the bar still for 2 to 3 s after the last rep (the set's end
   anchor), and hands off the pod until the double buzz.
-- No pod calibration is applied yet; squat MCV reads about 3% high against video (D40).
+- No pod calibration is applied yet (the app can since D42: `calib_pod.py`, then `--install` and a
+  rebuild); squat MCV reads about 3% high against video (D40), and only 0.3 of that is the pod's scale.
 - Seen on 10-31: the pod ran 40 min on its cell (4.06 V throughout), the camera in front of the
   app cost nothing (0 lost), one set lost 72 samples (flagged). Still untested: a real radio
   dropout in the app and long screen-off stretches.

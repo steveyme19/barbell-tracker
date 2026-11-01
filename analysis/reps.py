@@ -19,8 +19,12 @@ Usage:
     python reps.py data/reps_pause.zip
     python reps.py data/reps_pause.zip --json    # results only, for the JS parity test
     python reps.py data/reps_pause.zip --until=8 # only the first 8 s (what the live app saw then)
+    python reps.py data/bar-....csv --calib=data/pod-calibration-....json
+                                                 # a pod recording from before the app applied one (D42);
+                                                 # refused when its pod.json / link.json say it's corrected
 """
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -112,6 +116,10 @@ TA_PAUSE = 0.25         # s: a flat stretch this long next to a turnaround can b
                         # the first rep, a held lockout, the floor) ...
 TA_REACH = 0.5          # s: ... if it reaches to within this of the coarse turnaround (whose zero crossing
                         # wanders in a pause: up to 0.4 s out of it on these sets) ...
+TA_FLOOR_REACH = 1.0    # s: ... or, on the floor, ends within this before it. With no set-down jolt to restart
+                        # the coarse pass (rep 1, pulled after a long setup) the high-pass bends the height
+                        # down into the pull, and the low lands late, at a hitch just off the floor: 0.59 s
+                        # after the floor's end on 10-31 (rep 1 read +31% from the hitch) ...
 TA_COAST_DV = 0.35      # m/s: ... isn't a coast by §5's local test (speed changes of opposite sign over
                         # COAST_LOOK before and after, both over this). Coasting through a concentric or a
                         # descent changes 0.45 to 1.7 m/s either side; the walkout's bob into standing 0.15
@@ -132,8 +140,6 @@ TA_SET_EDGE = 3.0       # s: a window still this close to the first (last) ancho
 VERTICAL_FS = (150.0, 300.0)   # Hz: only at the pod's rate, a stand-in for "the source is the pod".
                         # Browsers (60 Hz) and the phone's native sensors (402 Hz, hand-held tests) stay on
                         # |a| (D9): a hand-held phone isn't on a bar
-ACC_OFFSET = None       # m/s^2 (x, y, z): the pod's accel offsets (calib_pod.py, D37), taken off first.
-                        # None: not applied yet (10-31's fit changes squat MCV by 0.6% or less)
 QS_AVG = 0.1            # s: accel and gyro averaged over this for the quasi-still test (two periods of
                         # the floor's 20 Hz ring cancel)
 QS_DEV = 0.15           # m/s^2: | |mean accel| - g | under this ...
@@ -562,6 +568,13 @@ def runs_of(mask):
     return list(zip(np.where(d == 1)[0], np.where(d == -1)[0] - 1))
 
 
+def confirmed_at(x, k, min_move):
+    """Where turning_points confirmed the turnaround at k: the first sample after it that's min_move
+    away from it (len(x) if none is)."""
+    d = np.abs(x[k:] - x[k]) >= min_move
+    return k + int(np.argmax(d)) if d.any() else len(x)
+
+
 def find_pause(a, t, xc, k, lo, hi, fs, flat, floor):
     """The pause at the coarse turnaround k (lo, hi: the turnarounds either side; xc: coarse height),
     as (start, end) samples, or None. A flat run between lo and hi, TA_PAUSE or longer, reaching to
@@ -572,13 +585,15 @@ def find_pause(a, t, xc, k, lo, hi, fs, flat, floor):
     concentric's flat middle, or a grinder's flat finish, is well below the top). Which run: at a
     lockout the nearest, on the floor the longest (a deadlift's hitch just off the floor passes both
     checks and sits nearer, but it's brief). In a pause the coarse velocity's zero crossing k can land
-    anywhere, even outside it."""
+    anywhere, even outside it; on the floor it can land at that hitch, so there the run may end up to
+    TA_FLOOR_REACH before k."""
     look, reach = int(COAST_LOOK * fs), int(TA_REACH * fs)
+    back = int(TA_FLOOR_REACH * fs) if floor else reach      # how far before k the run may end
     move = max(abs(xc[k] - xc[lo]), abs(xc[k] - xc[hi]))
     best = None
     for rs, re in runs_of(flat[lo:hi + 1]):
         rs, re = rs + lo, re + lo
-        if re - rs < TA_PAUSE * fs or not (rs - reach <= k <= re + reach):
+        if re - rs < TA_PAUSE * fs or not (rs - reach <= k <= re + back):
             continue
         into, out = speed_change(a, t, rs - look, rs), speed_change(a, t, re, re + look)
         if into * out < 0 and min(abs(into), abs(out)) > TA_COAST_DV:
@@ -623,7 +638,10 @@ def turnaround_velocity(a, t, fs, w, lift):
       2. the lift's resting turnarounds (TA_REST: lockouts, or the floor) are the anchors: a pause
          (find_pause) anchors on its average velocity, which averages out a heavy bar's whip; a
          touch-and-go turn on the coarse zero crossing. A squat or bench set ends at the first jolt
-         after its first lockout (the bar hit the rack)
+         after its first lockout (the bar hit the rack). With no end still yet, a floor lift's last
+         rest anchors on all of it (there's no walk-in after a deadlift), and a turnaround confirmed
+         only in the window's last TA_SIGMA waits, but for the floor after the last rep once the bar
+         has landed
       3. one raw velocity over the window (jolts blanked), less a straight line between each pair of
          neighbouring anchors (§6, span by span). Before the first anchor and after the last it's 0:
          the unrack, walkout, walk-in and rerack aren't reps. No end still yet (live, or a still the
@@ -648,6 +666,19 @@ def turnaround_velocity(a, t, fs, w, lift):
     vc = vc - gauss_smooth(vc, fs, TA_SIGMA)
     xc = integrate(vc, tw)
     lows, highs = turning_points(xc, TA_MIN_MOVE)
+    if floor and not w["anchored"]:
+        # No end still yet (live): the high-pass bends the height near the buffer's end, and fakes a low
+        # in the descent just before the plates land. A turnaround it confirms only in the last TA_SIGMA
+        # isn't one yet; the rep stays in the open tail until it is. Except the last low once the bar has
+        # landed (a stop, a jolt the bar then rests after, between the high before it and TA_REACH after
+        # it): that's the floor after the last rep, and nothing after it may ever confirm it (End tapped
+        # soon after the set-down took the last rep's anchor away)
+        cut = len(xc) - 1 - int(TA_SIGMA * fs)
+        reach = int(TA_REACH * fs)
+        before = lambda k: max([h for h in highs if h < k], default=-1)
+        landed = lambda k: k == lows[-1] and any(before(k) < je <= k + reach for je in stops)
+        lows = [k for k in lows if confirmed_at(xc, k, TA_MIN_MOVE) <= cut or landed(k)]
+        highs = [k for k in highs if confirmed_at(xc, k, TA_MIN_MOVE) <= cut]
     turns = sorted(lows + highs)
     # 2. anchors: (sample, first and last sample of the stretch whose average velocity is the zero)
     rests = []
@@ -673,6 +704,9 @@ def turnaround_velocity(a, t, fs, w, lift):
         ps, pe = p
         if j == 0 and len(rests) > 1:
             ps = max(ps, pe - 2 * edge)                 # standing before the first rep: its end
+        elif j == len(rests) - 1 and j > 0 and floor and not closed:
+            pass                                        # open, on the floor: all of it (a slow break creeps
+                                                        # out of its end, and the walk-in rule is a squat's)
         elif j == len(rests) - 1 and j > 0:
             pe = min(pe, ps + 2 * edge)                 # after the last rep: its start (then the walk-in)
         anchors.append(((ps + pe) // 2, ps, pe))
@@ -954,7 +988,7 @@ def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
     # A bar lift from the pod: the acceleration along up instead of |a| - g (D40)
     bar = lift in TA_BAR and acc is not None and gyro is not None and np.any(gyro)
     if bar and VERTICAL_FS[0] <= fs <= VERTICAL_FS[1]:
-        a = vertical_accel(t, acc - (ACC_OFFSET if ACC_OFFSET is not None else 0.0), gyro, runs, fs)
+        a = vertical_accel(t, acc, gyro, runs, fs)
 
     v, windows = velocity_between_anchors(a, t, fs, runs)
     # Windows with no still between their reps get turnaround anchors (D40): a broken window, or a bar
@@ -979,6 +1013,47 @@ def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
                 ignored=n_candidates - len(runs), lift=lift, mount=mount, noise=noise)
 
 
+def applied_calibration(csv):
+    """What the app already corrected this recording's samples with (D42), as (file, what), or None. It says
+    so next to the CSV: the app's session folder in pod.json / link.json ("calibration"; pod-2.json,
+    link-2.json, ... for a resumed session's later parts: any of them counts, a CSV doesn't say its part) or
+    calibration.json (the phone's 6-face one, D23, written only when it was applied); sessions.py --csv in
+    <session id>-calibration.json, with each CSV's part."""
+    import re
+    csv = Path(csv)
+    for p in sorted(csv.parent.glob("*.json")):
+        app = re.fullmatch(r"(pod|link|calibration)(-\d+)?\.json", p.name)
+        export = p.name.startswith("session-") and p.name.endswith("-calibration.json")
+        if not (app or export):
+            continue
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        if app and app.group(1) == "calibration":
+            return p.name, "the phone's 6-face calibration (D23)"
+        if app:
+            c = d.get("calibration")
+        else:
+            sets, parts = d.get("sets") or {}, d.get("parts") or {}
+            if csv.name not in sets:
+                continue                                  # another session's
+            part = sets[csv.name]
+            if part is None:                              # a set stored before the app said its part: any corrected part
+                c = next((x["calibration"] for x in parts.values() if isinstance(x, dict) and x.get("calibration")), None)
+            else:
+                x = parts.get(str(part))
+                c = x.get("calibration") if isinstance(x, dict) else None
+        if c:
+            if isinstance(c, dict) and "accel" in c:
+                pod = f"pod 0x{c['pod']:08x}" if isinstance(c.get("pod"), int) else "any pod"
+                return p.name, f"the pod calibration {c.get('from', '?')} ({pod}, made {c.get('made', '?')})"
+            return p.name, "the phone's 6-face calibration (D23)"
+    return None
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
@@ -992,6 +1067,16 @@ def main():
         keep = (t - t[0]) < until
         t, a_raw = t[keep], a_raw[keep]
     acc, gyro = load_imu(path, len(t))
+    calib = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--calib=")), None)
+    if calib:
+        done = applied_calibration(path)
+        if done:
+            sys.exit(f"{path.name}: --calib refused, {done[0]} next to it says the app already corrected these samples "
+                     f"with {done[1]}: {Path(calib).name} on top would correct them twice")
+        # the samples as the app corrects them now (D42), and |a| from those
+        import calib_pod
+        acc, gyro = calib_pod.apply(json.loads(Path(calib).read_text(encoding="utf-8")), acc, gyro)
+        a_raw = np.sqrt(acc[:, 0] ** 2 + acc[:, 1] ** 2 + acc[:, 2] ** 2)
     try:
         r = analyze(t, a_raw, lift, acc, gyro)
     except ValueError as err:
@@ -1001,7 +1086,6 @@ def main():
         print(f"(ignored {r['ignored']} 'still' periods that were really steady motion)")
 
     if as_json:
-        import json
         print(json.dumps({
             "fs": float(fs), "g": float(g), "runs": [[int(s), int(e)] for s, e in runs],
             "lift": r["lift"], "mount": r["mount"],
