@@ -1,0 +1,105 @@
+{
+ "what": "An ESTIMATE of the pod's IMU errors from its stills, not a calib_pod.py run (2026-10-31, D42): corrected = (raw - bias) / scale per axis. Not for --install (incomplete, and named so its newest-file pick skips it). x is solid, y moderate, z not pinned (the lid-up reading moved 10.10 -> 9.93 -> 9.98 across assembly day).",
+ "made": "2026-10-31T23:40:00",
+ "from": "w41 score: accel from 10 cased stills + bare-board y (agents fitA/fitB), gyro bias bar-xiao-2026-10-31-2249-lid-down-rest.csv (calib_pod.analyze), gz scale from 7 gym roll stretches (agent gz-scale)",
+ "pod": 1106187551,
+ "complete": false,
+ "accel": {
+  "bias": [
+   -0.1795,
+   -0.041,
+   0.2047
+  ],
+  "scale": [
+   1.00459,
+   1.00446,
+   0.9946
+  ],
+  "residual": 0.0236,
+  "ok": true
+ },
+ "gyro": {
+  "bias": [
+   0.7130696202531646,
+   -3.337848101265823,
+   2.2061075949367086
+  ],
+  "scale": [
+   null,
+   null,
+   1.01
+  ],
+  "turns": []
+ },
+ "rest": {
+  "seconds": 29.496277,
+  "accel_noise": [
+   0.007063434473340177,
+   0.005859654649506857,
+   0.006551403002364788
+  ],
+  "gyro_noise": [
+   0.046647716648849445,
+   0.049093061292725525,
+   0.03808358928328989
+  ],
+  "gyro_bias": [
+   0.7167952641752577,
+   -3.342607119845361,
+   2.1988941688144332
+  ]
+ },
+ "faces": {},
+ "rejected": [],
+ "uncertainty": {
+  "accel_bias_95": {
+   "x": [
+    -0.1914,
+    -0.1685
+   ],
+   "y_fitA": [
+    -0.0477,
+    -0.0346
+   ],
+   "y_fitB_plausible": [
+    -0.08,
+    -0.02
+   ],
+   "z_fitA": [
+    0.1913,
+    0.2178
+   ],
+   "z_fitB_plausible": [
+    0.19,
+    0.3
+   ]
+  },
+  "accel_scale_95": {
+   "x": [
+    1.00343,
+    1.00574
+   ],
+   "y_fitA": [
+    1.00356,
+    1.0053
+   ],
+   "y_fitB_plausible": [
+    1.003,
+    1.008
+   ],
+   "z_fitA": [
+    0.9932,
+    0.99589
+   ],
+   "z_fitB_plausible": [
+    0.993,
+    1.004
+   ]
+  },
+  "gyro_z_scale": [
+   1.006,
+   1.014
+  ],
+  "notes": "x solid (fitA and fitB agree to 0.001 / 0.0001); y rests on two gym quasi-stills plus the bare board's +-y faces; z bias/scale are not pinned (lid-up face non-repeatable 9.93..10.10 on 10-31, one lid-down 9 h later). On the bar z lies along the bar, so z hardly enters the bar lifts. Gyro bias is tonight's; the gym day's gz was 2.181 (reps removes the stills' gyro offset itself, so the bias does not change reps). Gyro x/y scale unknown (null)."
+ }
+}
