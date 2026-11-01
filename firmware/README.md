@@ -98,7 +98,8 @@ P0.13 and the IMU power pin stay put while asleep. Waking from System OFF is a r
 
 Three guards for the soldered cell: the pod's cutoff at boot, the pod's IMU-not-found loop
 sleeping once USB goes, imu_serial switching off without USB. **Compiled clean** (both sketches,
-flash.py's core check, `--warnings all`: 0 warnings). **Not flashed or bench-checked yet.**
+flash.py's core check, `--warnings all`: 0 warnings). **Flashed and bench-checked 2026-11-01**
+(results at the end of this section; the normal pod build is back on the pod).
 
 Before any of it: the pod has to be free (not mid-session), Bluetooth headphones off, and only
 `python firmware/flash.py` builds go on it (every USB session charges, so the P0.14 rule is live).
@@ -148,3 +149,25 @@ Fully checkable on the bench: the LED is the evidence.
 3. `python firmware/flash.py` (the pod firmware) before the pod is unplugged again.
 Can't be checked on the bench: the off current (imu_serial has no LED, and the cell is soldered on,
 so it needs a meter in the cell's lead; D38 open: both sleep currents).
+
+**Results (2026-11-01, the pod in its case on Adapter A, the cell at 4.16 V; both test builds were
+flashed with the line put back in the repo right after the upload):**
+- **G3 pass.** Unplugged 252 s: `t_us` restarted at 0.0 s (running on, it would have read ~338 s).
+- **G2 pass.** On USB, `# IMU not found` and a red blink every 1.2 s; unplugged, 3 red blinks and dark
+  (5.7 s, about 5 blink periods); plugged back in, the loop is back.
+- **G1.** Step 1 pass: on USB it streams at 4.16 V with no cutoff, advertising as `BarPod-E26C`.
+  Step 2: after `s`, the unplug itself gave the 3 red blinks, twice, the second time with the cable
+  pulled at the laptop end and the pod untouched. So **unplugging a sleeping pod wakes it** (an awake
+  pod unplugged for 8.7 s ran on: ring head 39969, no new boot), and steps 2 and 3 became one: woken on
+  battery, it blinked red 3 times and went dark without advertising (a BLE scan heard it only on USB).
+  Step 4 pass (a shake: nothing). Step 5 not done: the pinhole can't be reached with the puck on.
+  Step 6 pass: plugging USB in woke the IMU-off sleep with the cell on, `woke by: USB power (from
+  sleep)`, RESETREAS 0x100000. Step 7, with the unplug's own boot in place of a reset press: it came up
+  streaming on the cable, but its banner read `woke by: motion (from sleep)` (RESETREAS 0x10000, GPIO
+  latch P0 0x800: INT1), so that run took the boot's own USB check, not goToSleep()'s recheck: likely
+  fine, not a clean test of that line. Step 8: the normal build back (`power on / upload`, 4.16 V,
+  ~209 Hz, ring clean).
+- **The unplug wake:** the one banner caught says motion with INT1 latched, so most likely the
+  USB-to-cell handover glitches the IMU, armed for wake-on-motion in that sleep. Harmless with the pod
+  firmware (it sleeps again after 10 min still, about 2 mAh). Untested: an unplug from the IMU-off
+  sleep (`o`), whose IMU is unpowered, so by that account it should stay off.

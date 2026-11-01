@@ -665,7 +665,9 @@ switch, no hard off.**
   serial terminal holding the port, or the phone's SLEEP mode 1 from the app's devtools during a
   pod session; no button yet).
 - Unplugging USB should no longer be a power cycle: the cell feeds the 3.3 V regulator through
-  Q1 as VBUS goes (Seeed's v1.1 schematic; not bench-checked). The recovery is the reset pinhole: a pin reset, which also
+  Q1 as VBUS goes (Seeed's v1.1 schematic). Checked 11-01: an awake pod unplugged runs on (no new
+  boot); a sleeping one wakes at the unplug, most likely the handover tripping the IMU's
+  wake-on-motion (the one banner caught read `motion`, INT1 latched). The recovery is the reset pinhole: a pin reset, which also
   clears a running watchdog (Nordic's reset table: power-on, brownout, pin and watchdog resets
   clear it; a soft reset, like an upload's, and a CPU lockup don't). So a sketch that doesn't
   feed it resets once, about 8 s after the upload, and then runs unwatched.
@@ -673,8 +675,9 @@ switch, no hard off.**
 *Why:* a reprint with a wire hole, and a mated pair ~4.5 mm thick in a 4.7 mm space, would buy
 only a hard off, and the deep sleep is close to one: about 16 uA with motion wake and 7 uA with
 the IMU off (datasheet budget, not measured), over a year from a full 400 mAh cell either way.
-*Guarded (10-31, compiled clean, not yet flashed or bench-checked; the bench plan is in
-firmware/README.md)*, the gaps the unplug used to cover: the pod checks the cutoff at every boot
+*Guarded (10-31; flashed and bench-checked 11-01, the plan and results in firmware/README.md: every
+step passed but the reset-pinhole one, which the puck blocks, and a race run that took the boot's own
+USB check)*, the gaps the unplug used to cover: the pod checks the cutoff at every boot
 before the radio, the sampler or the lid-down gesture can run (3 readings 20 ms apart; below
 3.30 V on battery it takes the IMU-off sleep), so a pod woken near empty, or reset while flat,
 blinks red 3 times and sleeps for good instead of running until a lid-down sleep 6 s later beat
@@ -693,9 +696,9 @@ LOW_BATT_WARN_V (3.50 V, the app's battery-low warning) should take the IMU-off 
 Every USB session charges now, so the P0.14 rule is always live (only flash.py builds). Charge on
 the app's battery-low warning and store the pod in the IMU-off sleep.
 *Open:* both sleep currents, the battery reading against a meter, the cutoff on the real cell,
-a check that unplugging USB gives no new boot, and that plugging it in wakes the IMU-off sleep
-with the cell on (every bench wake so far was on USB-only power, where a replug was a power-on).
-Bench-checking the guards, and the motion-wake call above. Whether the bootloader (every upload
+the reset-pinhole step and a clean race run (bench plan G1 steps 5 and 7), whether an unplug wakes
+the IMU-off sleep too (`o`), and the motion-wake call above. Answered 11-01: unplugging an awake pod
+gives no new boot, and plugging USB in wakes the IMU-off sleep with the cell on. Whether the bootloader (every upload
 and reset) leaves P0.14 floating: through the 1 MOhm that's under 1 uA into P0.31, likely fine,
 unchecked.
 
@@ -760,7 +763,22 @@ its 6 cm hitch (+31%; fixed by D41). Squats read ~3% high (scale: the 6-face cal
 only an impact triggers the redo, so a set with none (a soft rerack, a recording cut before the
 rerack) falls back to the old path. Weakly guarded: the quasi-stills and BAR_AXIS barely move any
 final number here (only a live dip notices them going); a deadlift-like synthetic set with a gyro
-scale error would pin them (D41's make_fake_motion.py deadlift_pins does). Untested on bench and on Adapter B.
+scale error would pin them (D41's make_fake_motion.py deadlift_pins does). Untested on Adapter B and on a
+real bench set.
+- Bench on synthetics (11-01, before a gym day that didn't happen: 8 agents, exact-physics sets at 208 Hz
+  with the pod's mount and errors, each claim re-run by a skeptic; Python and JS agreed on 500+ runs; the
+  scripts are kept locally in analysis/out/bench-synth-2026-11-01/, gitignored). Touch-and-go counts: 48 of
+  48 cards right, set means within 1.4 to 3.7%, when the rerack clangs. Open, each reproduced there:
+  (1) TA_NEAR_FRAC rejects a paused set's first and last holds (the chest pause shrinks the coarse move
+  to 19 to 25 cm), so their anchors land in the moving bar: rep 1 38 to 64% low with a 0.75 s+ chest
+  pause, the last rep 29 to 35% low after a 1 s+ lockout; 0.5 fixes it there, unchecked against D41.
+  (2) Heavy paused grinds and paused singles: 1 of 3 reps, or no card. (3) TA_RACKED has no gyro
+  check: a chest bounce over ~2 g closes the set and empties the card. (4) find_pause takes a slow
+  drift out of lockout for the pause (anchors 0.3 s late, ROM +5 to +8 cm). (5) The bench ends rule
+  (level_heights) puts the rack still at lockout height, 4 to 6 cm off: with a soft rerack the window
+  isn't redone and the unrack becomes a rep. (6) A rerack fumble above lockout drops the last rep.
+  (7) The pod taken off before the double buzz loses the last rep. docs/gym-day.md's bench section
+  works around them.
 
 **D41 (2026-10-31): on the floor a pause may end up to 1.0 s before its coarse turnaround; with no end
 still yet, a floor lift's last rest anchors on all of it, and a turnaround the high-pass confirms only in
@@ -858,6 +876,16 @@ and sessions.py's sidecar carry each part's calibration).
   +3.18% to +2.84% against the video, so the pod's scale isn't their +3%; the gyro's calibration moves
   MCV under 0.05% (vertical_accel takes the gyro's offset at the stills itself). The USB serial check
   holds on the real pod: 88C8E98A41EF151F, INFO 1106187551 (0x41EF151F).
+- 11-01, the puck still on (lid up, lid down and USB-C up over USB, not charging; three agents and a
+  judge): **z replaced**, bias +0.281, scale +0.31% (analysis/data/pod-calib-estimate-2026-11-01.json,
+  not --install-able either: an equal-weight fit of three lid-ups and three lid-downs over 23 h, each
+  within 0.013). The 10-31 z leaned on the lid-ups taken on USB at 12:48 and 13:44, which read 0.13 to
+  0.18 low under the new one, while 12:10's (on the cell, in no fit) lands within 0.006. Off charging, z
+  repeats to about +-0.01 on both faces over a day; the rest is minute-scale settling after a wake (0.015
+  in 80 s). x and y kept: the USB-C-up face reads 0.019 high in |a| under them, against 0.0025 for 10-31's
+  five bar stills (it stood on the table with the cable hanging from that end). On Adapter A z is the bar
+  axis, so it barely matters there: the new z moves the 10-31 sets' mean MCV under 0.05%, and z left raw
+  costs under 0.17%. Recordings stay raw; correct offline with reps.py --calib.
 *Open:* the real run (calib_pod.py over USB) once the case has settled, lid-up and lid-down back to back,
 and again a few days later to see whether z still moves; then --install, rebuild, a session. The app's
 wiring (feed, pod.json) was checked in a browser without a pod; with the pod it's untested.

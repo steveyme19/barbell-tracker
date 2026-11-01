@@ -85,10 +85,11 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
 - The pod's watchdog keeps running through the soft reset of an upload: any other sketch flashed
   over it must feed `NRF_WDT->RR[0]` (imu_serial does) or it resets 8 s after boot (once: by
   the reset table that reset clears it). A reset press (pin reset) clears it too. Unplugging USB
-  isn't a power cycle any more: the battery is soldered on (D38).
+  isn't a power cycle any more (D38, checked 11-01): an awake pod runs on, a sleeping one wakes at
+  the unplug (most likely the handover tripping the IMU's wake-on-motion) and sleeps again later.
 - With the battery soldered on, a sketch without a sleep of its own keeps running from the cell
   once USB is unplugged, past the 3.30 V cutoff to the protection board's trip. imu_serial
-  switches itself off without USB power (D38, 10-31; not bench-checked yet), other sketches
+  switches itself off without USB power (D38, bench-checked 11-01), other sketches
   don't: flash the pod firmware back before unplugging.
 - nRF pins: after reset and after `detachInterrupt()` the input buffer is off, so `digitalRead()`
   always says LOW. `pinMode(pin, INPUT)` first (D29: this made D26's INT1 checks see nothing).

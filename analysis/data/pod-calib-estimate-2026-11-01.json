@@ -1,0 +1,146 @@
+{
+ "what": "An ESTIMATE of the pod's IMU errors from today's stills, not a calib_pod.py run (2026-11-01, judge of three analyses): corrected = (raw - bias) / scale per axis. Not for --install (incomplete, and named so its newest-file pick skips it). Pinned: z, now bias +0.281 and scale +0.31% (the 10-31 estimate's +0.205 / -0.54% mixed two lid-ups taken on USB at 12:48 and 13:44, which read 0.13-0.18 low, with the 22:49 lid-down). That z is an equal-weight fit of six placements: three lid-ups today (11:06, 11:08, 11:09-11:13) and three lid-downs (11:14 and 11:18 today, 22:49 on 10-31). The lid-downs disagree by up to 0.020 (11:18 read -9.570, settling to -9.555 after a wake, against -9.540 for the other two), so z is good to about +-0.01 / +-0.001. Not pinned today: x and y, kept from the 10-31 estimate (bar stills, on the cell). Today's USB-C-up face (-x, on a table with the cable plugged in and hanging) reads 0.019 high in |a| under that x, while 10-31's five +-x bar stills fit within 0.0025. Missing: the +x and +-y faces and every turn (the Adapter A puck is in the way). Gyro bias is the median over today's 112 stills; it drifts over 0.73-0.83 / -3.42..-3.29 / 2.18-2.22 deg/s, and the app re-estimates it at every still anyway. gz scale 1.010 is carried over from 10-31; x/y gyro scale unknown (null). Battery 4.15 V, not charging.",
+ "made": "2026-11-01T12:30:00",
+ "from": "judge (cal11): accel z from bar-xiao-2026-11-01-1106-lid-up-rest.csv, -1108-flips-lid-down-usb-up.csv (+z 1-63 s and 90-342 s, -z 352-359.5 s), -1118-lid-down-then-usb-up.csv (-z 2-133 s) and bar-xiao-2026-10-31-2249-lid-down-rest.csv; accel x/y from pod-calib-estimate-2026-10-31.json; gyro bias calib_pod.still_runs over today's three files; rest calib_pod.analyze of the 1106 file",
+ "pod": 1106187551,
+ "complete": false,
+ "accel": {
+  "bias": [
+   -0.1795,
+   -0.041,
+   0.2809
+  ],
+  "scale": [
+   1.00459,
+   1.00446,
+   1.00307
+  ],
+  "residual": 0.0192,
+  "ok": true
+ },
+ "gyro": {
+  "bias": [
+   0.7703,
+   -3.3963,
+   2.1971
+  ],
+  "scale": [
+   null,
+   null,
+   1.01
+  ],
+  "turns": []
+ },
+ "rest": {
+  "seconds": 34.24411,
+  "accel_noise": [
+   0.009195967974033784,
+   0.011459395887128411,
+   0.009146603347553007
+  ],
+  "gyro_noise": [
+   0.07331264289239783,
+   0.051218545309419695,
+   0.03890255518450067
+  ],
+  "gyro_bias": [
+   0.8021153045650061,
+   -3.3780754821701127,
+   2.195578604134869
+  ]
+ },
+ "faces": {
+  "+z": {
+   "mean": [
+    -0.12102809794209539,
+    -0.26699682252024187,
+    10.111276158833974
+   ],
+   "seconds": 118.0,
+   "tilt": 1.6606584771695154
+  },
+  "-z": {
+   "mean": [
+    -0.26685835449468487,
+    -0.26770863745195367,
+    -9.559117020967182
+   ],
+   "seconds": 131.0,
+   "tilt": 2.2644687726851522
+  },
+  "-x": {
+   "mean": [
+    -10.042679721475347,
+    -0.14368165849552353,
+    0.17979902848375665
+   ],
+   "seconds": 158.0,
+   "tilt": 1.3128667131755454
+  }
+ },
+ "rejected": [],
+ "uncertainty": {
+  "accel_bias_95": {
+   "x": [
+    -0.1914,
+    -0.1685
+   ],
+   "y_fitA": [
+    -0.0477,
+    -0.0346
+   ],
+   "y_fitB_plausible": [
+    -0.08,
+    -0.02
+   ],
+   "z": [
+    0.271,
+    0.291
+   ]
+  },
+  "accel_scale_95": {
+   "x": [
+    1.00343,
+    1.00574
+   ],
+   "y_fitA": [
+    1.00356,
+    1.0053
+   ],
+   "y_fitB_plausible": [
+    1.003,
+    1.008
+   ],
+   "z": [
+    1.0022,
+    1.0042
+   ]
+  },
+  "gyro_z_scale": [
+   1.006,
+   1.014
+  ],
+  "gyro_bias_range_today": [
+   [
+    0.7343826322930801,
+    -3.4155274261603377,
+    2.1780842391304347
+   ],
+   [
+    0.8306178707224334,
+    -3.291264258555133,
+    2.2145108695652174
+   ]
+  ],
+  "still_residuals": {
+   "up_1106": 0.003,
+   "up_1108a": 0.0016,
+   "up_1108c": -0.0045,
+   "dn_1108end": -0.0071,
+   "dn_1118": 0.0129,
+   "dn_2249": -0.0059,
+   "mx_1118": 0.0192
+  },
+  "notes": "z: the extreme lid-up x lid-down pairs give bz +0.272..+0.286, sz 1.0025..1.0039. The 11:18 pair alone (+0.276 / 1.0039) is the post-wake state, and the settled lid-downs (11:14, 22:49) with today's lid-ups give +0.284 / 1.0027. The x/y inputs move z by under 0.0002 / 0.0001. x: today's -x face alone fixes bx - 9.799 (sx - 1) = -0.2433 (the 10-31 x gives -0.2245); it is not used, because 10-31's -x and +x bar stills, taken in the gym's own condition (on the bar, on the cell, no cable), fit the 10-31 x within 0.0025. On Adapter A z lies along the bar: across bz 0.27-0.29 and sz 1.0024-1.0042 the 10-31 squat and deadlift MCVs move under 0.1%."
+ }
+}
