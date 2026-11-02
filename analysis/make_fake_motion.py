@@ -313,11 +313,24 @@ SQUAT_TNG_REPS = [
     (0.75, 1.10, 0.65, 0.08, 6.0, -3.0, 0.0),
     (0.80, 1.60, 0.64, 0.00, 4.0, 0.0, 0.0),      # the grinder, all the way up
 ]
+# squat_breath (D43): a heavy set breathed at lockout, a check that D43's lockout rules leave a squat as it was
+# (10-31's squats have one 0.85 s pause). On the squat's 0.75 s high-pass neither rule decides anything here:
+# the 6 cm/s ease-down reads 0.016 m/s on the coarse height and passes TA_HOLD_V, the 8 cm/s one leaves no flat
+# run. The same columns, plus an eighth: (m/s, s) the top eases down out of a soft stop at that speed for that
+# long, no stop, then the descent proper, or None
+SQUAT_BREATH_REPS = [
+    (0.85, 0.85, 0.65, 0.00, 9.0, 0.0, 2.5, None),            # all the way up, a 2.5 s breath
+    (0.80, 0.90, 0.64, 0.00, 9.0, 0.0, 0.0, (0.08, 0.40)),    # eases down out of lockout at 8 cm/s
+    (0.80, 1.00, 0.65, 0.00, 8.0, 0.0, 3.0, None),            # a 3 s breath
+    (0.85, 1.15, 0.64, 0.00, 7.0, 0.0, 0.0, (0.06, 0.45)),
+    (0.85, 1.40, 0.63, 0.00, 5.0, 0.0, 0.0, None),            # the grinder, all the way up
+]
 
 
-def squat_tng(seed=1, fs=FS):
+def squat_tng(seed=1, fs=FS, rows=SQUAT_TNG_REPS):
     """The set, start to end: t, accel, gyro (as the pod writes them) and the truth: position,
-    velocity, the rotation sensor -> world per sample, the reps and when everything happens."""
+    velocity, the rotation sensor -> world per sample, the reps and when everything happens.
+    rows: SQUAT_TNG_REPS, or SQUAT_BREATH_REPS (squat_breath)."""
     rng = np.random.default_rng(seed)
     ev = dict(racked=(0.0, 2.0), unrack=(2.0, 2.9), walkout=(2.9, 4.5), stand_before=(4.5, 5.6))
     # the vertical: knots through the unrack, the walkout's 3 steps (each bobs 1.2 cm), the reps
@@ -327,8 +340,11 @@ def squat_tng(seed=1, fs=FS):
         z_knots += [(t0 + 0.8 / 3, STAND - 0.012, 0, 0), (t0 + 1.6 / 3, STAND, 0, 0)]
     t_now = 5.6
     z_knots.append((t_now, STAND, 0, 0))
-    reps, pauses = [], []
-    for k, (te, tc, depth, short, a_bot, a_top, pause) in enumerate(SQUAT_TNG_REPS):
+    reps, pauses, drifts = [], [], []
+    ecc = t_now                                    # where the next rep's descent starts
+    for k, row in enumerate(rows):
+        te, tc, depth, short, a_bot, a_top, pause = row[:7]
+        drift = row[7] if len(row) > 7 else None
         t_bot, t_top = t_now + te, t_now + te + tc
         z_bot, z_top = STAND - depth, STAND - short
         # the bounce: a steady jerk from a_bot / 4 at t_bot - BOUNCE to a_bot at the bottom and back,
@@ -337,17 +353,29 @@ def squat_tng(seed=1, fs=FS):
         v_edge, z_edge = BOUNCE * (a_edge + a_bot) / 2, z_bot + BOUNCE**2 * (2 * a_bot + a_edge) / 6
         z_knots += [(t_bot - BOUNCE, z_edge, -v_edge, a_edge), (t_bot, z_bot, 0, a_bot),
                     (t_bot + BOUNCE, z_edge, v_edge, a_edge), (t_top, z_top, 0, a_top)]
-        reps.append(dict(rep=k + 1, t_start=t_bot, t_end=t_top, ecc_start=t_now, z_bottom=z_bot, z_top=z_top,
+        reps.append(dict(rep=k + 1, t_start=t_bot, t_end=t_top, ecc_start=ecc, z_bottom=z_bot, z_top=z_top,
                          short_of_standing=short, pause_after=pause))
         if pause:
             assert a_top == 0, "a pause needs a soft stop at the top"
             z_knots.append((t_top + pause, z_top, 0, 0))
             pauses.append((t_top, t_top + pause))
-        t_now = t_top + pause
-    assert SQUAT_TNG_REPS[-1][5] == 0, "the set ends standing (a soft stop)"
+        t_now = ecc = t_top + pause
+        if drift:
+            # eases down: up to -vd in tr s from the soft stop, then a steady -vd (it sways like a hold: a
+            # smooth one would coast at a steady speed and pass the still test)
+            assert a_top == 0 and not pause, "a drift eases down out of a soft stop"
+            vd, td = drift
+            tr = 0.15
+            z1 = z_top - vd * tr / 2
+            z_knots += [(t_top + tr, z1, -vd, 0), (t_top + td, z1 - vd * (td - tr), -vd, 0)]
+            drifts.append((t_top, t_top + td))
+            ecc, t_now = t_top, t_top + td
+    assert rows[-1][5] == 0 and not (rows[-1][7:] and rows[-1][7]), "the set ends standing (a soft stop)"
     t_last = t_now
     ev.update(reps=(5.6, t_last), stand_after=(t_last, t_last + 1.1), walkin=(t_last + 1.1, t_last + 2.7),
               lean=(t_last + 2.7, t_last + 3.2), rerack=(t_last + 3.2, t_last + 3.8))
+    if drifts:
+        ev["drifts"] = drifts
     ev["knock"] = ev["walkin"][1] - 0.1            # the bar touches the uprights (10-31: 1.65 s before the hooks)
     # onto the hooks, then it rattles in them: 10-31's 135 rerack hit 4 times in 0.8 s (|a - g| peaks
     # 30, 30, 34, 49; the |a| it rectified added 6.8 m/s to the old integration, the knock 1.0)
@@ -376,7 +404,7 @@ def squat_tng(seed=1, fs=FS):
     y = steps(t, [(o0, 0.53, 0.012), (o0 + 0.53, 0.53, -0.02), (o0 + 1.07, 0.53, 0.011), (w0, 0.53, -0.013),
                   (w0 + 0.53, 0.53, 0.021), (w0 + 1.07, 0.53, -0.011)])
     # standing sway: up and down 2 mm (|a| std ~0.4 m/s^2), fore and aft 3 mm, lighter while leaning in
-    stands = [ev["stand_before"], ev["stand_after"]] + pauses
+    stands = [ev["stand_before"], ev["stand_after"]] + pauses + drifts
     sway_z = add(*[sway(t, a, b, 0.002) for a, b in stands], sway(t, *ev["lean"], 0.0007))
     sway_x = add(*[sway(t, a, b, 0.003, phase=0.0) for a, b in stands], sway(t, *ev["lean"], 0.001, phase=0.0))
     # the clangs ring: up/down, fore/aft and along the bar (displacement = acceleration amplitude / w^2)
@@ -390,7 +418,8 @@ def squat_tng(seed=1, fs=FS):
     # attitude, in degrees. Roll about the bar: up to ~35 deg through the set (10-31: 5 -> -8 -> 31 -> 14
     # -> 30 -> 39), plus 8 deg per m of depth. Tilt (one end up) and yaw (about vertical): a few degrees
     # with the steps and the depth, the sway's wobble, and the clangs (yaw rings hardest, like gyro x on 10-31).
-    # The slow roll and yaw steps are timed to SQUAT_TNG_REPS as it stands (reps 5.6 to 17.1 s, the pause at 10.25)
+    # The slow roll and yaw steps are timed to SQUAT_TNG_REPS as it stands (reps 5.6 to 17.1 s, the pause at 10.25);
+    # squat_breath keeps them (they fall inside its longer set too)
     deg_per = lambda hz: 1 / (2 * np.pi * hz)      # angle amplitude per deg/s of ringing rate
     roll = add(steps(t, [(2.0, 2.2, -11), (4.4, 1.2, 4), (5.6, 4.6, 26), (10.5, 4.0, -10), (15.0, 3.0, 14),
                          (w0, w1 - w0, 2), (ev["rerack"][0], 0.6, 6)]),
@@ -595,9 +624,15 @@ DL_FLOOR_REPS = [                # how it leaves the floor, then the pull s and 
 DL_HOLD, DL_LOWER, DL_REST = 0.3, 1.0, 1.5   # s: at lockout, lowering, on the floor before the next pull
 
 
-def deadlift_creep(seed=1, fs=FS):
+SOFT_RING = 0.15                 # deadlift_soft: the gyro's ring at a soft set-down, x the clang's (D43)
+
+
+def deadlift_creep(seed=1, fs=FS, soft=False):
     """The set: t, accel (calibrated, D42), gyro and the truth, like deadlift_pins'. Heights are above
-    the bar at rest on the floor; a rep is liftoff (v = 0) to lockout (v = 0)."""
+    the bar at rest on the floor; a rep is liftoff (v = 0) to lockout (v = 0).
+    soft (deadlift_soft, D43): every set-down but the last barely turns the bar, its gyro ring x SOFT_RING
+    (about 40 deg/s, under IMPACT_W): still a jolt that lands it, but not an impact (the last one is, so
+    the window is still redone). A floor lift must keep landing on every jolt, not only the impacts"""
     rng = np.random.default_rng(seed)
     first = 8.5                                    # still till 2, the grip (2 to 3), the quiet setup, rep 1
     ev = dict(still=(0.0, 2.0), grip=(2.0, 3.0), setup=(3.0, first))
@@ -658,10 +693,11 @@ def deadlift_creep(seed=1, fs=FS):
     # the sleeve turns back 21 deg as it rises (deadlift_pins' 40 deg/m), the bar tilts and yaws a degree,
     # the clangs ring; no spin (the plates are on the floor)
     deg_per = lambda hz: 1 / (2 * np.pi * hz)
-    roll = add(lin(-40.0), *[ring(t, th, 50 * deg_per(29), 29) for th in lands])
+    gr = [SOFT_RING if soft and j < len(lands) - 1 else 1.0 for j in range(len(lands))]   # the gyro's ring, per set-down
+    roll = add(lin(-40.0), *[ring(t, th, g * 50 * deg_per(29), 29) for th, g in zip(lands, gr)])
     roll = (roll[0] + 5.0, roll[1], roll[2])       # on the floor at 5 deg
-    tilt = add(lin(3.0), *[ring(t, th, 110 * deg_per(37), 37) for th in lands])
-    yaw = add(lin(-2.0), *[ring(t, th, 260 * deg_per(31), 31) for th in lands])
+    tilt = add(lin(3.0), *[ring(t, th, g * 110 * deg_per(37), 37) for th, g in zip(lands, gr)])
+    yaw = add(lin(-2.0), *[ring(t, th, g * 260 * deg_per(31), 31) for th, g in zip(lands, gr)])
     # the same composition as squat_tng: R = Rz(yaw) Rx(tilt) R_POD Rz(-roll), exact body rate
     phi, phi_rate = -np.radians(roll[0]), -np.radians(roll[1])
     Ry, Rt, Rp = rots([0, 0, 1], np.radians(yaw[0])), rots([1, 0, 0], np.radians(tilt[0])), rots([0, 0, 1], phi)
@@ -700,11 +736,14 @@ def deadlift_creep(seed=1, fs=FS):
                                   "floor, t_pull where the pull proper starts); i_start/i_end are the nearest samples. "
                                   "Heights are above the floor rest; rom = z_top, mcv = rom / dur. The accel is "
                                   "calibrated (the pod's offset and scale taken back out, D42); the gyro has no scale error",
-                          "extra": dict(breaks=breaks, floor_hit=FLOOR_HIT, floor_stop=FLOOR_STOP),
+                          "extra": dict(breaks=breaks, floor_hit=FLOOR_HIT, floor_stop=FLOOR_STOP,
+                                        **(dict(soft_ring=SOFT_RING, soft_lands=lands[:-1]) if soft else {})),
                           "sensor": sensor}
 
 
-GYM = {"squat_tng": squat_tng, "deadlift_pins": deadlift_pins, "deadlift_creep": deadlift_creep}
+GYM = {"squat_tng": squat_tng, "deadlift_pins": deadlift_pins, "deadlift_creep": deadlift_creep,
+       "squat_breath": lambda seed=1: squat_tng(seed, rows=SQUAT_BREATH_REPS),
+       "deadlift_soft": lambda seed=1: deadlift_creep(seed, soft=True)}
 
 
 def write_gym(name, seed=1):

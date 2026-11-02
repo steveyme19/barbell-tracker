@@ -778,7 +778,8 @@ real bench set.
   (level_heights) puts the rack still at lockout height, 4 to 6 cm off: with a soft rerack the window
   isn't redone and the unrack becomes a rep. (6) A rerack fumble above lockout drops the last rep.
   (7) The pod taken off before the double buzz loses the last rep. docs/gym-day.md's bench section
-  works around them.
+  works around them. **Fixed by D43** on synthetics, (7) only after a clanging rerack with the pod left on
+  3 s or more; the live view only in part (D43 Open).
 
 **D41 (2026-10-31): on the floor a pause may end up to 1.0 s before its coarse turnaround; with no end
 still yet, a floor lift's last rest anchors on all of it, and a turnaround the high-pass confirms only in
@@ -889,6 +890,98 @@ and sessions.py's sidecar carry each part's calibration).
 *Open:* the real run (calib_pod.py over USB) once the case has settled, lid-up and lid-down back to back,
 and again a few days later to see whether z still moves; then --install, rebuild, a session. The app's
 wiring (feed, pod.json) was checked in a browser without a pod; with the pod it's untested.
+
+**D43 (2026-11-01): paused and racked bench, from synthetics. On the bench the coarse pass high-passes at
+1.75 s. Squat, bench and free lifts blank, stop on and rack on impacts only, while the floor still lands on every
+jolt. A racked set's coarse turnarounds end at the rack. At a lockout the coarse height must not move faster
+than 0.03 m/s (between reps a must; before the first and after the last it waives the height check), and
+one that falls 5 mm or more had the descent begin in it: between reps it anchors on its first 0.5 s, before
+the first rep on the 0.5 s up to its coarse top. A racked lift's move off the hooks under 15 cm isn't a rep. A
+closed set's last rep tops out by its last anchor.**
+- From D40's open bench synthetics (seven ways paused and racked bench went wrong, each reproduced). A
+  design workflow (11-01): a 30-set known-answer suite at the pod's rate (now `analysis/make_fake_bench.py`;
+  30 sets x 3 seeds, raw and calibrated: 180 runs), four fix families prototyped against it, one integration,
+  then two skeptics, one perturbing the suite the ways a lifter goes (2,224 runs), one reviewing the code.
+  The workflow's scripts and results are kept in analysis/out/benchfix-2026-11-01/ (gitignored).
+- What each rule fixed, before D43 on the suite: (1) a paused set's first and last holds failed the height
+  check (rep 1 -43 to -55%, the last rep lost after 1.5 s on the chest; the bench high-pass, and the outer
+  holds' exemption for an 8 s first hold); (2) a heavy paused triple read 1 of 3 and a paused single gave no
+  card (the high-pass: a grind's top was never a coarse turnaround); (3) a 2.4 g chest bounce emptied the
+  card (impacts); (4) a drift out of lockout anchored 0.3 s late, ROM +11 to +15 cm (TA_HOLD_V; the start rule
+  for a hold whose run reaches into the descent's slow start); (5) a soft rerack or a 4 to 6 cm unrack made
+  the unrack a rep (the hooks); (6) a rerack fumble re-aimed above lockout dropped the last rep (the rack
+  cut); (7) the pod pulled off the sleeve after the rerack dropped it too (the closed-set clip).
+- Three corrections to the integrated design, from the skeptics:
+  - **The floor scope.** Impacts-only blanking also changed D41's floor path: a set-down the gyro doesn't
+    confirm (a soft touch) was no longer blanked or a landing, and the 10-31 deadlift with its gyro damped
+    near the set-downs read 7 reps for 5. On the floor every jolt counts again (byte-identical to before
+    on every floor file); make_fake_motion.py deadlift_soft pins it (rep 3 +31% without).
+  - **TA_HOLD_V 0.05 -> 0.03.** Lower read better at every step on the perturbations (1,174 -> 1,189 cards);
+    holds between reps read 0.011 (p95), 0.028 (p99), drifts as slow as 0.019. A hold turned away costs little
+    (the coarse zero crossing anchors it), a drift taken for one a lot. 0.02 would turn away the 10-31
+    squat 360's hold (0.021).
+  - **The start rule's margin.** Its test fired on any drop at all (22 of 164 holds under 1 mm). Unconditional,
+    an 8 s breath read -63% and a stress card went; with 5 mm (TA_START_DROP) every total holds, and without the
+    rule the perturbations lose 10 cards (the working set with 1.25x harder chest bounces: rep 1 -16%).
+  Also: the hooks rule got its own constant (TA_HOOK_MOVE, 0.15 to 0.25 read the same; 0.12, sets.py's
+  RACK_MIN_ROM, made 8 unracks reps); jolts() is gone, so a stale call fails instead of blanking a window.
+- The review of the result (4 reviewers, a skeptic each) found one more: the first descent eased into out of
+  the setup hold. The hold's flat run goes on into the slow start, it passes TA_HOLD_V over its whole length,
+  and its end, where the first anchor averages, is the moving bar: a paused single -12% (ROM +12 cm), a heavy
+  triple's rep 1 -30%. Before D43 the single read +4% but ROM +23 cm, and the triple 1 of 3. The start rule now
+  covers the first hold too, mirrored: a run whose end is 5 mm under its coarse top averages the 0.5 s up to the
+  top, its anchor where it was (moved earlier, it pulls the rack still in and the unrack becomes a rep).
+  make_fake_bench.py's paused_single_slowstart and heavy_paused_triple_slowstart pin it (within 0.6% and 2.4%).
+  It helps beyond them: suite cards 170 -> 174, stress 132 -> 144 (touch-and-go heavy singles +28% -> -0.5%, a
+  touch-and-go heavy triple +15% -> -1.2%), the perturbations 1,189 -> 1,216. Its cost: tng_working_r32_pause's
+  rep 1 goes -2% -> -5%. Its first anchor had averaged a bar already moving down (-0.097 m/s), which offset
+  the anchor after it: that lockout's run goes on into the next descent, TA_HOLD_V turns it away, and it
+  anchors on one coarse sample with the hold's tremble in it (up to 0.04 m/s). Judging such a run by its first
+  0.5 s fixes that rep (-3.9%) but no total, so it's left (Open).
+- Dropped in the integration: a rest filter for sigma's live dips (0 of 180 suite runs and 0 of 156 stress
+  runs change without it; the rack cut does its job). Coupled: the bench high-pass needs the rack cut (live ok
+  77 -> 26 without it).
+- On the suite: count right in 180 of 180 runs (96 before), card right in 174 (58), the live view in 77 (36,
+  every 0.25 s: count right, never ahead, no dip, the newest rep's MCV within 8%). Stress (26 long holds,
+  singles, grinds, breaths; 156 runs): cards 12 -> 144. Seeds 1 to 10 (600): 203 -> 575; the perturbations
+  (1,312): 248 -> 1,216. Every older result is unchanged (71 regression guards byte-identical, 0 of 777 older
+  judge results moved, the self-tests).
+- The cost: fast touch-and-go reps with lockout pauses read low, about -4 to -8% at 0.8 m/s and up to -14% on a
+  1.0 to 1.15 m/s warm-up at a 32 cm ROM (-10% at 44 cm; the light controls' set means -1.5 to -5.9%). The longer high-pass puts a sharp lockout's anchor on the hold (true 0)
+  instead of its rising side, and the end walk (D32) then follows the corrected velocity's slowly decaying
+  residual (+0.01 m/s) into the pause: rep ends 29 to 47 ms late. Any sigma from 1.25 to 2 does it; 1.5 and up
+  are needed for long holds and singles. It flattens the light end of a load-velocity profile.
+*Why:* bench only where the reason is the bench's (the slow paused rep; 1.5 s broke the 10-31 squat by +8.4% and
+the deadlift to 6 for 5); everywhere else a rule leaves older data exactly as it was, so the real squats and
+deadlift keep D40's video scores. The bounce is the bar's own motion, the hooks are where a racked set starts
+and ends, and a pause that moves isn't a zero.
+*Guarded by* parity.mjs: make_fake_bench.py's GUARDS (16 sets, raw and calibrated, against each file's
+_truth.json: count, each rep's MCV within 5% (7% for tng_working_r32_pause, 12% for the fast controls and the
+2.4 g bounce), the set mean, ROM within 2 cm on single_first8 and 3 on paused_single_slowstart), the same
+calibrated live but pod_lift_10s (never ahead; no dip but the slow-start sets' one at 7.25 s, as before D43), make_fake_motion.py deadlift_soft (6 reps within 5%) and
+squat_breath (breaths and eased-down lockouts between squats: 5 reps within 8%; a check that the lockout rules
+leave a squat as it was, which they decide nothing on). Each rule reverted alone fails its own guard: the bench
+high-pass (paused_single no card, heavy_paused_triple 1 of 3), TA_HOLD_V (drift_working_r32 4 of 6), the start rule
+between reps (tng_heavy_triple -15%) and before the first rep (paused_single_slowstart -12%,
+heavy_paused_triple_slowstart -30%), the outer exemption (single_first8 -16%, ROM +7 cm), the impact blank and the
+rack hit (bounce_24g no card), the rack cut (rerack_fumble_5cm 4 of 5; live, tng_light_r44_nopause dips at the
+rerack), the hooks (unrack6_soft 6 for 5; the bottoms filter alone: rep 5 -7%), the clip (pod_lift_10s 4 of 5), the
+floor scope (deadlift_soft +31%).
+*Open:* the end walk above, next. A lockout between reps whose run goes on into the next descent anchors on one
+coarse sample (tng_working_r32_pause rep 1 -5%; judging the run by its first 0.5 s gets -3.9%). No real bench recording: IMPACT_W against a real chest bounce is unmeasured
+(squat bottoms read 6 to 18 deg/s, 5x under it; a bounce over 100 deg/s empties the card). The still detector splits
+tng_working_r32_nopause (rep 2 -20%). Live: a paused rep shows -36 to -50% while it's the newest; a pod pulled off 1 to
+2 s after the rerack empties a raw pod's card in 6 to 8 of 10 runs and pod_lift_10s's live view ends at 0 (the
+off-bar rest sets the still limits and g, D20); one set's live result swings with the replay grid's phase (and
+before D43 the 10-31 squat at 1410 dips twice at a later phase, the ham curl 0 to 2: parity passes them at its own
+start only); deadlift_soft dips once live (as before D43). The closed-set clip runs on redone windows only: after a
+soft rerack (no impact, so no redo) the pod pulled off before the double buzz still loses the last rep or adds one
+(right in 1 to 2 of 6 runs at 1 to 14 s; after the buzz 6 of 6). Not reached: mid-set partials and spotted reps (only
+the set's ends are trimmed), a grip that rattles up to the unrack (no lead still, no card), touch-and-go with no
+lockout stop (count right, one rep -19 to -20%) or a 0.3 s ease-down out of each lockout (the unrack counted: 7 of 6),
+a very soft chest touch (3 mm in 0.4 s: a paused single no card, the triple's grind lost), tempo eccentrics of 3 to 4
+s (no card), grinds at 0.10 m/s or slower over 3.5 s (no card, or the last rep lost), a ROM of 27 cm or less (25 cm: the working sets 3 to 4 of 6; 27 cm: one rep +44%), a 16 to 18 cm unrack with a
+soft rerack (a rep, as before).
 
 ## Proposed (say yes or no)
 

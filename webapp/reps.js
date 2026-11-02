@@ -38,14 +38,16 @@ export const SETTINGS = {
   TA_BROKEN_TAIL: 3.0,   // m/s: the same for a tail with no end still yet (live, mid-set)
   TA_MIN_WIN: 1.0,       // s: a shorter window is never redone
   TA_BAR: ["squat", "bench", "deadlift", "free"],   // bar lifts: an impact redoes their window too
-  TA_RACKED: ["squat", "bench"],   // these end at the rack (the first jolt after the first lockout)
+  TA_RACKED: ["squat", "bench"],   // these end at the rack (the first impact after the first lockout, D43)
   IMPACT_A: 20.0,        // m/s^2: |a - g| over this is a jolt (the hooks, the floor)
   IMPACT_W: 100.0,       // deg/s: an impact is a jolt with the gyro (offset off) over this ...
   IMPACT_NEAR: 0.05,     // s     ... within this of it
-  IMPACT_PAD: 0.1,       // s: blanked around each jolt in the coarse pass
-  JOLT_PAD: 0.02,        // s: blanked around each jolt when a span is integrated again
+  IMPACT_PAD: 0.1,       // s: blanked around each impact in the coarse pass (on the floor any jolt)
+  JOLT_PAD: 0.02,        // s: blanked around each impact when a span is integrated again
   TA_SIGMA: 0.75,        // s: the coarse pass removes drift slower than this (Gaussian high-pass)
+  TA_SIGMA_LIFT: { bench: 1.75 },   // s: ... longer on the bench: paused reps are slower (D43)
   TA_MIN_MOVE: 0.15,     // m: a coarse turnaround moves at least this much
+  TA_HOOK_MOVE: 0.15,    // m: a racked lift's move off the hooks under this is the unrack or rerack (D43)
   TA_REST: { deadlift: "bottom", machine: "bottom" },   // where the bar rests between reps; others "top"
   TA_FLAT_WIN: 0.37,     // s: "flat" = acceleration averaged over this stays within
   TA_FLAT_A: 0.5,        // m/s^2  this of 0
@@ -54,7 +56,10 @@ export const SETTINGS = {
   TA_FLOOR_REACH: 1.0,   // s: ... or, on the floor, ends within this before it (rep 1's low lands at a hitch)
   TA_COAST_DV: 0.35,     // m/s: ... isn't a coast (speed changes of opposite sign, both over this) ...
   TA_NEAR_FRAC: 0.4,     // ... and is at the turnaround's height (within this x the bigger move)
-  TA_EDGE: 0.25,         // s: the first/last pause's anchor averages 2 x this next to the set
+  TA_HOLD_V: 0.03,       // m/s: ... and the coarse height moves through it slower than this (D43)
+  TA_EDGE: 0.25,         // s: the first/last pause's anchor averages 2 x this next to the set (and a
+                         //    lockout that ends TA_START_DROP lower than it started or under its top, D43)
+  TA_START_DROP: 0.005,  // m: ... on the coarse height
   TA_SET_EDGE: 3.0,      // s: a window still this close to the first/last anchor is part of the set
   // The vertical (D40): bar lifts at the pod's rate use the acceleration along up (Madgwick, D33)
   VERTICAL_FS: [150, 300],   // Hz: only at the pod's rate (a 402 Hz hand-held phone stays on |a|)
@@ -536,6 +541,7 @@ function leastSquares(A, b) {
  */
 export function levelHeights(a, t, v, windows, S = SETTINGS) {
   const prof = S.LIFTS[S.LIFT];
+  const hooks = S.TA_RACKED.includes(S.LIFT);   // squat, bench: on a pod the stills before and after are the hooks
   const x = integrate(v, t);
   const { lows, highs } = turningPoints(x, S.MIN_ROM);
   const minFrom = (i, j) => { let m = Infinity; for (let k = i; k <= j; k++) m = Math.min(m, x[k]); return m; };
@@ -550,15 +556,24 @@ export function levelHeights(a, t, v, windows, S = SETTINGS) {
       tops = tops.filter((h) => x[h] - minFrom(h, i1) >= S.MIN_ROM);
       bottoms = bottoms.filter((b) => maxFrom(b, i1) - x[b] >= S.MIN_ROM);
     }
+    if (hooks && prof.bottoms) {
+      // bench: a low less than TA_HOOK_MOVE under the lockout before it is the hooks, not the chest (D43)
+      bottoms = bottoms.filter((b) => {
+        let m = -1;
+        for (const h of highs) if (h < b && h > m) m = h;
+        return x[m < 0 ? i0 : m] - x[b] >= S.TA_HOOK_MOVE;
+      });
+    }
     const turns = [...tops, ...bottoms].sort((p, q) => p - q);
     if (prof.ends && turns.length) {
       const first = turns[0];
       const last = turns[turns.length - 1];
+      const rep = hooks ? S.TA_HOOK_MOVE : S.MIN_ROM;   // up off the hooks by less: the unrack (D43)
       if (bottoms.includes(first) && x[i0] - x[first] >= S.MIN_ROM) tops = [i0, ...tops];
-      else if (tops.includes(first) && x[first] - x[i0] >= S.MIN_ROM) bottoms = [i0, ...bottoms];
+      else if (tops.includes(first) && x[first] - x[i0] >= rep) bottoms = [i0, ...bottoms];
       if (w.anchored) {
         if (bottoms.includes(last) && x[i1] - x[last] >= S.MIN_ROM) tops = [...tops, i1];
-        else if (tops.includes(last) && x[last] - x[i1] >= S.MIN_ROM) bottoms = [...bottoms, i1];
+        else if (tops.includes(last) && x[last] - x[i1] >= rep) bottoms = [...bottoms, i1];
       }
     }
     const groups = tops.length >= 2 ? [tops] : [];
@@ -653,11 +668,6 @@ function dilate(mask, n) {
   return out;
 }
 
-/** Samples within pad s of a jolt: |a| over IMPACT_A. */
-function jolts(a, fs, pad, S) {
-  return dilate(Uint8Array.from(a, (x) => (Math.abs(x) > S.IMPACT_A ? 1 : 0)), Math.trunc(pad * fs));
-}
-
 /** impact_mask() in reps.py: a jolt with the gyro (offset off) over IMPACT_W within IMPACT_NEAR. */
 function impactMask(a, gyro, runs, fs, S) {
   if (!gyro) return Uint8Array.from(a, (x) => (Math.abs(x) > 25.0 ? 1 : 0));   // no gyro: a harder jolt alone
@@ -690,7 +700,7 @@ function runsOf(mask) {
 }
 
 /** find_pause() in reps.py: the pause at coarse turnaround k as [start, end], or null. */
-function findPause(a, t, xc, k, lo, hi, fs, flat, floor, S) {
+function findPause(a, t, xc, k, lo, hi, fs, flat, floor, first, last, S) {
   const look = Math.trunc(S.COAST_LOOK * fs), reach = Math.trunc(S.TA_REACH * fs);
   const back = floor ? Math.trunc(S.TA_FLOOR_REACH * fs) : reach;   // how far before k the run may end
   const move = Math.max(Math.abs(xc[k] - xc[lo]), Math.abs(xc[k] - xc[hi]));
@@ -700,7 +710,13 @@ function findPause(a, t, xc, k, lo, hi, fs, flat, floor, S) {
     if (re - rs < S.TA_PAUSE * fs || !(rs - reach <= k && k <= re + back)) continue;
     const into = speedChange(a, t, rs - look, rs), out = speedChange(a, t, re, re + look);
     if (into * out < 0 && Math.min(Math.abs(into), Math.abs(out)) > S.TA_COAST_DV) continue;
-    if (Math.abs(xc[Math.floor((rs + re) / 2)] - xc[k]) > S.TA_NEAR_FRAC * move) continue;
+    // a lockout's coarse height doesn't move through it (TA_HOLD_V); before the first rep or after the
+    // last, a run that passes that needs no height check (see reps.py, D43)
+    const mid = Math.floor((rs + re) / 2);
+    const slow = Math.abs(xc[re] - xc[rs]) <= S.TA_HOLD_V * (t[re] - t[rs]);
+    const outer = !floor && slow && ((first && mid <= k) || (last && mid >= k));
+    if (!outer && Math.abs(xc[mid] - xc[k]) > S.TA_NEAR_FRAC * move) continue;
+    if (!(floor || first || last || slow)) continue;
     const score = floor ? -(re - rs) : rs <= k && k <= re ? 0 : Math.min(Math.abs(rs - k), Math.abs(re - k));
     if (best === null || score < best[0]) best = [score, [rs, re]];
   }
@@ -747,8 +763,10 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   const aw = a.subarray(i0, i1 + 1);
   const L = aw.length;
   const floor = (S.TA_REST[lift] ?? "top") === "bottom";
+  // what the bar hit: on the floor every jolt (D41), else the jolts the gyro confirms (not a chest bounce, D43)
+  const imp = floor ? Uint8Array.from(aw, (x) => (Math.abs(x) > S.IMPACT_A ? 1 : 0)) : w.impacts;
   // 1. coarse pass
-  const blank = jolts(aw, fs, S.IMPACT_PAD, S);
+  const blank = dilate(imp, Math.trunc(S.IMPACT_PAD * fs));
   const am = Float64Array.from(aw, (x, i) => (blank[i] ? 0 : x));
   const n = Math.max(1, Math.trunc(S.TA_FLAT_WIN * fs));
   const fm = rolling(am, n).mean;
@@ -762,14 +780,27 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
     const seg = integrate(am.subarray(s, e + 1), Float64Array.from(tw.subarray(s, e + 1), (x) => x - tw[s]));
     for (let i = 0; i < seg.length; i++) vc[s + i] = seg[i];
   }
-  const sm = gaussSmooth(vc, fs, S.TA_SIGMA);
+  const sigma = S.TA_SIGMA_LIFT[lift] ?? S.TA_SIGMA;
+  const sm = gaussSmooth(vc, fs, sigma);
   vc = Float64Array.from(vc, (x, i) => x - sm[i]);
   const xc = integrate(vc, tw);
   let { lows, highs } = turningPoints(xc, S.TA_MIN_MOVE);
+  // a squat or bench set ends at the first impact after its first lockout (the bar hit the rack): its
+  // turnarounds are the coarse height's up to there (rack: the last sample before it; see reps.py, D43)
+  let rack = L - 1, racked = false;
+  if (S.TA_RACKED.includes(lift)) {
+    let first = -1;
+    for (let i = highs.length ? highs[0] + 1 : 0; i < L; i++) if (imp[i]) { first = i; break; }
+    if (first >= 0) {
+      rack = first - 1;
+      ({ lows, highs } = turningPoints(xc.subarray(0, rack + 1), S.TA_MIN_MOVE));
+      racked = true;                                     // no rep in progress after it, live or not
+    }
+  }
   if (floor && !w.anchored) {
     // no end still yet (live): a turnaround the high-pass confirms only in the last TA_SIGMA waits, but
     // the last low once the bar has landed (a stop between the high before it and TA_REACH after it; see reps.py)
-    const cut = xc.length - 1 - Math.trunc(S.TA_SIGMA * fs);
+    const cut = xc.length - 1 - Math.trunc(sigma * fs);
     const reach = Math.trunc(S.TA_REACH * fs);
     const lastLow = lows[lows.length - 1];
     const before = (k) => highs.reduce((m, h) => (h < k ? Math.max(m, h) : m), -1);
@@ -779,23 +810,13 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   }
   const turns = [...lows, ...highs].sort((p, q) => p - q);
   // 2. anchors
-  let rests = [];
-  for (const k of floor ? lows : highs) {
+  const rests = [];
+  const resting = floor ? lows : highs;
+  for (const k of resting) {
     const j = turns.indexOf(k);
     const lo = j > 0 ? turns[j - 1] : 0;
-    const hi = j + 1 < turns.length ? turns[j + 1] : L - 1;
-    rests.push([k, findPause(am, tw, xc, k, lo, hi, fs, flat, floor, S)]);
-  }
-  let racked = false;
-  if (S.TA_RACKED.includes(lift)) {
-    let first = -1;
-    for (let i = 0; i < L; i++) {
-      if (Math.abs(aw[i]) > S.IMPACT_A && (!rests.length || i > rests[0][0])) { first = i; break; }
-    }
-    if (first >= 0) {
-      rests = rests.filter(([k, p]) => (p ? p[0] : k) < first);
-      racked = true;                                     // no rep in progress after it, live or not
-    }
+    const hi = j + 1 < turns.length ? turns[j + 1] : rack;
+    rests.push([k, findPause(am, tw, xc, k, lo, hi, fs, flat, floor, k === resting[0], k === resting[resting.length - 1], S)]);
   }
   const closed = w.anchored || racked;
   const edge = Math.trunc(S.TA_EDGE * fs);
@@ -803,9 +824,16 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   rests.forEach(([k, p], j) => {
     if (p === null) { anchors.push([k, k, k]); return; }  // touch-and-go
     let [ps, pe] = p;
-    if (j === 0 && rests.length > 1) ps = Math.max(ps, pe - 2 * edge);         // before rep 1: its end
+    if (j === 0 && rests.length > 1) {
+      ps = Math.max(ps, pe - 2 * edge);    // before rep 1: its end, unless the descent began in it: the 2 x
+      let top = p[0];                      // TA_EDGE up to its coarse top, the anchor where it was (see reps.py, D43)
+      for (let i = p[0] + 1; i <= pe; i++) if (xc[i] > xc[top]) top = i;
+      if (!floor && xc[pe] < xc[top] - S.TA_START_DROP) { anchors.push([Math.floor((ps + pe) / 2), Math.max(p[0], top - 2 * edge), top]); return; }
+    }
     else if (j === rests.length - 1 && j > 0 && floor && !closed) { /* open, on the floor: all of it (see reps.py) */ }
-    else if (j === rests.length - 1 && j > 0) pe = Math.min(pe, ps + 2 * edge); // after the last: its start
+    else if (j > 0 && (j === rests.length - 1 || (!floor && xc[pe] < xc[ps] - S.TA_START_DROP))) {
+      pe = Math.min(pe, ps + 2 * edge);    // after the last: its start; between reps too if it ends lower (D43)
+    }
     anchors.push([Math.floor((ps + pe) / 2), ps, pe]);
   });
   // the window's own stills anchor the set's ends when they're part of it (see reps.py)
@@ -821,7 +849,7 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   const v = new Float64Array(L);
   if (!anchors.length) return v;
   // 3. spans
-  const hit = jolts(aw, fs, S.JOLT_PAD, S);
+  const hit = dilate(imp, Math.trunc(S.JOLT_PAD * fs));
   const vr = integrate(Float64Array.from(aw, (x, i) => (hit[i] ? 0 : x)), tw);
   const zero = anchors.map(([, s0, s1]) => { let m = 0; for (let i = s0; i <= s1; i++) m += vr[i]; return m / (s1 + 1 - s0); });
   for (let j = 0; j + 1 < anchors.length; j++) {
@@ -883,8 +911,18 @@ export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopF
   const { lows, highs } = turningPoints(x, S.MIN_ROM);
   const reps = [];
   for (const lo of lows) {
-    const hi = highs.find((h) => h > lo);
+    let hi = highs.find((h) => h > lo);
     if (hi === undefined) continue;
+    for (const w of windows) {
+      // a closed set's rep tops out by its last anchor: the next move up (the pod pulled off the sleeve)
+      // would carry the zigzag's top on into itself (see reps.py, D43)
+      const r = w.rests;
+      if (w.turns && r && r[2] && lo < r[1] && r[1] < hi) {
+        let m = lo;
+        for (let i = lo + 1; i <= r[1]; i++) if (x[i] > x[m]) m = i;
+        if (x[m] - x[lo] >= S.MIN_ROM) hi = m;
+      }
+    }
     let segMax = -Infinity;
     for (let i = lo; i <= hi; i++) segMax = Math.max(segMax, v[i]);
     const vz = Math.max(S.V_ZERO, stopFrac * segMax);
@@ -993,7 +1031,10 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
   const hits = real ? impactMask(a, gyro, runs, fs, S) : null;
   const turns = windows.filter((w) => real && w.dur >= S.TA_MIN_WIN
     && (brokenWindow(v, w, S) || (S.TA_BAR.includes(lift) && hits.subarray(w.i0, w.i1 + 1).some((h) => h))));
-  for (const w of turns) w.turns = true;
+  for (const w of turns) {
+    w.turns = true;
+    w.impacts = hits.subarray(w.i0, w.i1 + 1);   // the bar hit something: a jolt the gyro confirms
+  }
   levelHeights(a, t, v, windows, S);
   for (const w of turns) v.set(turnaroundVelocity(a, t, fs, w, lift, S), w.i0);
   const x = integrate(v, t);

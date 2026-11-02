@@ -93,20 +93,32 @@ TA_BROKEN_TAIL = 3.0    # m/s: the same for a window with no end still yet (live
 TA_MIN_WIN = 1.0        # s: a shorter window is never redone (a jolt's pad would cover it)
 TA_BAR = ("squat", "bench", "deadlift", "free")   # bar lifts: an impact redoes their window too, and
                         # they get the gyro's vertical (below)
-TA_RACKED = ("squat", "bench")   # these end at the rack: the first jolt after the first lockout closes the
-                        # set. Not "free": a row or a clean typed by name touches the floor between reps
+TA_RACKED = ("squat", "bench")   # these end at the rack: the first impact after the first lockout closes the
+                        # set (an impact, not any jolt: a hard chest bounce reads 20+ m/s^2 too, D43), and
+                        # the set's turnarounds are the coarse height's up to it. Not "free": a row or a
+                        # clean typed by name touches the floor between reps
 IMPACT_A = 20.0         # m/s^2: |a - g| over this is a jolt (bar on the hooks, plates on the floor).
                         # Squat reps peaked at 12.8, reracks 22 to 57, deadlift landings 67 to 76 (and
                         # its liftoffs 15 to 20, not jolts: the bar doesn't hit anything)
 IMPACT_W = 100.0        # deg/s: an impact (it redoes a bar lift's window) is a jolt with the gyro (offset
 IMPACT_NEAR = 0.05      # s     off) over IMPACT_W within IMPACT_NEAR of it. Reracks 250 to 330, set-downs
                         # 300 to 1130; the ham curl's 22 m/s^2 stack bump stayed under 60
-IMPACT_PAD = 0.1        # s: blanked around each jolt in the coarse pass
-JOLT_PAD = 0.02         # s: blanked around each jolt when a span is integrated again (only the clang,
+IMPACT_PAD = 0.1        # s: blanked around each impact in the coarse pass (on the floor any jolt; else an
+                        # impact, not any jolt: a chest bounce is the bar's own motion, D43)
+JOLT_PAD = 0.02         # s: blanked around each impact when a span is integrated again (only the clang,
                         # not the lift)
 TA_SIGMA = 0.75         # s: the coarse pass removes drift slower than this (Gaussian high-pass). Reps
                         # take 1.4 to 4 s; this keeps their turnarounds and loses the slow ones' size
+TA_SIGMA_LIFT = {"bench": 1.75}  # s: ... longer on the bench (D43): a paused rep (1 s on the chest, a 2.4 s
+                        # grind) is slower than a squat, and 0.75 left 12 to 19 cm of its 36 cm: no turnaround
+                        # at a grind's top, and long holds failed TA_NEAR_FRAC (synthetics, 11-01: 1.25 to 2
+                        # fix both; 1.75 also keeps a 4 to 8 s hold, and lost no count where 1.5 lost one).
+                        # Not squat or deadlift: 1.5 there broke the 10-31 squat (+8.4%) and the deadlift
+                        # (6 for 5)
 TA_MIN_MOVE = 0.15      # m: a coarse turnaround moves at least this much (the high-pass halves a slow rep)
+TA_HOOK_MOVE = 0.15     # m: on a racked lift a move off the hooks smaller than this is the unrack or the rerack
+                        # (4 to 6 cm), not a rep (D43). The bench synthetics read the same from 0.15 to 0.25
+                        # (unracks up to 14 cm stay out); at 0.12, sets.py's RACK_MIN_ROM, 8 unracks became reps
 TA_REST = {"deadlift": "bottom", "machine": "bottom"}   # where the bar rests between reps; others: "top"
 TA_FLAT_WIN = 0.37      # s: "flat" = acceleration averaged over this (jolts blanked) stays within
 TA_FLAT_A = 0.5         # m/s^2  TA_FLAT_A of 0. The window nulls the 2.7 Hz sway of a bar on the back and
@@ -127,9 +139,21 @@ TA_COAST_DV = 0.35      # m/s: ... isn't a coast by §5's local test (speed chan
 TA_NEAR_FRAC = 0.4      # ... and is at the turnaround's height: within this x the bigger neighbouring move,
                         # on the coarse height. Real pauses on file read 0.06 to 0.37 (the high-pass
                         # leaks ~10 cm into a long pause), coasts 0.40 to 0.53: a thin margin
+TA_HOLD_V = 0.03        # m/s: ... and the coarse height doesn't move through it faster than this (D43). Between
+                        # two reps that's a must: a lockout held there reads 0.021 on 10-31's squat and 0.028
+                        # (p99) on the bench synthetics, a bar easing down out of lockout 0.019 to 0.47. A hold
+                        # turned away costs little (the coarse zero crossing anchors it), a drift taken for one
+                        # a lot: lower read better at every step to 0.02, which turns the squat's hold away.
+                        # At the set's ends the walkout, walk-in and rerack leak into the coarse pass (0.05 to
+                        # 0.15 on 10-31), so there it only lets a run before the first rep or after the last
+                        # skip the height test
 TA_EDGE = 0.25          # s: the set starts and ends at rest: the first pause's anchor averages the last
                         # 2 x this of it (just before rep 1), the last pause's its first 2 x this (just
-                        # after the last rep, before the walk-in); others all of it
+                        # after the last rep, before the walk-in); others all of it, but a lockout between
+                        # reps that ends TA_START_DROP lower than it started (the descent began in it) its first
+                        # 2 x this, and the first one that ends that far under its coarse top the 2 x this up to it
+TA_START_DROP = 0.005   # m: ... on the coarse height (D43). Any drop at all fired on 164 holds of 90 bench runs,
+                        # 22 of them under 1 mm; on every hold, an 8 s breath read -63% (the margin loses none)
 TA_SET_EDGE = 3.0       # s: a window still this close to the first (last) anchor is part of the set (one
                         # rep's time); the gym walkouts took 4.3 to 7.3 s from the rack still
 
@@ -446,6 +470,7 @@ def level_heights(a, t, v, windows, lift=None):
     fitted too, from 2+ lockouts. That's provisional until the next still.
     """
     prof = LIFTS[lift or LIFT]
+    hooks = (lift or LIFT) in TA_RACKED     # squat, bench: on a pod the stills before and after are the hooks
     x = integrate(v, t)
     lows, highs = turning_points(x, MIN_ROM)
     for w in windows:
@@ -458,18 +483,25 @@ def level_heights(a, t, v, windows, lift=None):
             # only turnarounds the bar has already moved away from
             tops = [h for h in tops if x[h] - x[h:i1 + 1].min() >= MIN_ROM]
             bottoms = [b for b in bottoms if x[b:i1 + 1].max() - x[b] >= MIN_ROM]
+        if hooks and prof["bottoms"]:
+            # bench: the chest is a rep's depth under the lockout before it. A low less than TA_HOOK_MOVE
+            # under that is the hooks (a soft rerack lowers the bar 4 to 6 cm onto them), not the chest (D43)
+            bottoms = [b for b in bottoms if x[max([h for h in highs if h < b], default=i0)] - x[b] >= TA_HOOK_MOVE]
         turns = sorted(tops + bottoms)
         if prof["ends"] and turns:
             # The bar left the start still going down: it started at lockout. Going up:
             # it started at the bottom (deadlift from the floor). Same for the end still.
+            # A racked lift going up from its still by less than a rep (TA_HOOK_MOVE) left the hooks, not
+            # the chest: the unrack, 4 to 6 cm (and the rerack back down onto them, D43)
+            rep = TA_HOOK_MOVE if hooks else MIN_ROM
             if turns[0] in bottoms and x[i0] - x[turns[0]] >= MIN_ROM:
                 tops = [i0] + tops
-            elif turns[0] in tops and x[turns[0]] - x[i0] >= MIN_ROM:
+            elif turns[0] in tops and x[turns[0]] - x[i0] >= rep:
                 bottoms = [i0] + bottoms
             if w["anchored"]:
                 if turns[-1] in bottoms and x[i1] - x[turns[-1]] >= MIN_ROM:
                     tops = tops + [i1]
-                elif turns[-1] in tops and x[turns[-1]] - x[i1] >= MIN_ROM:
+                elif turns[-1] in tops and x[turns[-1]] - x[i1] >= rep:
                     bottoms = bottoms + [i1]
         groups = [tops] if len(tops) >= 2 else []
         if prof["bottoms"] and len(bottoms) >= 2:
@@ -538,11 +570,6 @@ def dilate(mask, n):
     return out
 
 
-def jolts(a, fs, pad):
-    """Samples within pad s of a jolt: |a| over IMPACT_A."""
-    return dilate(np.abs(a) > IMPACT_A, int(pad * fs))
-
-
 def impact_mask(a, gyro, runs, fs):
     """Per sample: a jolt (|a| over IMPACT_A) with the gyro (offset off) over IMPACT_W within
     IMPACT_NEAR of it: the bar hit something (the hooks, the floor), not a fast rep."""
@@ -575,7 +602,7 @@ def confirmed_at(x, k, min_move):
     return k + int(np.argmax(d)) if d.any() else len(x)
 
 
-def find_pause(a, t, xc, k, lo, hi, fs, flat, floor):
+def find_pause(a, t, xc, k, lo, hi, fs, flat, floor, first, last):
     """The pause at the coarse turnaround k (lo, hi: the turnarounds either side; xc: coarse height),
     as (start, end) samples, or None. A flat run between lo and hi, TA_PAUSE or longer, reaching to
     within TA_REACH of k, is a pause (standing before the first rep, a held lockout, the floor) if the
@@ -586,7 +613,13 @@ def find_pause(a, t, xc, k, lo, hi, fs, flat, floor):
     lockout the nearest, on the floor the longest (a deadlift's hitch just off the floor passes both
     checks and sits nearer, but it's brief). In a pause the coarse velocity's zero crossing k can land
     anywhere, even outside it; on the floor it can land at that hitch, so there the run may end up to
-    TA_FLOOR_REACH before k."""
+    TA_FLOOR_REACH before k. At a lockout (not the floor) the coarse height is a velocity check too
+    (TA_HOLD_V): a bar easing down out of lockout at a steady speed reads flat, but its height falls through
+    the run. Between two reps (k neither first nor last: the window's first and last coarse lockout),
+    whose up and down cancel in the coarse pass's average, a run must pass it. Before the first rep (first,
+    the run's middle before k) or after the last (last, its middle after k) a run that passes it needs no
+    height check: there's no rep on that side to coast through, and the high-pass bends a long hold there
+    well down from the top (a chest pause shrinks the move it is measured against, D43)"""
     look, reach = int(COAST_LOOK * fs), int(TA_REACH * fs)
     back = int(TA_FLOOR_REACH * fs) if floor else reach      # how far before k the run may end
     move = max(abs(xc[k] - xc[lo]), abs(xc[k] - xc[hi]))
@@ -598,7 +631,12 @@ def find_pause(a, t, xc, k, lo, hi, fs, flat, floor):
         into, out = speed_change(a, t, rs - look, rs), speed_change(a, t, re, re + look)
         if into * out < 0 and min(abs(into), abs(out)) > TA_COAST_DV:
             continue
-        if abs(xc[(rs + re) // 2] - xc[k]) > TA_NEAR_FRAC * move:
+        mid = (rs + re) // 2
+        slow = abs(xc[re] - xc[rs]) <= TA_HOLD_V * (t[re] - t[rs])
+        outer = not floor and slow and ((first and mid <= k) or (last and mid >= k))
+        if not outer and abs(xc[mid] - xc[k]) > TA_NEAR_FRAC * move:
+            continue
+        if not (floor or first or last or slow):
             continue
         score = -(re - rs) if floor else (0 if rs <= k <= re else min(abs(rs - k), abs(re - k)))
         if best is None or score < best[0]:
@@ -632,17 +670,19 @@ def span_velocity(vr, tw, s, e, vs, ve, hit=None):
 
 def turnaround_velocity(a, t, fs, w, lift):
     """Velocity over a redone window, rep by rep:
-      1. coarse pass: the rep structure only (this velocity isn't kept). Jolts blanked, a jolt the
-         bar comes to rest after stops it, drift slower than TA_SIGMA high-passed away; then the
-         height's turnarounds of TA_MIN_MOVE or more
+      1. coarse pass: the rep structure only (this velocity isn't kept). Impacts blanked (on the floor
+         every jolt; else w["impacts"], the jolts the gyro confirms, never a chest bounce, D43), an
+         impact the bar comes to rest after
+         stops it, drift slower than TA_SIGMA (TA_SIGMA_LIFT) high-passed away; then the height's
+         turnarounds of TA_MIN_MOVE or more
       2. the lift's resting turnarounds (TA_REST: lockouts, or the floor) are the anchors: a pause
          (find_pause) anchors on its average velocity, which averages out a heavy bar's whip; a
-         touch-and-go turn on the coarse zero crossing. A squat or bench set ends at the first jolt
-         after its first lockout (the bar hit the rack). With no end still yet, a floor lift's last
-         rest anchors on all of it (there's no walk-in after a deadlift), and a turnaround confirmed
-         only in the window's last TA_SIGMA waits, but for the floor after the last rep once the bar
-         has landed
-      3. one raw velocity over the window (jolts blanked), less a straight line between each pair of
+         touch-and-go turn on the coarse zero crossing. A squat or bench set ends at the first impact
+         after its first lockout (the bar hit the rack), and its turnarounds are the coarse height's
+         up to there. With no end still yet, a floor lift's last rest anchors on all of it (there's
+         no walk-in after a deadlift), and a turnaround confirmed only in the window's last TA_SIGMA
+         waits, but for the floor after the last rep once the bar has landed
+      3. one raw velocity over the window (impacts blanked), less a straight line between each pair of
          neighbouring anchors (§6, span by span). Before the first anchor and after the last it's 0:
          the unrack, walkout, walk-in and rerack aren't reps. No end still yet (live, or a still the
          test missed) and not racked: after the last anchor the raw velocity goes on from it, flagged,
@@ -653,8 +693,11 @@ def turnaround_velocity(a, t, fs, w, lift):
     tw = t[i0:i1 + 1] - t[i0]
     aw = a[i0:i1 + 1]
     floor = TA_REST.get(lift, "top") == "bottom"
+    # What the bar hit. On the floor every jolt: a set-down that barely turns the bar still lands it (D41).
+    # Elsewhere only the jolts the gyro confirms: a hard chest bounce is the bar's own motion (D43)
+    imp = np.abs(aw) > IMPACT_A if floor else w["impacts"]
     # 1. coarse pass (n: samples in TA_FLAT_WIN)
-    blank = jolts(aw, fs, IMPACT_PAD)
+    blank = dilate(imp, int(IMPACT_PAD * fs))
     am = np.where(blank, 0.0, aw)
     n = max(1, int(TA_FLAT_WIN * fs))
     flat = np.abs(rolling(am, n)[0]) < TA_FLAT_A
@@ -663,9 +706,23 @@ def turnaround_velocity(a, t, fs, w, lift):
     vc = np.zeros_like(aw)
     for s, e in zip([0] + stops, stops + [len(aw) - 1]):
         vc[s:e + 1] = integrate(am[s:e + 1], tw[s:e + 1] - tw[s])
-    vc = vc - gauss_smooth(vc, fs, TA_SIGMA)
+    sigma = TA_SIGMA_LIFT.get(lift, TA_SIGMA)
+    vc = vc - gauss_smooth(vc, fs, sigma)
     xc = integrate(vc, tw)
     lows, highs = turning_points(xc, TA_MIN_MOVE)
+    # A squat or bench set ends at the first impact after its first lockout (the bar hit the rack): its
+    # turnarounds are the coarse height's up to there (rack: the last sample before it). A rerack fumble
+    # lifted above lockout after the knock would otherwise be the last rep's top, and go with everything
+    # after the impact (D43)
+    rack = len(tw) - 1
+    racked = False
+    if lift in TA_RACKED:
+        hits = np.where(imp)[0]
+        hits = hits[hits > highs[0]] if highs else hits
+        if len(hits):
+            rack = hits[0] - 1
+            lows, highs = turning_points(xc[:rack + 1], TA_MIN_MOVE)
+            racked = True                               # no rep in progress after it, live or not
     if floor and not w["anchored"]:
         # No end still yet (live): the high-pass bends the height near the buffer's end, and fakes a low
         # in the descent just before the plates land. A turnaround it confirms only in the last TA_SIGMA
@@ -673,7 +730,7 @@ def turnaround_velocity(a, t, fs, w, lift):
         # landed (a stop, a jolt the bar then rests after, between the high before it and TA_REACH after
         # it): that's the floor after the last rep, and nothing after it may ever confirm it (End tapped
         # soon after the set-down took the last rep's anchor away)
-        cut = len(xc) - 1 - int(TA_SIGMA * fs)
+        cut = len(xc) - 1 - int(sigma * fs)
         reach = int(TA_REACH * fs)
         before = lambda k: max([h for h in highs if h < k], default=-1)
         landed = lambda k: k == lows[-1] and any(before(k) < je <= k + reach for je in stops)
@@ -682,18 +739,12 @@ def turnaround_velocity(a, t, fs, w, lift):
     turns = sorted(lows + highs)
     # 2. anchors: (sample, first and last sample of the stretch whose average velocity is the zero)
     rests = []
-    for k in (lows if floor else highs):
+    resting = lows if floor else highs
+    for k in resting:
         j = turns.index(k)
         lo = turns[j - 1] if j > 0 else 0
-        hi = turns[j + 1] if j + 1 < len(turns) else len(tw) - 1
-        rests.append((k, find_pause(am, tw, xc, k, lo, hi, fs, flat, floor)))
-    racked = False
-    if lift in TA_RACKED:
-        hits = np.where(np.abs(aw) > IMPACT_A)[0]
-        hits = hits[hits > rests[0][0]] if rests else hits
-        if len(hits):
-            rests = [(k, p) for k, p in rests if (p[0] if p else k) < hits[0]]
-            racked = True                               # no rep in progress after it, live or not
+        hi = turns[j + 1] if j + 1 < len(turns) else rack
+        rests.append((k, find_pause(am, tw, xc, k, lo, hi, fs, flat, floor, k == resting[0], k == resting[-1])))
     closed = w["anchored"] or racked
     edge = int(TA_EDGE * fs)
     anchors = []
@@ -703,12 +754,20 @@ def turnaround_velocity(a, t, fs, w, lift):
             continue
         ps, pe = p
         if j == 0 and len(rests) > 1:
-            ps = max(ps, pe - 2 * edge)                 # standing before the first rep: its end
+            ps = max(ps, pe - 2 * edge)                 # standing before the first rep: its end ...
+            top = p[0] + int(np.argmax(xc[p[0]:pe + 1]))
+            if not floor and xc[pe] < xc[top] - TA_START_DROP:
+                # ... unless the descent began in it (eased into, it reads flat): the 2 x TA_EDGE up to its coarse
+                # top. The anchor stays where it was (the set starts there, D43)
+                anchors.append(((ps + pe) // 2, max(p[0], top - 2 * edge), top))
+                continue
         elif j == len(rests) - 1 and j > 0 and floor and not closed:
             pass                                        # open, on the floor: all of it (a slow break creeps
                                                         # out of its end, and the walk-in rule is a squat's)
-        elif j == len(rests) - 1 and j > 0:
-            pe = min(pe, ps + 2 * edge)                 # after the last rep: its start (then the walk-in)
+        elif j > 0 and (j == len(rests) - 1 or (not floor and xc[pe] < xc[ps] - TA_START_DROP)):
+            pe = min(pe, ps + 2 * edge)                 # after the last rep: its start (then the walk-in); between
+                                                        # reps too if it ends lower than it starts (the descent
+                                                        # began in it: a slow start still reads flat, D43)
         anchors.append(((ps + pe) // 2, ps, pe))
     # The window's own stills anchor the set's ends too when they're part of it (the hold before the
     # first rep, the bottom a row starts from): within TA_SET_EDGE of the first or last anchor, and
@@ -726,7 +785,7 @@ def turnaround_velocity(a, t, fs, w, lift):
     if not anchors:
         return v
     # 3. spans
-    hit = jolts(aw, fs, JOLT_PAD)
+    hit = dilate(imp, int(JOLT_PAD * fs))
     vr = integrate(np.where(hit, 0.0, aw), tw)
     zero = [vr[s0:s1 + 1].mean() for _, s0, s1 in anchors]
     for (s, _, _), (e, _, _), vs, ve in zip(anchors[:-1], anchors[1:], zero[:-1], zero[1:]):
@@ -777,6 +836,13 @@ def find_reps(x, v, t, windows, bottom_ref=None, stop_frac=0.0):
         if not later:
             continue
         hi = later[0]
+        for w in windows:
+            # A closed set's rep tops out by its last anchor. v = 0 after it (the walk-in and rerack aren't
+            # reps), so the rerack's drop isn't in the height, and the next move up (the pod pulled off the
+            # sleeve) would carry the zigzag's top on into itself: the rep then ends past the set and goes (D43)
+            r = w.get("rests")
+            if w.get("turns") and r and r[2] and lo < r[1] < hi and x[lo:r[1] + 1].max() - x[lo] >= MIN_ROM:
+                hi = lo + int(np.argmax(x[lo:r[1] + 1]))
         seg = np.arange(lo, hi + 1)
         vz = max(V_ZERO, stop_frac * v[seg].max())
         # start: last moment the bar wasn't moving up while still near the bottom
@@ -1000,6 +1066,7 @@ def analyze(t, a_raw, lift=LIFT, acc=None, gyro=None):
              and (broken_window(v, w) or (lift in TA_BAR and hits[w["i0"]:w["i1"] + 1].any()))]
     for w in turns:
         w["turns"] = True
+        w["impacts"] = hits[w["i0"]:w["i1"] + 1]       # the bar hit something: a jolt the gyro confirms
     v = level_heights(a, t, v, windows, lift)
     for w in turns:
         v[w["i0"]:w["i1"] + 1] = turnaround_velocity(a, t, fs, w, lift)

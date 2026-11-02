@@ -22,6 +22,29 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const PYTHON = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
 const ROM_TOL = 0.001;
 const MCV_TOL = 0.005;
+// make_fake_bench.py's GUARDS (D43): [scenario, seed, per-rep MCV tolerance, set mean tolerance, ROM tolerance (m)
+// or none]. Each fails when the rule beside it is reverted (python make_fake_bench.py --list says what each is)
+const BENCH_GUARDS = [
+  ["paused_c100", 1, 0.05, 0.03],            // issue 1: rep 1 read -48% (the bench high-pass, the outer holds)
+  ["paused_single", 1, 0.05, 0.05],          // the bench high-pass (TA_SIGMA_LIFT): no card without it
+  ["heavy_paused_triple", 1, 0.05, 0.03],    // the same: 1 of 3
+  ["drift_working_r32", 1, 0.05, 0.03],      // TA_HOLD_V between reps: 4 of 6
+  // issue 4: reps 1-4 read -9 to -14%. 7%: rep 1 reads -5%, the lockout after it turned away by TA_HOLD_V (its run
+  // goes on into the next descent) and anchored on one coarse sample, the hold's tremble in it (D43 Open)
+  ["tng_working_r32_pause", 1, 0.07, 0.03],
+  ["tng_heavy_triple", 1, 0.05, 0.03],       // the start rule between reps: -15%
+  ["single_first8", 1, 0.05, 0.05, 0.02],    // the outer exemption: -16%, ROM +7 cm
+  ["paused_single_slowstart", 1, 0.05, 0.05, 0.03],   // the first hold's start rule: -12%, ROM +12 cm
+  ["heavy_paused_triple_slowstart", 1, 0.05, 0.03],   // the same: rep 1 -30%
+  ["bounce_24g", 1, 0.12, 0.07],             // impacts, not jolts, close the set: an empty card (rep 1 reads -10%)
+  ["rerack_fumble_5cm", 2, 0.05, 0.03],      // the rack cut: 4 of 5
+  ["tng_light_r44_nopause", 1, 0.05, 0.03],  // the rack cut (live, below)
+  ["unrack6_soft", 1, 0.05, 0.03],           // the hooks rules: 6 for 5
+  ["pod_lift_10s", 1, 0.05, 0.03],           // the closed-set clip: 4 of 5
+  // controls: fast touch-and-go reps read up to 10% low (the end walk after a sharp lockout, D43 Open)
+  ["tng_light_r32_pause", 1, 0.12, 0.07],
+  ["bounce_16g", 1, 0.12, 0.07],
+];
 
 const defaults = [
   "analysis/data/fake_reps_pause.csv",
@@ -46,6 +69,10 @@ const defaults = [
   "analysis/data/fake_motion_squat_tng.csv",   // exact physics at the pod's rate: the same failure, known answer (D40)
   "analysis/data/fake_motion_deadlift_pins.csv",   // the sleeve spinning through every rest: the quasi-stills hold it (D41)
   "analysis/data/fake_motion_deadlift_creep.csv",  // slow floor breaks and hitches, rep 1 out of a still (D41)
+  "analysis/data/fake_motion_squat_breath.csv",    // breaths and eased-down lockouts between squats (D43)
+  "analysis/data/fake_motion_deadlift_soft.csv",   // set-downs the gyro doesn't confirm still land the bar (D43)
+  // make_fake_bench.py's guard set (D43), calibrated: paused, racked and bounced bench at the pod's rate
+  ...BENCH_GUARDS.map(([name, seed]) => `analysis/data/fake_bench_${name}_s${seed}_cal.csv`),
   ["analysis/data/fake_session_squat.csv", "squat"],     // a whole session as one analysis: rests, guards
   ["analysis/data/fake_session_squat.csv", "machine"],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "free"],   // no rack cut (TA_RACKED)
@@ -186,7 +213,22 @@ const sessions = [
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", ["free"], [5]],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-144712/bar-machine-2026-10-31-1447-set01-ham-curl.csv", ["machine"], [10],
     [[0.378, 0.385, 0.331, 0.372, 0.352, 0.343, 0.320, 0.335, 0.318, 0.205]], { tol: 0.01 }],
+  // make_fake_motion.py squat_breath (D43): 2.5 and 3 s breaths at lockout and two lockouts eased down out of
+  // (8 and 6 cm/s) between squats, which D43's lockout rules mustn't change (they read the same before them)
+  ["analysis/data/fake_motion_squat_breath.csv", ["squat"], [5], [[0.7647, 0.7111, 0.6500, 0.5565, 0.4500]], { tol: 0.08, mean: 0.05 }],
+  // ... deadlift_soft: deadlift_creep with every set-down but the last barely turning the bar (gyro ring x0.15):
+  // a floor lift lands on every jolt, not only the impacts (rep 3 read +31% when it didn't)
+  ["analysis/data/fake_motion_deadlift_soft.csv", ["deadlift"], [6], [[0.4194, 0.3732, 0.4370, 0.3636, 0.3400, 0.3537]], { tol: 0.05, mean: 0.03 }],
 ];
+// make_fake_bench.py's guards (BENCH_GUARDS), raw and calibrated, against each file's own _truth.json
+for (const [name, seed, tol, mean, rom] of BENCH_GUARDS) {
+  for (const sensor of ["raw", "cal"]) {
+    const rel = `analysis/data/fake_bench_${name}_s${seed}_${sensor}.csv`;
+    const tj = path.resolve(ROOT, rel.replace(/\.csv$/, "_truth.json"));
+    const reps = existsSync(tj) ? JSON.parse(readFileSync(tj, "utf8")).reps : null;
+    sessions.push(reps ? [rel, ["bench"], [reps.length], [reps.map((r) => r.mcv)], { tol, mean, rom, roms: [reps.map((r) => r.rom)] }] : [rel, ["bench"]]);
+  }
+}
 for (const [rel, lifts, expect, truth, opt] of process.argv.length > 2 ? [] : sessions) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
@@ -240,6 +282,10 @@ for (const [rel, lifts, expect, truth, opt] of process.argv.length > 2 ? [] : se
     if (Math.abs(err) > Math.abs(worstTruth)) worstTruth = err;
     if (Math.abs(err) > (opt?.tol ?? MCV_TRUTH)) problems.push(`known answer: set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(3)} vs true ${want.toFixed(3)} (${(err * 100).toFixed(1)}%)`);
   }));
+  if (opt?.rom) js.forEach((s, k) => s.reps.forEach((r, j) => {
+    const want = opt.roms[k]?.[j];
+    if (want !== undefined && Math.abs(r.rom - want) > opt.rom) problems.push(`known answer: set ${k + 1} rep ${j + 1} ROM ${r.rom.toFixed(3)} vs true ${want.toFixed(3)} m`);
+  }));
   if (truth && opt?.mean) js.forEach((s, k) => {
     if (!truth[k]) return;                // a set the truth doesn't have: the count check reports it
     const want = truth[k].reduce((p, x) => p + x, 0) / truth[k].length;
@@ -275,7 +321,23 @@ const live = [
   // +30 to +38% off (6 now: rep 3 +31% until the next rest anchors, its start on the threshold, V_STOP_FRAC)
   ["analysis/data/fake_motion_deadlift_creep.csv", "deadlift", 6, { mcv: [0.4194, 0.3732, 0.4370, 0.3636, 0.3400, 0.3537],
     lockouts: [9.74, 13.96, 17.95, 22.18, 26.48, 30.75], offMax: 8 }],
+  ["analysis/data/fake_motion_squat_breath.csv", "squat", 5],
+  // dips 1: at 25.25 s, 5 to 4 for a pass, and the same before D43 (its soft set-downs aren't impacts)
+  ["analysis/data/fake_motion_deadlift_soft.csv", "deadlift", 6, { mcv: [0.4194, 0.3732, 0.4370, 0.3636, 0.3400, 0.3537],
+    lockouts: [9.74, 13.96, 17.95, 22.18, 26.48, 30.75], offMax: 8, dips: 1 }],
 ];
+// make_fake_bench.py's guards live (D43), calibrated, none allowed a count ahead. The rack cut's own guard,
+// tng_light_r44_nopause, raw and calibrated too (without the cut: a dip at the rerack, 24.75 s). The slow-start
+// sets dip once at 7.25 s, in the eased-into descent: the same without the first-hold rule (before D43: twice)
+const LIVE_DIPS = { paused_single_slowstart: 1, heavy_paused_triple_slowstart: 1 };
+for (const [name, seed] of BENCH_GUARDS) {
+  if (name === "pod_lift_10s") continue;   // known (D43 Open): the off-bar rest sets the still limits and g (D20)
+  for (const sensor of name === "tng_light_r44_nopause" ? ["raw", "cal"] : ["cal"]) {
+    const rel = `analysis/data/fake_bench_${name}_s${seed}_${sensor}.csv`;
+    const tj = path.resolve(ROOT, rel.replace(/\.csv$/, "_truth.json"));
+    if (existsSync(tj)) live.push([rel, "bench", JSON.parse(readFileSync(tj, "utf8")).reps.length, { dips: LIVE_DIPS[name] ?? 0 }]);
+  }
+}
 for (const [rel, lift, final, { ahead = 0, dips: allowed = 0, mcv: truthMcv = null, lockouts = null, offMax = 0 } = {}] of process.argv.length > 2 ? [] : live) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
@@ -322,6 +384,10 @@ const gate = [
   ["analysis/data/fake_motion_squat_tng.csv", true],
   ["analysis/data/fake_motion_deadlift_pins.csv", true],
   ["analysis/data/fake_motion_deadlift_creep.csv", true],
+  ["analysis/data/fake_motion_squat_breath.csv", true],
+  ["analysis/data/fake_motion_deadlift_soft.csv", true],
+  ["analysis/data/fake_bench_bounce_24g_s1_cal.csv", true],
+  ["analysis/data/fake_bench_heavy_paused_triple_s1_raw.csv", true],
 ];
 const PY_VERT = [
   "import sys, json, numpy as np, reps",

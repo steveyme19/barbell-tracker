@@ -4,7 +4,7 @@ The first time the assembled pod rides a loaded bar (roadmap phase 2). Its job i
 app's numbers are relative until phase 3 gives a reference. Written 2026-10-31 from a readiness
 audit (pod build 9, the app installed 10-31 13:34). Updated 2026-11-01: the app with D40 to D42
 installed 11-01 11:30 (on the phone, the 10-31 sets replay as 8 / 6 / 3 / 5 / 10 reps), the pod on D38's
-firmware (bench-checked 11-01), and a bench section.
+firmware (bench-checked 11-01), and a bench section. Updated 2026-11-02: the bench section for D43.
 
 ## Before leaving
 
@@ -49,30 +49,31 @@ firmware (bench-checked 11-01), and a bench section.
 
 ## Bench (added 2026-11-01, from synthetic sets: no real bench recording yet)
 
-Touch-and-go bench counted right in every synthetic run (48 of 48, set means within 1.4 to 3.7%) when
-the rerack clangs. Paused bench is the weak spot: a chest pause of 0.75 s or more reads rep 1 38 to 64%
-low, and heavy paused triples and paused singles can lose reps or the card (D40's open notes). Until
-that's fixed:
+Since D43 (2026-11-01, still on synthetics) paused bench, heavy paused triples and singles, hard chest
+bounces, soft reracks and a fumbled rerack read right on the card. What's left: fast touch-and-go
+reps with a lockout pause read low (4 to 8% at 0.8 m/s, up to 14% on a 1 m/s warm-up); touch-and-go
+with no lockout stop, or an ease-down out of lockout, can still read one rep 20% low or count the
+unrack; a very soft chest touch can lose a paused single; and the live view is rougher than the
+card. So:
 
 - **Name:** `Bench` for touch-and-go, `Paused bench` for paused sets. Both track as bench, and separate
   names keep their load-velocity lines apart. A name without "bench" in it (Larsen, Spoto, floor
   press) is left to the sensor's machine or free-weight guess.
-- **Safeties** below your lowest touch point. A jolt over about 2 g after the first lockout is taken
-  for the rerack and closes the set.
-- **Unrack** with the smallest lift that clears the hooks, carry, lock out, hold 1 to 2 s, and keep
-  still for the last second before the first descent.
-- **Touch the chest, don't bounce.** A bounce over about 2 g also reads as the rerack and empties the card.
-- **Touch-and-go:** stop at lockout about 0.5 s (one breath) before each descent. Don't ease down out
-  of lockout without a stop. Longer breaths at the top are fine.
-- **Paused:** keep the chest pause to 0.5 s or less when you want numbers, and the lockout breath
-  between paused reps to 1 s or less. A 1 s competition pause still counts, but don't trust rep 1's
-  MCV or the card's loss and RPE estimate. Do heavy triples and singles touch-and-go for now (the raw
-  data is saved either way).
-- **Last rep:** hold lockout about 0.5 s, then carry back and set the bar firmly into the hooks in one
-  motion, so it clangs. Don't place it gently or hover over the hooks. Missed a hook: lower it in from
-  there, don't lift it above lockout to re-aim. Then hands off the pod until the double buzz.
-- **Read the closed card,** not the live numbers: until the rerack they can run a rep ahead and read
-  reps 1 and 2 far off.
+- **Safeties** below your lowest touch point. A knock the bar takes there (a jolt the gyro sees) is
+  taken for the rerack and closes the set.
+- **Unrack** with the smallest lift that clears the hooks (under 15 cm), carry, lock out, hold 1 to 2 s,
+  and keep still for the last second before the first descent (no still at all before it: no card).
+- **Bounce or pause as you like.** Chest pauses of 0.3 to 2 s and lockout breaths up to 8 s read
+  right; a chest bounce is fine unless it twists the sleeve hard. On a paused rep let the bar settle
+  into the chest (a touch that barely sinks can lose a paused single).
+- **Touch-and-go:** stop at lockout about 0.5 s before each descent; don't ease down out of lockout
+  without a stop (no stop: one rep can read 20% low; a short ease-down can count the unrack as a rep).
+- **Tempo:** a 3 to 4 s lowering still gives no card. Lower in under 2 s for now.
+- **Last rep:** hold lockout about 0.5 s, then rerack. Gently is fine now, and so is re-aiming after a
+  missed hook. Then hands off the pod until the double buzz (about 15 s): only after a clanging rerack
+  is 5 s enough; after a gentle one, taking it off sooner loses the last rep or adds one.
+- **Read the closed card,** not the live numbers: while a paused rep is the newest it can show 36 to 50%
+  low for a few seconds.
 - **Missed rep:** the spotter takes it straight to the hooks, or lower it onto the safeties. Write
   "miss" and the true count.
 - **Film every set** on a second phone propped so it can't move: the lens at bar height (between chest

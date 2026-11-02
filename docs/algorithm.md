@@ -366,8 +366,8 @@ for every lift but phone at 150 Hz or more (on |a| wherever there's no vertical)
    100 deg/s within 0.05 s: the hooks, the floor; with no gyro, over 25 m/s² alone) is redone rep
    by rep. On the vertical the gym windows end at 0.08 to 0.81 m/s, so there it's the impact that
    triggers; the broken window is a backstop (on |a| they ended at 3.5 to 8.1):
-   - a coarse pass finds the rep structure: jolts blanked, drift slower than 0.75 s high-passed
-     away, turnarounds of 15 cm or more;
+   - a coarse pass finds the rep structure: impacts blanked (on the floor every jolt), drift
+     slower than 0.75 s (1.75 s on the bench, D43) high-passed away, turnarounds of 15 cm or more;
    - the lift's resting turnarounds are the anchors (lockouts; the floor for a deadlift). A pause
      (0.25 s or more with the 0.37 s-averaged acceleration under 0.5, not a coast by §5's local
      test, at the turnaround's height) anchors on its own average velocity; a touch-and-go top on
@@ -378,8 +378,8 @@ for every lift but phone at 150 Hz or more (on |a| wherever there's no vertical)
    - §6's straight line runs span by span between neighbouring anchors; a floor lift closes on
      height at the landing (the bar is back on the floor); before the first anchor and after the
      last is the unrack, walkout, walk-in and rerack: v = 0, no reps there. A squat or bench set
-     also ends at the first jolt after its first lockout (the rack); a nameless free lift doesn't
-     (a row touches the floor between reps);
+     also ends at the first impact after its first lockout (the rack), and its coarse turnarounds
+     stop there (D43); a nameless free lift doesn't (a row touches the floor between reps);
    - live (no end still yet), a floor lift's last rest anchors on all of it (a deadlift has no
      walk-in, and a slow break creeps out of the rest's end), and a coarse turnaround the high-pass
      confirms only in the window's last 0.75 s waits: near the buffer's end it fakes a low
@@ -400,6 +400,51 @@ within 4 to 12 ms. Live (every 0.25 s mid-set) the count never jumps ahead and d
 scale, estimated from its stills (D42), is +0.46%, and correcting it takes +3.18% to +2.84%. What's
 left is the video's scale or where a rep starts and ends. Three designs were prototyped and judged (turnaround anchors on |a|, quasi-still ZUPTs,
 a high-passed vertical); this is the judge's graft of the first and third.
+
+**Bench (D43).** No bench was recorded on 10-31, so `make_fake_bench.py` builds it: 30 sets with
+an exact known answer at the pod's rate (paused and touch-and-go, light to a 2.4 s grind, hard
+chest bounces, soft reracks and 4 to 6 cm unracks, a rerack fumble, the pod pulled off after the
+rerack), raw and calibrated. Touch-and-go with a clean lockout stop read right; four touch-and-go
+sets (no stop, or a lockout pause run on into the descent) and paused and racked bench failed, seven
+ways in all, which these rules fix (each says which lifts it applies to):
+- **A longer high-pass, 1.75 s** (bench). A paused rep (a second on the chest, then a press as slow as a
+  2.4 s grind) is slower than a squat, and 0.75 s left 12 to 19 cm of its 36: a grind's top was
+  never a coarse turnaround (no card for a paused single), and a long hold drifted out of the
+  height check (rep 1 of a paused set -43 to -55%). Not squat or deadlift: 1.5 s there broke the
+  10-31 squat (+8.4%) and the deadlift (6 for 5).
+- **Impacts, not jolts** (squat, bench, free). A chest bounce reads 20+ m/s² too: it's the bar's
+  own motion, so only a jolt the gyro confirms (an impact, 6c above) is blanked, stops the coarse
+  pass or closes a racked set. A 2.4 g bounce had emptied the card. On the floor every jolt still
+  counts: a set-down that barely turns the bar (a soft touch, the gyro under 100 deg/s) still
+  lands it (with impacts only, one rep of `make_fake_motion.py deadlift_soft` read +31%).
+- **The rack cut** (squat, bench). A racked set's coarse turnarounds are taken only up to the first impact after
+  its first lockout. A rerack fumble re-aimed above lockout after the knock otherwise became the
+  last rep's top, and the last rep went with it.
+- **Lockouts that move** (every lift that rests at the top: squat, bench, free; on the 10-31
+  squats and `make_fake_motion.py squat_breath` they change nothing). At a lockout the coarse
+  height is a speed check too: it mustn't move through the pause faster than 0.03 m/s (TA_HOLD_V),
+  or the "pause" is the bar easing down out of lockout and its mean velocity isn't zero (anchors
+  0.3 s late, ROM +11 to +15 cm). Between reps that's required. Before the first rep or after the
+  last, a run that passes it skips the height check instead: the high-pass bends a long hold there
+  well down from the top. A lockout whose coarse height falls 5 mm or more through it (TA_START_DROP)
+  had the descent begin in it, eased into slowly enough to read flat: between reps it anchors on its
+  first 0.5 s, before the first rep on the 0.5 s up to its coarse top.
+- **The hooks** (squat, bench). The still before and after a racked set is the bar on the hooks,
+  4 to 6 cm under lockout. A move off it smaller than 15 cm is the unrack or the rerack, not a rep,
+  and on the bench a low that shallow under the lockout before it is the hooks, not the chest (a
+  soft rerack made the unrack a rep: 6 for 5).
+- **A closed set's last rep tops out by its last anchor** (every redone window). After it v = 0,
+  so the next move up (the pod pulled off the sleeve) would carry the rep's top on past the set,
+  and the rep went with it.
+
+On the suite (180 runs: 30 sets x 3 seeds, raw and calibrated) the count is right in 180 (96
+before), the card in 174 (58) and the live view in 77 (36); on 1,312 runs pushed the ways a
+lifter goes (pause and breath lengths, ROM 25 to 50 cm, tremor, bounces, unracks, sleeve roll,
+drifts) the card is right in 1,216 (248). Every older file reads exactly as before. The cost:
+fast touch-and-go reps with lockout pauses read low (about -4 to -8% at 0.8 m/s, up to -14% on a
+1.0 to 1.15 m/s warm-up at a 32 cm ROM, -10% at 44 cm), because a sharp lockout now anchors on the
+hold and §8's end walk follows a slowly decaying residual into the pause (rep ends 29 to 47 ms
+late). That's next (D43 Open).
 
 ## 7. Turnarounds are outputs, never anchors
 
@@ -617,11 +662,15 @@ data: two real 402 Hz sets joined with real still noise give the same reps as ea
 alone (ROM within 0.4 cm, MCV within 0.001 m/s).
 
 **Racked starts and the `ends` rule (6b).** Squat and bench assume the still before the
-set is at lockout height. With a rack it's the hooks, 5 to 8 cm lower. The rule only
-uses the start still as a lockout when the bar leaves it going *down*; an unrack goes up
-first, so the hook still is left alone. A still after the walkout (settle before the
-first rep) then starts the set's own window. Unracking and squatting with no settle at
-all hasn't been tested on real data yet.
+set is at lockout height. With a rack it's the hooks, 4 to 8 cm lower. The rule only
+uses the start still as a lockout when the bar leaves it going *down*. An unrack goes up
+first, which on a squat leaves the hook still alone, but on the bench (whose `ends` rule
+also takes a still the bar leaves going up as a bottom, the chest) a 5 cm unrack made the
+start still a bottom and the unrack a rep. Since D43 a racked lift's start or end still
+counts as a bottom only if the bar moves at least 15 cm from it (TA_HOOK_MOVE), and a bench
+low less than that under the lockout before it is the hooks. A still after the walkout
+(settle before the first rep) then starts the set's own window. Unracking and squatting
+with no settle at all hasn't been tested on real data yet.
 
 ---
 
