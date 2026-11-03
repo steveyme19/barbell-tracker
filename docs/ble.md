@@ -1,10 +1,17 @@
-# PodLink v1: the pod's Bluetooth protocol
+# PodLink v1 over CRP: the pod's Bluetooth and USB protocol
 
-The one spec for the BLE link between the pod (XIAO nRF52840 Sense, `firmware/pod`) and the
-phone. `firmware/pod/podlink.h`, `analysis/podlink.py` (the reference decoder, P1) and the
-`PodStream` in `webapp/sources.js` all follow this file byte for byte. Change it here first.
-Why it's built this way: D27 in `docs/decisions.md`. Build order and tests:
-`docs/ble-plan.md` (where it disagrees with this file, this file wins).
+The one spec for the link between the pod (XIAO nRF52840 Sense, `firmware/pod`) and the phone or PC.
+`firmware/pod/podlink.h`, `firmware/pod/podcrp.c`, `analysis/podlink.py` and `analysis/crp.py` (the
+reference, P1) and the pod classes in `webapp/sources.js` all follow this file byte for byte.
+Change it here first.
+- Why it's built this way: D27, and D45 for CRP, in `docs/decisions.md`.
+- Build order and tests: `docs/ble-plan.md` (where it disagrees with this file, this file wins).
+
+**Two layers.** The PodLink frames (sections 3, 4, 6 and 7) carry the samples and the link's
+story; CRP 0x0B (section 2, D45) carries the frames: Ansync Labs' Channel Register Protocol, over
+Bluetooth and over USB.
+- **Status:** the CRP binding lands in stages (D45: USB at S6, Bluetooth at S7). Until then the pod
+  runs the PodLink v1 GATT table, which this file described up to commit e584069.
 
 **The idea.** The pod keeps the record; the radio only carries it. Every IMU sample gets a
 32-bit sample index and its own crystal timestamp when it's read, and waits in a RAM ring
@@ -20,7 +27,7 @@ pass); every confirmed finding is folded in.
 ## 1. Basics
 
 - All multi-byte fields are **little-endian**. Byte 0 of every frame is its **type**, so every
-  frame (notified or read) can go through one decoder in arrival order.
+  frame (pushed or read) can go through one decoder in arrival order.
 
   | type | frame |
   |---|---|
@@ -45,44 +52,172 @@ pass); every confirmed finding is folded in.
   runs 209 to 212 Hz on the IMU's own clock.
 - **Sample index**: u32, 0 at boot, +1 per stored sample. `head` = the next index = samples
   stored since boot. A wake from sleep is a reboot: new boot_id, index and ticks back to 0.
-- **Axes are the pod's own** (hardware/enclosure.md "XIAO axes"). The phone applies no
-  calibration to pod data (not D23's); per-axis pod calibration comes in roadmap 1.3 via CAL.
+- **Axes are the pod's own** (hardware/enclosure.md "XIAO axes"). Calibration is not D23's phone
+  one: the app applies the pod's own (D42, `webapp/pod-calibration.json`), matched on INFO's serial.
+  CAL stays a stub.
 
-## 2. GATT table (frozen from the first BLE build)
+## 2. Transport: CRP (D45)
 
-Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Bluetooth).
+The frames travel inside CRP 0x0B, Ansync Labs' Channel Register Protocol:
+- the engine is vendored in `firmware/pod/src/crp`, the JS client in `webapp/crp`;
+- the specs live in `C:\Users\quent\crp-study\spec`. They still say 0x0A, and where they disagree with
+  the 0x0B engine, the engine wins;
+- the Python side is ours: `analysis/crp.py`.
 
-| UUID | name | properties | length |
+The frames themselves didn't change, so INFO still says proto 1.
+
+### 2.1 Packets the pod uses
+Little-endian; byte 0 is the packet type. One packet per Bluetooth write or notification (CRP
+framing level 0); on USB each packet is `[len u16][packet]` (level 1, section 2.5).
+
+| packet | bytes | from | use |
 |---|---|---|---|
-| `9ba40001-6de5-429c-b225-8134b9953e9d` | service | primary, in the advertisement | |
-| `9ba40002-...` | DATA | notify: DATA and STATUS frames | `setMaxLen(244)`, frames up to 238 B |
-| `9ba40003-...` | CTRL | write with response | `setMaxLen(16)` |
-| `9ba40004-...` | STATUS | read | `setFixedLen(20)` |
-| `9ba40005-...` | INFO | read | `setFixedLen(32)` |
-| `9ba40006-...` | CAL | read | `setFixedLen(64)` |
+| NOP 0x00 | `00` | both | heartbeat: the pod sends one after 1 s without sending anything; USB clients every 1 s |
+| HELLO 0x01 | `01 ver max_ch max_chunk:u16 flags device_id:u32` (10 B) | both | opens a session; the client sends first, the pod answers with its own |
+| BYE 0x02 | `02 base:u32 device_id:u32` (9 B) | both | ends the session |
+| WRITE 0x04 | `04 txn reg:u32 value` | both | client: a register write (txn 1..255, answered by a RESPONSE). Pod: a **push** (txn 0, no answer) |
+| READ 0x06 | `06 txn reg:u32` (6 B) | client | a register read |
+| RESPONSE 0x0C | `0C txn status ch reg:u32 value` (8 + N) | pod | answers a READ (with the value) or a WRITE (without); ch = 0xFF |
+| LOG 0x18 | `18 level ts_ms:u32 modlen module msg` | pod, USB only | the `#` lines in CRP mode |
 
-- **One notification channel.** Every notified frame, DATA and STATUS, goes out on DATA, so the
-  phone subscribes to DATA only and gets the frames in the order the pod sent them. Windows
-  (WinRT, under bleak and Chrome) can deliver notifications of two characteristics out of order;
-  the decoder depends on arrival order (D28). STATUS stays readable.
-- **Set every length.** Bluefruit's default max length is 20 B (BLECharacteristic.cpp:43) and
-  `write()` / `notify()` silently cut anything longer (:582, :715): without these lines INFO
-  and CAL would read back as 20 B.
-- DATA: read permission `SECMODE_OPEN` (Bluefruit copies it to the CCCD's write permission,
-  BLECharacteristic.cpp:296, so the phone can subscribe), write `NO_ACCESS`.
-- **Initial values:** setup writes INFO, CAL and a valid STATUS before advertising, so no read
-  ever returns the zero-filled default (type 0x00).
-- **UUID bytes.** In Bluefruit a 128-bit UUID is a little-endian byte array; byte [12] is the
-  role (0x01 service, 0x02 DATA, ... 0x06 CAL). Service:
-  `{0x9D,0x3E,0x95,0xB9,0x34,0x81,0x25,0xB2,0x9C,0x42,0xE5,0x6D,0x01,0x00,0xA4,0x9B}`.
-  Use six separate `static const uint8_t[16]` arrays, one per role: `BLEUuid` keeps a pointer,
-  not a copy (BLEUuid.cpp:185-187), and reads it again in `begin()` and in
-  `Advertising.addService()`, so never patch one buffer and never use a local array.
-- **Frozen**: phones and PCs cache the attribute table, and without bonding the Service Changed
-  indication doesn't clear it. Any change after the first build needs Bluetooth toggled on
-  every phone, which is why CAL exists as a stub already.
-- Device name `BarPod-XXXX`: XXXX = the low 16 bits of `NRF_FICR->DEVICEADDR[0]` in hex (the
-  end of the MAC the phone shows). No pairing in v1: anyone in range can connect, one at a time.
+- **Discovery:** the pod answers CRP's QUERY_DEVICE / QUERY_GROUP / QUERY_REG, so Ansync's dashboard
+  can list the registers.
+- **No channels:** it opens none. There are no subscriptions or bulk transfers, and HELLO says
+  max_channels 1.
+- **Status codes used:**
+  - 0x00 OK
+  - 0x01 UNKNOWN_REG
+  - 0x02 ACCESS_DENIED
+  - 0x03 INVALID_VALUE
+  - 0x08 BUSY
+
+### 2.2 Session
+- **HELLO.** The client sends HELLO. The pod answers HELLO {ver 0x0B, max_channels 1, max_chunk 244
+  on Bluetooth or 1024 on USB, flags 0x01 (push), device_id 0x444F5042 "BPOD"}.
+  - A version below 0x0B gets BYE.
+  - Before a HELLO the pod ignores everything but HELLO and NOP, and sends nothing.
+  - A HELLO during a session starts a new one.
+- **The end of a session:** BYE, END 0xFF, a disconnect, or (USB only) liveness. A session that ends
+  on a live link ends that link's stream exactly as a disconnect does (section 5): streaming off,
+  queued STATUS frames and the built frame dropped, PUSH off. The session hold (section 6) stays.
+- **Liveness.**
+  - On Bluetooth the pod ignores the client's silence: the link's supervision timeout (4 s) is the
+    signal, and a phone's WebView timers throttle with the screen off. So Bluetooth clients send no
+    heartbeat (CRPClient `heartbeatMs: 0`).
+  - On USB, 3 s without receiving anything ends the session, and USB clients send a NOP every 1 s.
+- **No transaction is ever retried** (CRPClient `txnRetries: 0`). The engine runs a repeated WRITE
+  again, and a STOP run twice answers twice.
+
+### 2.3 Registers
+Groups of 64 K (mask 0xFFFF0000). Registers start at offset 1, so CRP discovery, which starts each
+group at offset 1, finds all of them.
+
+| address | name | type | access | value |
+|---|---|---|---|---|
+| 0x00010000 | PROTO | u8 | R | 1 (the group base) |
+| 0x00010001 | INFO | blob 32 | R | the INFO frame (section 3) |
+| 0x00010002 | STATUS | blob 20 | R, pushed | **read:** a plain STATUS built when the READ is processed, with no event bits. **Push:** every STATUS of section 3 |
+| 0x00010003 | CAL | blob 64 | R | the CAL frame |
+| 0x00010004 | DATA | blob 28..238 | pushed | every DATA frame; a READ gets ACCESS_DENIED |
+| 0x00010005 | CTRL | blob 1..10 | W | the CTRL ops of section 4, byte for byte |
+| 0x00010006 | PUSH | u8 | RW | 1 = this session takes pushes. 0 at every HELLO, session end and disconnect |
+
+The other groups are read-only mirrors for Ansync's dashboard; the app doesn't read them.
+
+- **State, 0x0002xxxx** (read only):
+
+  | offset | name | type | notes |
+  |---|---|---|---|
+  | 01 | BATTERY_MV | u16 | |
+  | 02 | FLAGS | u8 | the STATUS state bits |
+  | 03 | HEAD | u32 | |
+  | 04 | TICKS | u32 | |
+  | 05 | BOOT_ID | u32 | |
+  | 06 | SERIAL | u32 | |
+  | 07 | FW_BUILD | u16 | |
+  | 08 | WAKE_REASON | u8 | |
+  | 09 | SLEEP_REASON | u8 | 0 while awake |
+  | 0A | LOST | u32 | this link's lost_overflow, not saturated |
+  | 0B | MISSED_DRDY | u32 | |
+  | 0C | BATT_V | f32 | |
+  | 0D | RESETREAS | u32 | |
+  | 0E | NAME | string | |
+
+- **Link, 0x0003xxxx** (read only; describes the link the read arrives on):
+
+  | offset | name | type | notes |
+  |---|---|---|---|
+  | 01 | KIND | u8 | 1 Bluetooth, 2 USB |
+  | 02 | MTU | u16 | |
+  | 03 | N_MAX | u8 | |
+  | 04 | INTERVAL | u16 | 1.25 ms units |
+  | 05 | PHY | u8 | |
+  | 06 | DL | u16 | |
+  | 07 | FRAMES | u32 | |
+  | 08 | TX_DROPS | u32 | |
+  | 09 | RX_DROPS | u32 | |
+  | 0A | STACK_FREE | u32 | |
+
+- **Bench, 0x0004xxxx** (USB only): 01 BENCH, u8, write only. It takes the bench characters 's',
+  'o', 'w', 'i' and 'h' (`pod.ino`, top); anything else gets INVALID_VALUE.
+
+How writes are answered:
+
+| write | answer |
+|---|---|
+| CTRL, op taken | OK. A STREAM_FROM with the wrong boot_id counts as taken: its real answer is the boot_mismatch STATUS |
+| CTRL, unknown op or wrong length | INVALID_VALUE, and nothing changes |
+| CTRL, from the SLEEP op on | BUSY |
+| a read-only register | ACCESS_DENIED |
+| an unknown register | UNKNOWN_REG |
+
+### 2.4 Bluetooth
+- **One service with two characteristics.** The service is `00005090-0000-1000-8000-00805f9b34fb`,
+  the one Ansync's JS transport and dashboard use.
+  - **RX** `000050b0-0000-1000-8000-00805f9b34fb`: write and write without response, `setMaxLen(244)`.
+    One write is one packet.
+  - **TX** `000050b1-0000-1000-8000-00805f9b34fb`: notify, `setMaxLen(244)`, read permission
+    `SECMODE_OPEN` (Bluefruit copies it to the CCCD's write permission, BLECharacteristic.cpp:296).
+    One notification is one packet.
+- **One notification channel.** Every packet the pod sends goes out on TX, so it arrives in the
+  order sent. Windows (WinRT, under bleak and Chrome) can deliver notifications of two
+  characteristics out of order, and the decoder depends on arrival order (D28).
+- **Set every length.** Bluefruit's default max length is 20 B (BLECharacteristic.cpp:43), and
+  `write()` / `notify()` silently cut anything longer (:582, :715). `notify()` also splits anything
+  above MTU - 3 into several notifications, which would break one packet per notification. The pod
+  never uses it: it calls `sd_ble_gatts_hvx` and never hands that more than MTU - 3.
+- **UUIDs** are 16-bit values on the Bluetooth base. They are Ansync's convention, not values the
+  Bluetooth SIG assigned. `BLEUuid` keeps a pointer, not a copy (BLEUuid.cpp:185-187), so use
+  separate static values.
+- **Telling the pod apart.** Every Ansync CRP device shares the service, so clients also require all
+  three of: the name prefix `BarPod-`, HELLO device_id "BPOD", and, as before, the session's INFO
+  serial.
+- **Address.** The pod uses a static random address of its own: `NRF_FICR->DEVICEADDR` XOR a fixed
+  mask, top two bits 11, set with `Bluefruit.setAddr`.
+  - So phones and PCs see a new device, with no cached PodLink v1 attribute table. Without bonding,
+    a cached table survives a firmware change, and a table change would otherwise need Bluetooth
+    toggled on every phone.
+  - The CRP table is frozen from its first build: registers can change, the characteristics don't.
+- **Name** `BarPod-XXXX`: XXXX is the low 16 bits of that address in hex, the end of the MAC the
+  phone shows. It changed once, with D45.
+- **No pairing:** anyone in range can connect, one at a time.
+
+### 2.5 USB
+- **Text mode**, from boot, as before D45: the CSV, the `#` lines and the bench characters. It stays
+  the independent truth for `usb_clock.py`, `compare_ble_usb.py` and `check_soak.py`. Those tools
+  check the frame path, so they must not share it.
+- **CRP mode.** The bytes `0A 00 01 0B` (a level-1 HELLO: length 10, type 0x01, version 0x0B) switch
+  the port to CRP.
+  - **Framing** is level 1, `[len u16][packet]`, with len 1..1024. A bad length drops one byte and
+    rescans. Text can't look like a length: the second byte of any text pair is at least 0x0A.
+  - **The stream** is the same as on Bluetooth (sections 3 to 6), with its own cursor, n_max 16 and
+    interval 0. It never touches the session hold.
+  - **`#` lines** go out as LOG packets (module "pod").
+- **Back to text** when the port closes, at BYE or END, after 3 s without receiving, or when no HELLO
+  completes within 3 s of the switch. Then:
+  - the CSV restarts live (cursor = head);
+  - the bench characters are ignored for 3 s, and after that only a 1-byte read counts as one,
+    because CRP packets contain 'h' and 'w'.
 
 ## 3. Frames
 
@@ -92,7 +227,7 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
 |---|---|---|
 | 0 | u8 | type 0x01 |
 | 1 | u8 | n, samples in this frame, 1..16 |
-| 2 | u16 | pkt_seq: +1 per DATA frame accepted by notify() since boot (STATUS doesn't count), wraps at 16 bits |
+| 2 | u16 | pkt_seq: +1 per DATA frame the link accepted since boot (STATUS doesn't count), per link, wraps at 16 bits |
 | 4 | u32 | first_idx: sample index of sample 0 |
 | 8 | u32 | t0_ticks: RTC2 ticks of sample 0 |
 | 12 | u8 | flags: b0 RESYNC, b1 OVERFLOW, b2 IMU_RESTART, b3 FINAL; b4-b7 0 |
@@ -106,9 +241,9 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
   A **time hole** (a missed data-ready, an IMU restart) can fall inside a frame: check every
   consecutive pair of samples.
 - The pod never lets a dt pass 60000 ticks (1.83 s): it ends the frame early instead.
-- **A frame is built once** and, if notify() finds no free slot, resent byte-identical (same
-  pkt_seq, same samples) until it's accepted. The same goes for STATUS. A STREAM command
-  discards a built-but-unsent DATA frame (it belonged to the old stream).
+- **A frame is built once** and, if the link doesn't accept its push (section 5), resent
+  byte-identical (same pkt_seq, same samples) until it's accepted. The same goes for STATUS. A
+  STREAM command discards a built-but-unsent DATA frame (it belonged to the old stream).
 - Flags:
   - **RESYNC**: the first frame sent after a STREAM command. pkt_seq continuity restarts here.
     Stays pending until a frame carrying it is accepted by notify().
@@ -133,10 +268,16 @@ Base UUID `9ba4xxxx-6de5-429c-b225-8134b9953e9d`, written in lowercase (Web Blue
 
 ### STATUS (0x10), 20 bytes
 
-Notified on the DATA characteristic (when the phone has subscribed to it) every 1 s while connected, at once when USB or
-charging changes, in answer to every STREAM command before its first DATA, after a STOP has
-drained (or its drain was capped), and before sleep. The readable value is rebuilt every 1 s and at every connect, so a
-read is never more than 1 s old.
+When it's pushed (a WRITE txn 0 to STATUS, while the session has PUSH on):
+- every 1 s while connected;
+- at once when USB or charging changes;
+- in answer to every STREAM command, before its first DATA;
+- after a STOP has drained, or its drain was capped;
+- before sleep.
+
+A READ of STATUS gets a plain STATUS built when the READ is processed, so its head is at least that
+of any DATA already sent on that link. Per link: lost_overflow, n_per_packet (16 on USB) and the
+interval (0 on USB) are that link's.
 
 | offset | type | field |
 |---|---|---|
@@ -181,7 +322,7 @@ Flags:
 Stub until roadmap 1.3: byte 0 = 0x30, byte 1 = 0 (no calibration), the rest 0. A real
 calibration (per-axis bias and scale) gets its layout in 1.3 without changing the table.
 
-## 4. CTRL ops (write with response, byte 0 = op)
+## 4. CTRL ops (written to the CTRL register, section 2.3; byte 0 = op)
 
 | op | bytes after op | what the pod does |
 |---|---|---|
@@ -190,7 +331,7 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
 | 0x03 STOP | none (1 B) | Releases the session hold at once. Snapshot `stop_head = head` and drain every sample below it; the frame ending at stop_head has FINAL (no FINAL frame if nothing was pending). Then STATUS with stream_stopped and head = stop_head, and streaming ends. The drain is capped: if DATA can't flow (n_max < 4, or DATA notifications off), or it runs past `1.5 s + backlog / (60 x n_max) s` (backlog = stop_head - cursor at the STOP), the pod sends the stream_stopped STATUS at once and the rest is the phone's stop-tail. If not streaming: the stream_stopped STATUS goes out at once (head = current head). A disconnect or a STREAM command during the drain ends it without a stream_stopped STATUS. |
 | 0x10 SLEEP | u8 mode (2 B) | 0 = sleep with motion wake, 1 = sleep with the IMU off. Runs the sleep prologue (section 6). |
 
-- Unknown ops and wrong lengths are ignored.
+- Unknown ops and wrong lengths change nothing; their WRITE is answered INVALID_VALUE.
 - **cmd_seq** is the phone's: +1 per STREAM command (wraps at 8 bits). The pod copies it into
   byte 13 of every DATA frame of that stream, so the phone can tell frames of the stream it
   asked for from frames of an earlier one still in flight, without matching STATUS frames.
@@ -209,46 +350,73 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
 
 ## 5. Link
 
-- **Sizing.** `mtu_eff = min(ATT MTU, 247)`, `n_max = min(16, (mtu_eff - 3 - 14) / 14)`,
-  recomputed for every frame from the current MTU. MTU 247 -> 16 samples (238 B, 13.2 frames/s
-  at 211 Hz, 3.1 kB/s); MTU 185 -> 12; MTU 73 -> 4; MTU 23 -> 0. Keeping up needs
-  211 / n_max frames/s: 13 at n_max 16, but 53 at n_max 4, which a slow link (40-80 ms per
-  notification) can't do; the ring then laps the cursor over and over, every lost sample
-  counted as overflow (test bench, stop-capped-tail). Real phones give MTU 247. The clamp to 247 is needed
-  because after a pod-initiated exchange Bluefruit stores the peer's server_rx_mtu (e.g. 517,
-  BLEConnection.cpp:353) while the real ATT MTU is 247.
-- **MTU too small.** While `n_max < 4` (MTU below 73) the pod sends no DATA and sets STATUS
-  mtu_too_small: no quiet degrading. A STREAM command is still accepted (cursor, RESYNC and hold
-  set as usual); DATA starts on its own, after a fresh STATUS, once an MTU exchange raises
-  n_max, and the phone doesn't resend the command. mtu_too_small is normal for about the first
-  second of every connection (the pod's own exchange runs at connect + 1 s); the phone reports
-  it as a fault only if it's still set 3 s after connect.
+- **Sizing.** `mtu_eff = min(ATT MTU, 247)` and `n_max = min(16, (mtu_eff - 3 - 6 - 14) / 14)`,
+  recomputed for every frame from the current MTU. The 6 is the push's WRITE header.
+  - MTU 247 gives 16 samples: a 238 B frame in a 244 B packet, exactly MTU - 3, at 13.2 frames/s
+    (211 Hz) and 3.2 kB/s.
+  - MTU 185 gives 11, MTU 79 gives 4, MTU 23 gives 0. USB always gives 16.
+  - Keeping up needs 211 / n_max frames/s: 13 at n_max 16, but 53 at n_max 4. A slow link (40 to
+    80 ms per notification) can't do that, so the ring laps the cursor over and over and every lost
+    sample is counted as overflow (test bench, stop-capped-tail).
+  - Real phones give MTU 247. The clamp to 247 is needed because after a pod-initiated exchange
+    Bluefruit stores the peer's server_rx_mtu (e.g. 517, BLEConnection.cpp:353), while the real ATT
+    MTU is 247.
+- **MTU too small: DATA.** While `n_max < 4` (MTU below 79) the pod sends no DATA and sets STATUS
+  mtu_too_small, so there's no quiet degrading.
+  - A STREAM command is still accepted (cursor, RESYNC and hold set as usual).
+  - DATA starts on its own, after a fresh STATUS, once an MTU exchange raises n_max. The phone doesn't
+    resend the command.
+  - mtu_too_small is normal for a moment at every connect, until the pod's own exchange at
+    connect + 50 ms completes. The phone reports it as a fault only if it's still set 3 s after
+    connect.
+- **MTU too small: everything else.** A packet the pod sends must fit in MTU - 3.
+  - A READ whose RESPONSE (8 B + the value) wouldn't fit gets BUSY instead (8 B).
+  - A STATUS push that doesn't fit (it needs MTU 29) waits in the queue like one with no free slot.
+  - Any other engine packet that doesn't fit (discovery answers) is dropped and counted.
+  - The client retries a BUSY read every 200 ms for 3 s, then reads the MTU register (10 B, which
+    fits at 23) and reports the link's MTU as too small.
 - **When a DATA frame goes out:** n_max samples pending, or the oldest pending sample is 80 ms
   old (2621 ticks), or the next dt would pass 60000 ticks, or a STOP / sleep drain is running,
   or the next sample starts after an IMU restart. Behind (after an outage), up to 4 frames per
   pass; at a 30-50 ms interval with 3 notify slots that's 60-100 frames/s, so a full ring
   drains in about 6-11 s.
-- **The pod never blocks on the radio.** DATA and STATUS share one budget of 3 notifications
-  in flight (counted as sent minus TX-complete). A notify that finds no free slot is tried
-  again on the next pass. A due STATUS goes before any further DATA (so the 1 s STATUS still
-  gets out during catch-up, and the STATUS answering a STREAM command goes before its RESYNC
-  frame); the stream_stopped and going_to_sleep STATUS go after the last DATA. With DATA notifications off, a
-  STATUS only updates the readable value and counts as sent. Sampling never
-  waits for BLE.
-- **A disconnect ends the stream, not the session hold.** On disconnect the pod stops
-  streaming (STATUS b3 = 0) and forgets its in-flight count (a dead link reports no
-  TX-complete). On the next connection it sends no DATA until a STREAM command arrives, whose
-  first frame has RESYNC. Frames notified but never delivered are lost from the link only: the
-  phone's `STREAM_FROM(boot_id, next index)` gets them back from the ring.
+- **The pod never blocks on the radio.** Every packet the pod sends shares one budget of 3
+  notifications in flight, counted as sent minus TX-complete. Only loop() sends, so packets go out
+  in program order. Sampling never waits for the link.
+  - **The engine's packets** (HELLO, RESPONSEs) go straight out, or wait in a spool of 4.
+    - A full spool drops the packet and counts it in TX_DROPS.
+    - A NOP only ever goes straight out: if it can't, it's dropped, since anything else queued
+      already proves liveness.
+  - **A push** (DATA or STATUS) goes only when all of these hold:
+    - PUSH is on;
+    - the spool is empty;
+    - a slot is free;
+    - the packet fits.
+    Otherwise its frame waits where it is and is tried again on the next pass. The push is
+    `[04][00][reg][frame]`, so a retry is byte-identical.
+  - **Order.** A due STATUS goes before any further DATA, so the 1 s STATUS still gets out during
+    catch-up, and the STATUS answering a STREAM command goes after the command's RESPONSE and before
+    its RESYNC frame. The stream_stopped and going_to_sleep STATUS go after the last DATA.
+  - **PUSH off** (or TX notifications off): a STATUS counts as sent and DATA waits.
+  - **USB:** a 2 KB byte spool replaces the slots. Engine packets go in if there's room; pushes
+    need room plus 128 B.
+- **A disconnect or a session end ends the stream, not the session hold.**
+  - The pod stops streaming (STATUS b3 = 0), empties the spool and forgets its in-flight count (a
+    dead link reports no TX-complete).
+  - On the next session it sends no DATA until a STREAM command arrives, whose first frame has RESYNC.
+  - Frames sent but never delivered are lost from the link only: the phone's
+    `STREAM_FROM(boot_id, next index)` gets them back from the ring.
 - **Requested link** (the pod asks, the phone decides; the pod prints what it got as a
   `# link ...` line on USB, and STATUS carries the interval):
   - 1M PHY (about 3 dB more range than 2M; the data rate is tiny), +4 dBm.
-  - Data length update at connect + 0.2 s; MTU exchange (247) at connect + 1 s if the phone
-    hasn't done one (Chrome on Android may never ask).
+  - MTU exchange (247) at connect + 50 ms if the phone hasn't done one (Chrome on Android may
+    never ask), then the data length update. The MTU comes first because CRP's INFO read needs it.
   - Connection interval 30-50 ms, latency 0, supervision timeout 4 s, requested 2 s after the
-    phone subscribes to DATA (`sd_ble_gap_conn_param_update` with {24, 40, 0, 400}).
-- **Advertising:** flags + the 128-bit service UUID; the name in the scan response; 20 ms for
-  the first 30 s, then 152.5 ms; restarts after every disconnect except the one before sleep.
+    session turns PUSH on (`sd_ble_gap_conn_param_update` with {24, 40, 0, 400}).
+- **Advertising:**
+  - contents: flags, the 16-bit service UUID 0x5090 and the name;
+  - interval: 20 ms for the first 30 s, then 152.5 ms;
+  - restarts after every disconnect except the one before sleep.
 
 ## 6. Session hold and sleep (amends D26)
 
@@ -260,11 +428,11 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   connected: drain DATA up to that head for at most 1.5 s; the frame ending at the final head
   has FINAL (a drain cut short sends no FINAL frame). Then, if connected: STATUS with
   going_to_sleep, the sleep reason and head = the final head; wait at most 300 ms until nothing
-  is in flight; turn off restart-on-disconnect and disconnect deliberately (reason 0x13, so the
+  is in flight or queued (spool and STATUS queue empty); turn off restart-on-disconnect and disconnect deliberately (reason 0x13, so the
   phone sees it at once instead of after the 4 s timeout), waiting at most 500 ms for the
   disconnect to complete; then the D26 sleep. Samples between the last sent frame and the final
   head are the phone's `sleep-tail` gap.
-- During the prologue the pod ignores CTRL writes (from the SLEEP op on). A disconnect during
+- During the prologue the pod answers CTRL writes BUSY and does nothing (from the SLEEP op on). A disconnect during
   the sleep drain skips the STATUS and goes straight to sleep. Advertising stops as the prologue
   starts, so no phone connects while the IMU is set up for sleep.
 - A sleep during a STOP drain takes it over: the drain runs to the final head instead of
@@ -283,12 +451,31 @@ same input (frames, commands, STOP and timer calls, in the same order) they give
 samples, gaps, stats, faults, events and command bytes; `analysis/make_fake_pod.py` writes the
 vectors that prove it.
 
-- **Connection order, every connect and reconnect:** read INFO, read STATUS (await each read),
-  enable DATA notifications (they carry STATUS too), then write the STREAM command if
-  `command()` returns one. Feed every frame of any type (reads included), in arrival order,
-  with its arrival time in ms (browser `Date.now()`, app `SystemClock.elapsedRealtime()`), into
-  one decoder. The order matters: a STATUS read arriving after DATA would carry an old head and
-  look like a reboot (below).
+- **Connection order, every connect and reconnect:**
+  1. Bring the link up: on Bluetooth, TX notifications on (the app's plugin also requests MTU
+     247 first); on USB, open the port.
+  2. HELLO. Await the pod's HELLO and check device_id "BPOD".
+  3. READ INFO, then READ STATUS, awaiting each. A BUSY is retried (section 5, MTU too small).
+  4. WRITE PUSH = 1, and await its RESPONSE.
+  5. WRITE CTRL with the STREAM command, if `command()` returns one.
+- **Feeding the decoder.** Feed every packet the pod sends, in arrival order, with its arrival time
+  in ms (browser `Date.now()`, app `SystemClock.elapsedRealtime()`), through `crp_frame()`:
+  - an OK RESPONSE to a READ of INFO, STATUS or CAL gives its value as a frame;
+  - a WRITE with txn 0 to DATA or STATUS gives its value as a frame;
+  - anything else gives nothing and isn't counted.
+  The frames go into one decoder.
+- **Why the order matters:**
+  - a STATUS pushed before the reconnect INFO would belong to the old epoch, and a woken pod's small
+    head would then look like a reboot without a new boot_id (below). PUSH = 1 after the reads is
+    what prevents it.
+  - READ STATUS stays in the order so that `command()` already knows the pod's head when it builds
+    the command.
+- **Captures** (the make_fake_pod.py vector format, `scenario,step,kind,arrival_ms,payload`):
+  - `pkt` rows: a packet received, hex;
+  - `tx` rows: a packet sent (for reading only, not replayed);
+  - `cmd`, `stop` and `call` rows as before;
+  - captures from before D45 carry `frame` rows, which still replay
+    (`python analysis/podlink.py --replay-all` against `analysis/data/pod-capture-manifest.json`).
 - **Input checks.** A frame with an unknown type, or the wrong length for its type (DATA not
   14 + 14n with n = 1..16, STATUS not 20, INFO not 32, CAL not 64), is dropped and counted
   (`bad`). CAL is ignored in v1. Reserved bytes and unused flag bits are ignored. Scale:

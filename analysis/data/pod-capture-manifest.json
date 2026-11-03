@@ -1,0 +1,701 @@
+{
+ "pod-capture-2026-10-23-1857.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 48.0159912109375,
+  "rows": 686,
+  "samples": 10105,
+  "sha256": "76d6d95a103247324b0accb13576a67e16ae7599c53d3505f030623fe4a2b0db",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 10105,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1208-smoke7.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 32.953125,
+  "rows": 472,
+  "samples": 6935,
+  "sha256": "e7eac5dc64c2a0e6675f279bb5652e2b76c744799c4b7004526ec6b2cf4bc3e4",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6935,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1210-proof7.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 603.0222473144531,
+  "rows": 8540,
+  "samples": 126888,
+  "sha256": "444233c089fae60ac1586c757148fa43b3c1bd4e08202af0e7a0e3bfe8449f6b",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 126888,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1221-outage7.csv": {
+  "events": {
+   "epoch": 1,
+   "gap": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [
+   {
+    "boot_id": 1560885194,
+    "idx": 234383,
+    "kind": "overflow",
+    "n": 5122,
+    "t0": 303.0103759765625,
+    "t1": 327.3571472167969
+   }
+  ],
+  "last_t": 483.0948181152344,
+  "rows": 6434,
+  "samples": 96531,
+  "sha256": "c1f1c55a679dd821cfbc3d3eb1b02ecbb198417a5e808e334047be229bb0058f",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 4,
+   "samples": 96531,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1242-final7.csv": {
+  "events": {
+   "epoch": 1,
+   "gap": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [
+   {
+    "boot_id": 1560885194,
+    "idx": 442733,
+    "kind": "overflow",
+    "n": 2141,
+    "t0": 5.62200927734375,
+    "t1": 15.801605224609375
+   }
+  ],
+  "last_t": 75.59637451171875,
+  "rows": 899,
+  "samples": 13767,
+  "sha256": "69236ad7b0957637fefcb4caacdbb55d078aebafb9e36b26393752ef2314024d",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 1,
+   "samples": 13767,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1613-soak8.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 600.7032775878906,
+  "rows": 8480,
+  "samples": 126399,
+  "sha256": "acd241801f3da7abc6d5223ae36a737aea6770e45d1f809efaf91030eb1f0838",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 1,
+   "samples": 126399,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1704-soak8final.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 600.6494445800781,
+  "rows": 8480,
+  "samples": 126384,
+  "sha256": "fc3375cf2b7c57749330e48672bef64154aa3925783309f475c4b3e0852a87c6",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 1,
+   "samples": 126384,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1732-dry9a.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 44.4275849609375,
+  "rows": 459,
+  "samples": 6668,
+  "sha256": "6965727eafe5b48d2789d5cb19424fa18e50bd1b2c42133311eca198de73752a",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6668,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1759-dry9b.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 44.17322534179687,
+  "rows": 455,
+  "samples": 6610,
+  "sha256": "e2ce346f3bfca52621b3d51c840e839415a85c6815580d6a54ca166b3569508b",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6610,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1838-s9usb1.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 65.45543383789072,
+  "rows": 472,
+  "samples": 6858,
+  "sha256": "a69f6cc907271a81ec3fe39bf6ac33845d8731fb704cc8ee90572afa4e5f6d0c",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6858,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1839-s9usb2.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 59.13259375,
+  "rows": 474,
+  "samples": 6896,
+  "sha256": "1fd7870c6e6ea3503ea2b5070de32cb28ec58ead3d732aa6d3b4952beba6065f",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6896,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1840-s9usb3.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 57.35395361328125,
+  "rows": 475,
+  "samples": 6924,
+  "sha256": "850bf041d12d76d6a4643c654f4ad616eb95db9e7febd8dbd52c2d1e904845b5",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6924,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1842-s9ble1.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 63.59539624023438,
+  "rows": 436,
+  "samples": 6322,
+  "sha256": "8bf84a5211368984c3daccec6a7fc43ae8b68bd369eba698666711c2f3b0f852",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6322,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1843-s9ble2.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 67.96137060546874,
+  "rows": 482,
+  "samples": 7047,
+  "sha256": "7115554d39dfecf1faba49b8399e7fc20a1140ce99d37de9b023333b8cb833be",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 7047,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1844-s9ble3.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 54.20236181640625,
+  "rows": 456,
+  "samples": 6638,
+  "sha256": "d9e73db53fad175bc7ea1b66d1a152940d82401a5c2976e207e0e47d1879e703",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6638,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1846-s9lid.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 60.769134521484375,
+  "rows": 867,
+  "samples": 12788,
+  "sha256": "cf76125bcfd9bacfc6c65a9a60e3f5c9c3cc5fe5465e97cb0a69bc1ace03c511",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 12788,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1848-s9lid2.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 58.5167236328125,
+  "rows": 835,
+  "samples": 12314,
+  "sha256": "1f99644bde843b17795d914322db454a358068917831f1fbf4bca839af59ac42",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 12314,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-1955-s9lid3.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 240.7786865234375,
+  "rows": 3414,
+  "samples": 50664,
+  "sha256": "6b80206a37c40fb7990a4941a52636bb23055222f28a02964205d876b8c027d1",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 50664,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-2001-s9imuoff.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 116.14685791015626,
+  "rows": 444,
+  "samples": 6421,
+  "sha256": "ab5ecf0dba86539d2d0654353d2ac5861ec7917d9668d1f36310c9c43c81d590",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6421,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-2158-reconnect10.csv": {
+  "events": {
+   "epoch": 3,
+   "gap": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [
+   {
+    "boot_id": 2120675617,
+    "idx": 1466697,
+    "kind": "overflow",
+    "n": 4959,
+    "t0": 41.055633544921875,
+    "t1": 64.62750244140625
+   },
+   {
+    "boot_id": 2120675617,
+    "idx": 1477192,
+    "kind": "lost-tail",
+    "lower_bound": true,
+    "n": 3549,
+    "t0": 90.9320068359375,
+    "t1": 107.80203247070312
+   }
+  ],
+  "last_t": 150.02444458007778,
+  "rows": 1217,
+  "samples": 18330,
+  "sha256": "5b4814b79e932943bc842ca8773f5e53c6939dc58cb856d8d85610be06ee9dff",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 3,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 2,
+   "samples": 18330,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-10-24-2202-reconnect10b.csv": {
+  "events": {
+   "epoch": 3,
+   "gap": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [
+   {
+    "boot_id": 1170030117,
+    "idx": 32171,
+    "kind": "overflow",
+    "n": 4960,
+    "t0": 41.056182861328125,
+    "t1": 64.63296508789062
+   },
+   {
+    "boot_id": 1170030117,
+    "idx": 42939,
+    "kind": "lost-tail",
+    "lower_bound": true,
+    "n": 3288,
+    "t0": 92.23031616210938,
+    "t1": 107.85955810546875
+   }
+  ],
+  "last_t": 156.08286621093748,
+  "rows": 1320,
+  "samples": 19843,
+  "sha256": "d80f87e646aaf7d6e9e8b465bc5e8969f83ac5ee74027dcb8e0304fe962a8f13",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 3,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 2,
+   "samples": 19843,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ }
+}

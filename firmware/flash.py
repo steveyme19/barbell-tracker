@@ -3,6 +3,7 @@
     python firmware/flash.py                 # firmware/pod, port found automatically
     python firmware/flash.py imu_serial      # another sketch folder under firmware/
     python firmware/flash.py pod COM14       # explicit port
+    python firmware/flash.py --compile       # compile only (firmware/pod, or a named sketch), no upload
 
 The guard: Seeed's variant drives P0.14 (VBAT_ENABLE) HIGH at boot, which breaks the battery
 rule in CLAUDE.md (P0.14 HIGH while charging can damage P0.31). We patch the installed core to
@@ -55,11 +56,15 @@ def find_port():
 
 
 def main():
-    sketch = HERE / (sys.argv[1] if len(sys.argv) > 1 else "pod")
+    args = [a for a in sys.argv[1:] if a != "--compile"]
+    sketch = HERE / (args[0] if args else "pod")
     if not sketch.is_dir():
         sys.exit(f"No sketch folder {sketch}")
     check_core()
-    port = sys.argv[2] if len(sys.argv) > 2 else find_port()
+    if "--compile" in sys.argv:
+        print(f"compiling {sketch.name} (no upload) ...")
+        sys.exit(subprocess.run([str(CLI), "compile", "--fqbn", FQBN, str(sketch)]).returncode)
+    port = args[1] if len(args) > 1 else find_port()
     print(f"compiling {sketch.name} and uploading to {port} ...")
     r = subprocess.run([str(CLI), "compile", "--fqbn", FQBN, "-u", "-p", port, str(sketch)])
     sys.exit(r.returncode)

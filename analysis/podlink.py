@@ -623,9 +623,104 @@ def usb_check(lines, seconds):
     return ok, out
 
 
+# ---- replaying captures (the make_fake_pod.py vector format, P2) ----
+MANIFEST = "data/pod-capture-manifest.json"   # relative to analysis/
+
+
+def replay_rows(rows):
+    """Feed capture rows (kind, arrival_ms, payload) into a fresh decoder, checking every logged
+    command against the one the decoder builds. Returns (samples, stream, events) or raises."""
+    samples, events = [], []
+    s = PodStream(samples.append, lambda k, i: events.append((k, i)))
+    for kind, arr, payload in rows:
+        if kind == "frame":
+            s.frame(bytes.fromhex(payload), arr)
+        elif kind == "cmd":
+            b = s.command()
+            got = "none" if b is None else b.hex()
+            if got != payload:
+                raise AssertionError(f"replayed command {got} != logged {payload}")
+        elif kind == "stop":
+            if s.stop_command().hex() != payload:
+                raise AssertionError("replayed STOP bytes differ")
+        elif kind == "call":
+            if payload == "finish":
+                s.finish()
+            elif payload.startswith("stop_wait_ms="):
+                got = s.stop_wait_ms()
+                if repr(got) != payload.split("=", 1)[1]:
+                    raise AssertionError(f"replayed stop_wait_ms {got!r} != {payload}")
+            elif payload.startswith("stop_timed_out="):
+                got = int(s.stop_timed_out())
+                if str(got) != payload.split("=", 1)[1]:
+                    raise AssertionError(f"replayed stop_timed_out {got} != {payload}")
+    return samples, s, events
+
+
+def read_capture(path):
+    """A capture CSV (scenario,step,kind,arrival_ms,payload) -> [(kind, arrival_ms, payload)]."""
+    import csv
+    with open(path, newline="") as f:
+        return [(r["kind"], float(r["arrival_ms"]) if r["arrival_ms"] else None, r["payload"])
+                for r in csv.DictReader(f)]
+
+
+def capture_digest(rows):
+    """What a capture decodes to, compactly: a hash of every sample (repr floats, so bit exact)
+    plus the gaps, stats, faults and event counts in full."""
+    import hashlib
+    samples, s, events = replay_rows(rows)
+    h = hashlib.sha256()
+    for smp in samples:
+        h.update(repr(tuple(smp[k] for k in ("t", "ax", "ay", "az", "gx", "gy", "gz"))).encode())
+    kinds = {}
+    for k, _ in events:
+        kinds[k] = kinds.get(k, 0) + 1
+    return {"rows": len(rows), "samples": len(samples), "sha256": h.hexdigest(),
+            "first_t": samples[0]["t"] if samples else None, "last_t": samples[-1]["t"] if samples else None,
+            "gaps": s.gaps, "stats": s.stats, "faults": s.faults, "events": kinds}
+
+
+def replay_all(write=False):
+    """Every committed pod-capture-*.csv against the manifest (P2: old recordings keep decoding
+    the same). write=True records the manifest instead, from the decoder as it is now."""
+    import glob
+    import json
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, MANIFEST)
+    files = sorted(glob.glob(os.path.join(here, "data", "pod-capture-*.csv")))
+    got = {os.path.basename(p): capture_digest(read_capture(p)) for p in files}
+    if write:
+        with open(path, "w", newline="\n") as f:
+            json.dump(got, f, indent=1, sort_keys=True)
+            f.write("\n")
+        print(f"wrote {MANIFEST}: {len(got)} captures")
+        return True
+    with open(path) as f:
+        want = json.load(f)
+    ok = True
+    for name in sorted(set(want) | set(got)):
+        if name not in got:
+            print(f"FAIL  {name}: in the manifest, file missing")
+        elif name not in want:
+            print(f"FAIL  {name}: not in the manifest")
+        elif json.loads(json.dumps(got[name])) != want[name]:
+            diff = [k for k in want[name] if json.loads(json.dumps(got[name].get(k))) != want[name][k]]
+            print(f"FAIL  {name}: {', '.join(diff)} differ")
+        else:
+            print(f"PASS  {name}: {got[name]['samples']} samples, {len(got[name]['gaps'])} gaps")
+            continue
+        ok = False
+    print(f"replay {'PASS' if ok else 'FAIL'}: {len(got)} captures")
+    return ok
+
+
 if __name__ == "__main__":
     import sys
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--replay-all" in sys.argv or "--write-manifest" in sys.argv:
+        sys.exit(0 if replay_all(write="--write-manifest" in sys.argv) else 1)
     if "--usb" in sys.argv and args:
         secs = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--seconds=")), 600.0)
         # --stall=S: send the bench command i after S s (the IMU stops, the pod restarts it), so

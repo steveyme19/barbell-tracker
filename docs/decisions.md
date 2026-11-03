@@ -1083,6 +1083,55 @@ the real error (a still straddling the dip bottom is the largest single cause; t
 halts on a lull, both in the real sets too, come next); with real-sized break vibration one reset set logs 0 reps (not
 investigated). Slow reset pulls over-read with pull time (+8 to +14% at 3 s, raw). The end walk (D43 Open) still.
 
+**D45 (2026-11-02, in progress): the pod's link moves onto CRP, Ansync Labs' Channel Register Protocol
+(0x0B), on Bluetooth and USB, carrying the PodLink v1 frames unchanged. The frames become register
+values and pushes, and the CTRL ops a register write. Ansync's C engine and JS client are vendored.**
+
+*What moves:*
+- INFO, STATUS and CAL are readable registers.
+- Every DATA and STATUS frame is pushed as a CRP WRITE with txn 0.
+- The CTRL ops are written to one CTRL register, byte for byte.
+- A PUSH register does the CCCD's old job.
+- Bluetooth has one service with RX and TX (Ansync's 0x5090 / 0x50b0 / 0x50b1). USB uses CRP's
+  length-prefixed framing.
+- Spec: `docs/ble.md` section 2.
+
+*Why (Quentin, 11-02):* one protocol for the pod and Ansync's devices. Their dashboard and tools then
+open the pod, and its registers are discoverable rather than a frozen table.
+
+*Decided with Quentin:*
+- Vendor Ansync's engine and client. They gave their OK for this public repo.
+- Both links speak CRP.
+- Keep the frames, pushed, rather than move the samples onto a CRP bulk channel, which was the
+  alternative. A bulk channel would have needed about six fixes to the engine's bulk pump (offsets
+  advance on a failed send, an empty chunk ends the channel, READ ignores its start offset) and a
+  rewritten decoder and simulator. Pushed frames keep the decoder's semantics and its 36 scenarios.
+
+*Choices along the way:*
+- **USB keeps its text mode as the independent truth,** and a HELLO switches the port to CRP (coil's
+  coexistence model). usb_clock, compare_ble_usb and check_soak check the frame path, so they must
+  not share it.
+- **PUSH = 1 is written after the INFO and STATUS reads.** It keeps D28's guarantee: a STATUS pushed
+  before the reconnect INFO would read as a reboot without a new boot_id.
+- **The pod ignores CRP liveness on Bluetooth.** A phone's WebView throttles timers with the screen
+  off, and link supervision already covers it.
+- **Clients never retry a transaction,** since the engine re-runs a WRITE.
+- **A READ that wouldn't fit the MTU is answered BUSY,** and the pod's MTU exchange moves to
+  connect + 50 ms.
+- **n_max = (MTU - 23) / 14,** for the 6-byte push header. It is still 16 at MTU 247, but 4 samples
+  now need MTU 79.
+- **CRP builds advertise from a new static random address,** so no phone keeps the cached v1 table.
+  The name changes once.
+
+*Engine patches* (`firmware/pod/src/crp/README-VENDOR.md`): coil's five, plus:
+- `push_change` returns its result;
+- the tick's 1 KB buffer is static, for the 4 KB loop stack.
+
+*Plan:* stages S0 to S10 (session log 11-03).
+
+*Baseline* (S0, PodLink v1 with the engine vendored and unused): 139,472 B flash, 147,008 B RAM
+(90,560 free).
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the
