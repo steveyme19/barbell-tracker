@@ -371,13 +371,16 @@ function showPodBanner() {
   const L = running && source instanceof PodSource ? source.linkInfo() : null;
   let text = "";
   if (L && !L.linked && L.asleep) {
-    // "command": our SLEEP op says which (mode 1 = IMU off); a USB s / o doesn't, assume motion
-    const hint = L.asleep === "command" ? WAKE_HINT[L.sleepMode === 1 ? "IMU lost" : "idle"]
+    // battLow is the going_to_sleep STATUS's batt_low: the pod's own test for making every sleep
+    // IMU-off (D38), whatever the reason. "command": our SLEEP op says which (mode 1 = IMU off);
+    // a USB s / o doesn't, assume motion
+    const hint = L.battLow ? "battery low, so a bump won't wake it: plug in USB"
+      : L.asleep === "command" ? WAKE_HINT[L.sleepMode === 1 ? "IMU lost" : "idle"]
       : WAKE_HINT[L.asleep] ?? "bump the bar or plug in USB";
     text = `Pod asleep (${L.asleep}): ${hint}.`;
   }
   else if (L && !L.linked) text = "Pod link lost, reconnecting (the pod buffers 38 s).";
-  else if (L?.battLow) text = "Pod battery low: charge it after this session.";
+  else if (L?.battLow) text = "Pod battery low: charge it after this session (once asleep, only USB wakes it).";
   b.hidden = !text;
   b.textContent = text;
   b.classList.toggle("bad", Boolean(L?.battLow) && L.linked);

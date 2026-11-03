@@ -295,7 +295,8 @@ interval (0 on USB) are that link's.
 Flags:
 - **State bits**, set in every STATUS while they hold: b0 USB power, b1 charging, b2 batt_low
   (battery < 3.50 V while on battery power; never set on USB power, where the reading can be
-  the charger's), b3 streaming, b6 mtu_too_small.
+  the charger's; in the going_to_sleep STATUS it also means the sleep is IMU-off whatever its
+  reason, so a bump won't wake it, D38), b3 streaming, b6 mtu_too_small.
 - **Event bits**, set only in the one STATUS that reports the event: b4 going_to_sleep,
   b5 stream_stopped, b7 boot_mismatch.
 

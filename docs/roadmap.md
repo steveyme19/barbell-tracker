@@ -95,7 +95,8 @@ Bluetooth to the XIAO (same time as 4.1).
       cell, that unplugging USB gives no new boot and plugging it in wakes the IMU-off sleep.
       10-31: D38's firmware guards are written and compiled (the cutoff at boot, the
       IMU-not-found loop, imu_serial off without USB); flash and bench-check them
-      (firmware/README.md), and decide whether a sleep below 3.50 V should be IMU-off.*
+      (firmware/README.md). 11-01: flashed and bench-checked. 11-03: below 3.50 V on battery
+      every sleep is IMU-off (Quentin's call); compiled, bench-check it (G4).*
 - [ ] **1.6 (optional) Laser bench test.** TF-Luna on the XIAO, powered from USB 5 V.
       Point it at the floor from known heights (tape measure): noise at a fixed height,
       error vs. height (linearity), black rubber vs. a lighter surface. Gives you real

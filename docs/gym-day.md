@@ -111,9 +111,9 @@ card. So:
 ## If something goes wrong
 
 - "Pod link lost, reconnecting": wait for it to clear before the next set (the pod buffers 38 s).
-- "Pod asleep": bump the bar and wait for the banner to clear. Asleep with the IMU off (low
-  battery, IMU lost): plug in USB or press reset once through the pinhole (twice enters the
-  bootloader).
+- "Pod asleep": bump the bar and wait for the banner to clear. Asleep with the IMU off (the
+  banner says a bump won't wake it: battery low, or IMU lost): plug in USB or press reset once
+  through the pinhole (twice enters the bootloader).
 - The app died: reopen it and tap Resume. Finished sets are already saved.
 - The pod fell: check the case. Cracked or swollen means stop using it (a LiPo).
 

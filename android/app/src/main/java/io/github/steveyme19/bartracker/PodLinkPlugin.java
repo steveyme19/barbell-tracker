@@ -134,7 +134,7 @@ public class PodLinkPlugin extends Plugin {
     private final Runnable scanEnd = this::onScanEnd;
     private final Runnable autoRetry = this::autoConnect;
     private final Runnable watchdog = this::checkSilence;
-    private final Runnable setupTimeout = () -> failSetup("Couldn't reach the pod. Bump it to wake it, keep it close, and try again.");
+    private final Runnable setupTimeout = () -> failSetup("Couldn't reach the pod. Bump it to wake it (plug it in if its battery was low), keep it close, and try again.");
 
     private static final class Op {
         final PluginCall call;
@@ -363,7 +363,7 @@ public class PodLinkPlugin extends Plugin {
         if (pending == null || gatt != null) return;
         String mine = saved();
         if (best == null) {
-            failSetup("No pod found. Bump it to wake it and keep it close.");
+            failSetup("No pod found. Bump it to wake it (plug it in if its battery was low) and keep it close.");
             return;
         }
         if (mine != null && !best.getAddress().equals(mine) && !any) {

@@ -686,18 +686,24 @@ with the IMU off once it goes; imu_serial switches itself off (System OFF, the I
 whenever VBUS is absent. VBUS wakes System OFF only on its rising edge (the 10-19 `o` on USB
 stayed off), so USB plugged in during a low-battery or IMU-lost sleep's ~0.7 s setup (the red
 blinks invite it) restarts the pod instead of leaving it dark on the cable.
-*Still not guarded:* a pod asleep with motion wake is only checked when it next wakes, so one
-left untouched near empty still drains to the protection board's trip (~16 uA; weeks). Firmware
-can slow this but not stop it: System OFF's only analog wake (LPCOMP) compares against fractions
-of VDD, and VDD comes off the cell through the 3.3 V regulator, so it sags with the cell near
-empty (from the nRF52840 datasheet; unchecked on this board). Whether a sleep entered below
-LOW_BATT_WARN_V (3.50 V, the app's battery-low warning) should take the IMU-off sleep instead
-(~7 uA, about twice as long, but no wake on a bump until USB or reset) is Quentin's call, open.
-Every USB session charges now, so the P0.14 rule is always live (only flash.py builds). Charge on
-the app's battery-low warning and store the pod in the IMU-off sleep.
+*Still not guarded:* a pod asleep is only checked when it next wakes, so one left untouched near
+empty still drains to the protection board's trip. Firmware can slow this but not stop it:
+System OFF's only analog wake (LPCOMP) compares against fractions of VDD, and VDD comes off the
+cell through the 3.3 V regulator, so it sags with the cell near empty (from the nRF52840
+datasheet; unchecked on this board). *Slowed (Quentin's call, 11-03):* on battery below
+LOW_BATT_WARN_V (3.50 V, the app's battery-low warning) every sleep is the IMU-off one, whatever
+its reason (idle, lid-down, the phone's SLEEP mode 0): ~7 uA instead of ~16, about twice as long
+to the trip, at the cost of the bump wake for the last few percent of a charge (USB wakes it; the
+pinhole is behind the puck on Adapter A). One test, in goToSleep(), is the same one STATUS
+batt_low uses, so the app reads it from the going_to_sleep STATUS and its asleep banner says "a
+bump won't wake it: plug in USB"; awake, its battery-low banner says so in advance. The plug-in
+recheck now covers every sleep that began on battery. Every USB session charges now, so the
+P0.14 rule is always live (only flash.py builds). Charge on the app's battery-low warning and
+store the pod in the IMU-off sleep.
 *Open:* both sleep currents, the battery reading against a meter, the cutoff on the real cell,
 the reset-pinhole step and a clean race run (bench plan G1 steps 5 and 7), whether an unplug wakes
-the IMU-off sleep too (`o`), and the motion-wake call above. Answered 11-01: unplugging an awake pod
+the IMU-off sleep too (`o`), and the low-battery IMU-off sleep on the pod (bench plan G4, compiled
+11-03, not flashed). Answered 11-01: unplugging an awake pod
 gives no new boot, and plugging USB in wakes the IMU-off sleep with the cell on. Whether the bootloader (every upload
 and reset) leaves P0.14 floating: through the 1 MOhm that's under 1 uA into P0.31, likely fine,
 unchecked.

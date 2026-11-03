@@ -165,7 +165,8 @@ thick) has no way in for the leads: the board covers the window, and the tray's 
 tray past the fence, about 4 x 5 mm, where pod_v1 had one until 10-19.)*
 
 What a soldered cell changes:
-- **No hard off.** Off is the deep sleep (D26). The lid-down sleep wakes on any bump, so for a
+- **No hard off.** Off is the deep sleep (D26). The lid-down sleep wakes on any bump (below
+  3.50 V on battery it's the IMU-off sleep instead, D38), so for a
   bag or a shelf use the IMU-off sleep, which only USB or the reset pinhole wakes: `o` typed
   into a serial terminal that holds the port open (the Arduino Serial Monitor), or the phone's
   SLEEP mode 1 (`barDebug.podSleep(1)` from the app's devtools console, during a running pod
@@ -182,7 +183,7 @@ What a soldered cell changes:
   either way.
 - **The 3.30 V cutoff runs at every boot (10-31 firmware) and while awake, never while the pod is
   asleep.** Charge it when the app says battery
-  low, and charge it before storing it. (Estimates from datasheets, not measured: about 16 uA
+  low (from then on a sleep is IMU-off: only USB wakes it), and charge it before storing it. (Estimates from datasheets, not measured: about 16 uA
   asleep with motion wake, 7 uA with the IMU off, so a full cell lasts over a year asleep; from
   the cutoff only weeks.)
 

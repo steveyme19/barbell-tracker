@@ -868,7 +868,7 @@ export class PodWebSource extends PodSource {
   /** Why no sample came, from the latest STATUS (start()'s 10 s timeout). */
   whyNoData() {
     const st = this.stream.ep?.status;
-    if (!this.chars) return "Couldn't reach the pod. Bump it to wake it, keep it close, and try again.";
+    if (!this.chars) return "Couldn't reach the pod. Bump it to wake it (plug it in if its battery was low), keep it close, and try again.";
     if (st && (st.flags & POD.S_MTU_TOO_SMALL)) return "The pod's Bluetooth link is too small (MTU). Try again; if it stays, this browser can't carry the pod.";
     if (this.stream.faults.length) return `Pod: ${this.stream.faults.at(-1)}.`;
     return "The pod sent no data in 10 s.";

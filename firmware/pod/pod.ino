@@ -8,7 +8,8 @@
 //     PC has the serial port open, so it can't end a recording or the chip-down calibration face
 //   - low battery: below LOW_BATT_V it sleeps with the IMU off; only USB power or reset wakes it.
 //     Checked at every boot before anything else can sleep it, then every 5 s while awake;
-//     asleep it isn't checked (D38)
+//     asleep it isn't checked (D38). Below LOW_BATT_WARN_V (the app's battery-low warning) every
+//     sleep on battery is IMU-off too, so a pod left near empty drains about half as fast
 //   - charging at 100 mA (FAST_CHARGE) instead of the default 50 mA
 //   - Bluetooth (ble.ino): the PodLink v1 service, docs/ble.md. Every sample also goes into a
 //     38 s ring, and the phone streams from it and resumes after a dropout without losing samples
@@ -98,7 +99,8 @@ uint32_t usbLost = 0;                  // USB-side loss: only the '# ring' line,
 uint32_t lostBle = 0;                  // STATUS lost_overflow: the BLE stream's loss (step 5 on)
 bool sessionHold = false;              // a phone's STREAM command until STOP: long idle limit, no lid-down
 struct CtrlMsg { uint8_t len; uint8_t b[16]; };   // one CTRL write, queued from Bluefruit's task (ble.ino)
-const float LOW_BATT_WARN_V = 3.50;    // STATUS batt_low below this, on battery power only
+const float LOW_BATT_WARN_V = 3.50;    // STATUS batt_low below this, on battery power only; every
+                                       // sleep is then IMU-off (goToSleep, D38)
 uint32_t lastRingLineMs = 0;
 bool usbWasOpen = false;
 uint32_t lastPodStatusMs = 0, lastPodInfoMs = 0;
@@ -429,7 +431,12 @@ void flashDeepPowerDown() {
 // and its wake-up interrupt wakes us. Otherwise the IMU is powered off and only USB power or the
 // reset button wakes the board. reason: STATUS sleep_reason. dryRun (bench command w): everything
 // but System OFF, the phone's side included (a reset follows, which the phone sees as a wake).
+// On battery below LOW_BATT_WARN_V every sleep is IMU-off (D38, 11-03): ~7 uA instead of ~16, so a
+// pod left near empty lasts about twice as long before the protection board trips, at the cost of
+// the bump wake. The phone reads the same test as batt_low in the going_to_sleep STATUS.
 void goToSleep(bool motionWake, const char* why, uint8_t reason, bool dryRun = false) {
+  bool onBattery = !usbPowered();
+  if (onBattery && lastBattV < LOW_BATT_WARN_V) motionWake = false;
   samplerPark();                                             // sampling stops: head is final, and the
   wdtFeed();                                                 // I2C bus is loop()'s from here on
   msg.print("# sleeping: ");
@@ -504,8 +511,8 @@ void goToSleep(bool motionWake, const char* why, uint8_t reason, bool dryRun = f
   // P0.13 keeps its state too, so charging still runs at the chosen current while asleep.
   // USB plugged in during the setup above (likely: 3 red blinks say "charge me")? VBUS wakes
   // System OFF only on its rising edge, so this sleep would stay dark on the cable: start over
-  // instead. Only the battery's own reasons: the bench's o and s sleep on USB on purpose.
-  if (usbPowered() && (reason == SLEEP_LOW_BATT || reason == SLEEP_IMU_LOST)) NVIC_SystemReset();
+  // instead. Only sleeps that began on battery: the bench's o and s sleep on USB on purpose.
+  if (onBattery && usbPowered()) NVIC_SystemReset();
 
   if (motionWake) {
     systemOff(PIN_LSM6DS3TR_C_INT1, HIGH);                   // core helper: sense HIGH, then OFF
