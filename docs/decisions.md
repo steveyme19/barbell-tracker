@@ -983,6 +983,106 @@ a very soft chest touch (3 mm in 0.4 s: a paused single no card, the triple's gr
 s (no card), grinds at 0.10 m/s or slower over 3.5 s (no card, or the last rep lost), a ROM of 27 cm or less (25 cm: the working sets 3 to 4 of 6; 27 cm: one rep +44%), a 16 to 18 cm unrack with a
 soft rerack (a rep, as before).
 
+**D44 (2026-11-03): deadlifts from the floor, from the filmed 11-02 sets. A deadlift rep starts at the pod's own
+turnaround, the bottom of the bar-bend dip (Quentin's call), and nine floor rules carry it: a set-down closes at its
+first contact; a floor rest is flat to 0.2 m/s² and its height is read at the coarse low; a flat run into the window's
+end after a jolt is a coarse stop; a touch anchors where its jolt's blank ends; the start still anchors a window that
+has a rep and nothing else on the floor before its first top; live, a held-back turnaround is still a rest's
+neighbour and the open tail loses its last still's bias; on the deadlift a stop the bar moves on up out of isn't the
+rep's end. TA_FLOOR_REACH 1.0 -> 1.5 s.**
+- From the 11-02 gym session (two sets of 3 at 389 lb, both filmed). Set 2 logged no set: the hands came off the bar
+  between reps, so each rep had its own window between floor stills, and its end still began 0.4 to 0.7 s after the
+  set-down, too late for a coarse stop; the closed window zeroed the rep, and dropRackMoves took the one 9.6 cm rep
+  left. Set 1 read 6 to 11 cm long: each landing closed at its last bounce, which put +0.04 to 0.05 m/s on the pull.
+  Calibrated, set 1's rep 3 read 13.7 cm: its floor "pause" ran 1.9 s into the slow pull. The video showed the bar
+  bending too: the sleeve end (the pod) sinks 6.5 to 10 mm (mean 8.4) as the pull loads the bar, a rigid tilt of 2.2
+  to 3.5°, and stays bent through the pull. Truth is the pod's concentric from the dip's bottom (Quentin: the pod's
+  turnaround, not plate liftoff, which would read these pulls -1 to +11% faster), synced to the video on the plate's
+  spin and the clangs; ROM within 8 mm.
+- Three design workflows (11-02/03): root causes by oracle experiments; a known-answer suite at the pod's rate on 11-02's
+  measured physics (the dip in two phases, set-downs bouncing in 1 to 5 jolt runs with the rattle reading biased down,
+  grip vibration and floor hum, hitches and the grind's two stalls; 29 scenarios x 3 seeds x raw/cal = 174 runs, now
+  `analysis/make_fake_deadlift.py`); four fix families, four fixers and an integration; then skeptics (608 runs of
+  held-out physics, a sweep of every constant, a mutation table, two code reviews) and a last review of the final with
+  an adversarial verifier per lens. Scripts and results are kept in analysis/out/deadliftfix-2026-11-03/ (gitignored).
+- The rules (algorithm.md §6c numbers them), what each fixed:
+  1. First contact (LAND_GAP 0.3 s): set 1's ROM over-read, +10 to +11 cm on reps 1 and 2, +19 cm on set 2's grind.
+  2. The floor's flat test at 0.2 (TA_FLOOR_FLAT_A): the slow pull's middle as a rest (set 2 rep 2 read 7 cm without it,
+     and calibrated set 1 lost a rep).
+  3. The floor height at the coarse low: the high-pass bends a 4 s floor rest 17 to 37 cm up by its middle, so set 1 raw's
+     rests between reps never anchored (the suite's next rep -22 to -40%).
+  4. The stop into the window's end: a heavy single's still begins 0.35 s after its set-down; without it the coarse
+     velocity kept -0.8 m/s from the blanked landing and the single read 0 reps.
+  5. The touch: a touch-and-go anchor at its jolt's blank end, not the coarse low 0.13 to 0.22 s into the pull (-27 to
+     -51% on touch-and-go reps).
+  6. The start still on the floor, in a window with a coarse top, also in place of a rest whose low is within
+     TA_FLOOR_REACH of it: set 2 itself (without it rep 3 is lost raw, and the suite's count falls from 174 to 106).
+  7. Held-back neighbours (live): a rest measured against the buffer's end fails its height test while the set-down rings,
+     and the count dips for a moment at the set's close.
+  8. The open tail's bias (live; the tail and an open window still on its rest): 11.6 s of hands on the bar with no still
+     drifted into a 12 to 25 cm phantom rep before set 1's rep 1 (shown 3 s, then a dip), and sweep_v025 raw dipped too.
+     The still's mean against the drift it explains: set 2 raw -0.031 / -0.03 m/s², calibrated -0.0052 / -0.0065, set 1
+     +0.003 / +0.004 to 0.0055. Not off the rack: a squat's rack still made its walkout a 16 cm rep.
+  9. Past a hitch (the deadlift only; HITCH_V 0.1 x the peak, HITCH_ROM 8 mm, from the stop's drift floor): set 1 rep 2's
+     lockout hitch (+19% at the hitch) and set 2 rep 3's grind through two stalls (ROM -4 to -6 cm).
+- Dropped: a closed floor window's end still anchoring after a landing. Rule 4 does that work first on every file and
+  seed, so it changed nothing anywhere and no guard could hold it. Also tried and dropped: a mean or median drift floor
+  for rule 9, and a one-move cap on it (below, Open).
+- From the skeptics and the last review: TA_FLOOR_REACH 1.0 -> 1.5 (D41's: the coarse low lags the floor when no
+  set-down restarts the coarse pass, and after a slow pull's 1.2 s sink into the dip it lands 1.17 to 1.19 s after the
+  still, so the set lost its last rep; 1.3 to 2 recover 33 of the 608 held-out runs, the suite's cliff is 0.75 to 0.85);
+  rule 6 needs a coarse top in the window (a pre-set bump with no rep was anchored, and a slightly harder one moved
+  the set's floor: set 1 raw lost rep 1 at IMPACT_A 24); rule 9 on the deadlift only (a stack's squeeze or a shrug at the
+  top stops and rises too, and no stack recording hitches); rule 1 chains only within the span's second half.
+  LAND_GAP stays 0.3: 0.8 took a late re-contact (synthetic: at 0.35 s or more the chain broke, ROM +16 to +49 cm) but
+  made a jolt in the descent the landing, and the real data have those, not late re-contacts (10-31 rep 3 has a
+  15 m/s² spike 0.75 s before its first contact; slightly harder, it read ROM -15 cm at 0.8).
+- Against the video (every rep within 8% MCV and 3 cm ROM, each set's mean within 5%): set 1 calibrated -1/+1/+6% (ROM
+  -0.5/-1.1/-0.5 cm), set 2 raw +1/-4/+2% (+1.2/-2.8/+0.9 cm) and calibrated +3/-2/-3% (-1.9/-1.6/-1.4 cm); set 1 raw
+  -1/+3/+11% (-0.3/+0.7/+5.1 cm). Before D44: set 1 +15/+18/+13% (ROM +6 to +11 cm), calibrated 2 of 3 reps, set 2 no
+  set. Set 1 raw's rep 3 (+11%, +5.1 cm) is mostly the uncalibrated pod's accel x/y bias, turned onto the vertical by
+  the set-down's roll of the sleeve: correcting that bias alone gives +6.4% (-0.3 cm); HEAD read it +13% (+6.2 cm).
+  Live, neither set dips or runs ahead.
+- On the suite the count is right in 174 of 174 runs (76 before), the card in 64 (9), the live view in 134 (18); on
+  the held-out physics (608 runs, seeds 4 to 7) the count in 560 (126), the card in 149 (0), and live at seed 4 in
+  105 of 152 (HEAD 2). The 10-31 deadlift reads as before (worst -1.3%), and no squat, bench or phone result moved
+  (the bench canon: 0 of 180 runs). 31 of the 1,117 older judge results changed, all on floor lifts:
+  deadlift_creep and deadlift_soft (two reps 2% slower, each closer to its exact answer: +2.7 -> +1.0%, +2.8 -> +1.1%),
+  and the open tail's bias on cut files (the 10-23 deadlift's 0 cm sixth "rep" gone, the lat-raise cuts find the reps
+  the whole file has and its live count no longer dips, garbage tail reps on fake_session_squat [machine] gone).
+- The cost: set 2 raw's rep 2 reads -4% (ROM -2.8 cm) where it read -3% (-2.0 cm) before TA_FLOOR_REACH 1.5, rep 1
+  moving from +4% to +1%. A bump of 5 to 14 cm in the setup stays 0 reps, as on HEAD (rule 6 needs a coarse top).
+*Why:* the deadlift's floor is where every one of these errors lives, and each rule is the floor's physics: the bar
+lands at its first contact, rests flat, rests where the coarse low says, comes to rest when the jolt stops, turns at its
+touch, leaves from the still it stood in, and drifts by what its last still read. A hitch is the lifter's, not the
+sensor's. Squat and bench never enter a floor branch, so they read exactly as before (bit for bit on 8,508 runs).
+*Guarded by* parity.mjs: make_fake_deadlift.py's GUARDS (8 scenarios, a row per sensor: session against each
+_truth.json with per-rep MCV and ROM, and live), and both 11-02 sets raw (rep parity whole, cut at 45%, 70% and inside set
+2's second window at 42.75 s; session against the video at 8%/3 cm a rep but set 1's rep 3 at 13%/6 cm, the raw sensor;
+live with the MCVs, set 1's rep 3 not held). A missing guard file fails. Each rule reverted alone fails guards (the D44
+workflow's mutation table, on the guard set's Python side): first contact 20 (reset_fast5 -16 to -35%, set 1 raw
++24%), the flat test 15 (held3_quiet 2 of 3, set 1 raw rep 3 +17%), the floor height 8 (held3_one raw rep 2 -40%,
+held3_hitch raw +15%), the stop into the window's end 7 (single_heavy 0 reps, set 2 raw 1 of 3), the touch 3 (tng5's
+reps 2 to 5 -27 to -51%), the start still 7 (single_heavy 0 reps, set 2 raw 2 of 3), held-back neighbours 1
+(held3_quiet raw live: a dip), the tail's bias 3 (live: sweep_v025 raw a dip and 10 passes off, set 1 raw a dip), past
+a hitch 8 (held3_hitch raw +18%, set 1 raw rep 2 +19%) and its drift floor 2 (held3_hitch raw +18%, session and
+live); and TA_FLOOR_REACH back at 1.0 fails reset_sink12_hold0 (2 of 3, raw and calibrated; at 1.5 seeds 1 to 7 count
+right, 28 of 28).
+*Open:* the hitch rule can walk a rep's end through a lockout hold that sways and drifts up (synthetic: a 0.6 to 2 s hold,
+drift +0.01 to +0.03 m/s, sway 0.035 to 0.05 m/s at 2.5 Hz: -22 to -48%); the nearest recorded lockout, 10-23 rep 1,
+clears HITCH_V (0.12 x its peak) and stops about 3 mm short of HITCH_ROM; a one-move cap halves it but changes nothing
+measured, and no local test told a sway from a hitch. A late re-contact past LAND_GAP breaks the first-contact chain
+(above); a prototype bound (a step past 0.3 s only to a jolt run at least 0.7 x the chain's hardest) took both it and
+the descent spike. TA_FLOOR_FLAT_A has a narrow window (0.19 to 0.23 pass everything). Before D44 and still: a fidgety
+floor before the set and a quiet still after it set noise-matched still limits that every rest between reps fails, and
+the set is zeroed (16 of 406 suite runs at seeds 4 to 10); a set-down soft enough that the gyro stays under 100 deg/s
+never redoes its window (unmeasured: every real one reads 300 to 1130); slow touch-and-go and touch-and-go after a
+reset are miscounted; a fast rep after a hands-on rest reads -45% raw (0% calibrated). Rule 5 is unproven on a real
+touch-and-go recording. The suite's floor break is 4 to 10x calmer than 11-02's, so its card misses partly overstate
+the real error (a still straddling the dip bottom is the largest single cause; the raw x/y bias and a start walk that
+halts on a lull, both in the real sets too, come next); with real-sized break vibration one reset set logs 0 reps (not
+investigated). Slow reset pulls over-read with pull time (+8 to +14% at 3 s, raw). The end walk (D43 Open) still.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

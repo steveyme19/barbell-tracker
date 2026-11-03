@@ -34,18 +34,40 @@ firmware (bench-checked 11-01), and a bench section. Updated 2026-11-02: the ben
 
 ## Every set
 
-- **Before the first rep:** after the walkout (squat) or the setup (deadlift), stand still for
-  2 s. Skip the old roll-the-bar gesture.
+- **Before the first rep:** squat, stand still 2 s after the walkout; deadlift, the bar still on
+  the floor 2 s before you grip it (see Deadlift below). Skip the old roll-the-bar gesture.
 - **After the last rep:** squat, hold lockout 1 s, then walk in. Deadlift, leave the bar still on
   the floor for 2 to 3 s. Then **hands off the pod until the double buzz** (about 15 s), then take it
   off for plates. Touching it sooner adds a fake slow rep (a 10-31 test set did exactly this).
-- **Deadlifts:** dead stop, about 1 s on the floor each rep, lowered under control. No drops: the
-  IMU clips at 8 g and the magnets can let go. Don't roll the bar between reps.
+- **Deadlifts:** lowered under control, no drops: the IMU clips at 8 g and the magnets can let go.
+  Don't roll the bar between reps. More below.
 - **RPE:** decide it before looking at the phone, then type it on the set's card. 10 only for a
   true set to failure (squat only, safeties set). No deadlift sets to failure.
 - **Notes on paper:** anything odd (a set with no card within about 20 s, a missed rep, a
   phantom set). **Don't tap "Not a set"**: it deletes the raw file. Since 10-31 a segment the app
   drops is saved anyway as `drop-*.csv`.
+
+## Deadlift (updated 2026-11-03, D44)
+
+Since D44 both filmed 11-02 sets read right against the video. The app reads raw today (no pod
+calibration installed): set 1 -1/+3/+11%, set 2 +1/-4/+2% a rep (calibrated -1/+1/+6% and
++3/-2/-3%). That covers hands on the bar between reps or letting go (11-02's set 2, which logged no
+set before), slow heavy pulls, a hitch at lockout and a grind through two stalls. What's left:
+- Raw, a rep after a set-down that turns the sleeve can read about 11% high and 5 cm long (11-02
+  set 1 rep 3: the accel's x/y bias), until a real calibration run (puck off) is installed.
+- A heavy single reads right on synthetic sets calibrated, but raw about +15% (ROM +10 cm).
+- Touch-and-go is synthetic only and only fast: slow touch-and-go, or touch-and-go after letting go
+  of the bar, can miscount.
+
+So:
+- **Dead stops, hands on or off between reps:** both read right. Let go of the bar between reps if
+  you want to; reset your grip as usual. Touch-and-go only fast, and check the count.
+- **Before the first rep:** leave the bar still on the floor for 2 s before you grip it. A long setup
+  with your hands on the bar and no still is corrected now, but the still is the cleaner start.
+- **After the last rep:** as before, 2 to 3 s still on the floor, hands off the pod until the double
+  buzz.
+- **Film the sets** as for bench (below): the plate square to the camera, rim to rim, the whole set.
+- **Read the closed card,** not the live numbers.
 
 ## Bench (added 2026-11-01, from synthetic sets: no real bench recording yet)
 

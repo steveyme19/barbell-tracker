@@ -371,10 +371,10 @@ for every lift but phone at 150 Hz or more (on |a| wherever there's no vertical)
    - the lift's resting turnarounds are the anchors (lockouts; the floor for a deadlift). A pause
      (0.25 s or more with the 0.37 s-averaged acceleration under 0.5, not a coast by §5's local
      test, at the turnaround's height) anchors on its own average velocity; a touch-and-go top on
-     the coarse zero crossing. On the floor a pause may end up to 1.0 s before the coarse low
-     (D41): rep 1 is pulled after a setup with no set-down jolt to restart the coarse pass, so the
-     high-pass bends the height down into the pull and the low lands late, at a hitch just off the
-     floor;
+     the coarse zero crossing. On the floor a pause may end up to 1.5 s before the coarse low
+     (D41; 1.0 until D44): rep 1 is pulled after a setup with no set-down jolt to restart the coarse
+     pass, so the high-pass bends the height down into the pull and the low lands late, at a hitch
+     just off the floor, or 1.2 s after the still when a slow pull sinks into the bar-bend dip first;
    - §6's straight line runs span by span between neighbouring anchors; a floor lift closes on
      height at the landing (the bar is back on the floor); before the first anchor and after the
      last is the unrack, walkout, walk-in and rerack: v = 0, no reps there. A squat or bench set
@@ -445,6 +445,66 @@ fast touch-and-go reps with lockout pauses read low (about -4 to -8% at 0.8 m/s,
 1.0 to 1.15 m/s warm-up at a 32 cm ROM, -10% at 44 cm), because a sharp lockout now anchors on the
 hold and §8's end walk follows a slowly decaying residual into the pause (rep ends 29 to 47 ms
 late). That's next (D43 Open).
+
+**Deadlift from the floor (D44).** The 11-02 gym deadlifts (two sets of 3 at 389 lb, filmed)
+broke the floor rules. Set 2 logged no set: the hands came off the bar between reps, so each rep
+had its own window between floor stills, its end still began 0.4 to 0.7 s after the set-down (too
+late for a coarse stop), and the closed window zeroed the rep. Set 1 read 6 to 11 cm long: each
+landing was closed at its last bounce. Calibrated, set 1's rep 3 read 13.7 cm: its floor "pause"
+ran 1.9 s into the slow pull. The video also shows the bar bending: the sleeve end (the pod) sinks
+6.5 to 10 mm as the pull loads the bar (the sleeve pitches 2.2 to 3.5°) and stays bent through the
+pull. A deadlift rep starts at the pod's own turnaround, the bottom of that dip (v = 0), not at
+plate liftoff, so the truth is the pod's concentric. `make_fake_deadlift.py` builds sets with an
+exact answer on 11-02's measured physics (the dip, set-downs that bounce and whose rattle reads
+biased down, grips and floor hum, hitches and stalls, hands on or off between reps, touch-and-go).
+Nine rules, all for lifts that rest on the floor (the deadlift; a machine stack rests at the bottom
+too and gets all but the last):
+1. **First contact.** A set-down is one landing from its first contact: jolt runs that end within
+   0.3 s of the next one's onset (LAND_GAP) are the same set-down, and the span closes on height
+   there, not at the last bounce (that put +0.01 to 0.05 m/s, up to 19 cm, on the pull that landed;
+   the bounces are 9 to 57 ms apart). Not longer: a jolt in the descent within it would become the
+   landing.
+2. **The floor's flat test is 0.2 m/s²** (TA_FLOOR_FLAT_A), not 0.5: a slow pull's middle averages
+   under 0.5 for over a second.
+3. **Its height at the coarse low.** A floor rest's height check reads the run where it's nearest
+   the low, not its middle: the high-pass bends a 4 s rest up 17 to 37 cm by its middle, so the
+   rests between set 1's raw reps never anchored.
+4. **A stop into the window's end.** A flat run after a blanked jolt that reaches the window's end
+   is a stop however short (a heavy single's still begins 0.35 s after its set-down; without it the
+   coarse pass read the descent as rising and found 0 reps). So the end still needs no rule of its
+   own: the set-down before it has its coarse stop.
+5. **The touch.** A touch-and-go anchor sits at the end of the touch's coarse blank, not at the
+   coarse low, which lags the touch by 0.13 to 0.22 s into the pull (the bar already rising at about
+   0.4 m/s: -27 to -51%).
+6. **The start still.** In a window with a coarse top (a bump in the setup isn't a rep, and mustn't
+   move the floor), it anchors when nothing anchors the floor before that top, and it takes over a
+   rest whose low is within TA_FLOOR_REACH (1.5 s) of it (without it set 2 raw loses rep 3, and the
+   suite's count falls from 174 to 106).
+7. **Held-back neighbours** (live). A turnaround the open window's wait holds back is still a rest's
+   neighbour: its height is real, only its confirmation is late (else the count dips for a moment
+   at the set's close).
+8. **The open tail's bias** (live). On the floor the motion after the last still is integrated less
+   that still's mean acceleration, the pod's offset where the bar rested, and so is an open
+   turnaround window that still sits on that rest. Set 1's 11.6 s of hands on the bar with no still
+   drifted into a 12 to 25 cm phantom rep, shown for 3 s before rep 1 began, then dropped (a dip);
+   a squat's rack still would make its walkout a rep, so not off the rack.
+9. **Past a hitch** (the deadlift). A stop near the top that the bar moves on up out of (back over
+   0.1 x the rep's peak and up 8 mm or more, HITCH_V and HITCH_ROM, counted from the stop's drift
+   floor) isn't the rep's end: set 1's rep 2 hitches 1.2 cm under lockout and set 2's rep 3 grinds
+   through two stalls. Not a stack, which shows no hitches to go on.
+
+Against the video (the pod's concentric; budget 8% MCV and 3 cm ROM a rep, 5% on the set's mean):
+set 1 calibrated -1/+1/+6% (ROM -0.5/-1.1/-0.5 cm), set 2 +1/-4/+2% raw (ROM +1.2/-2.8/+0.9 cm)
+and +3/-2/-3% calibrated (ROM -1.9/-1.6/-1.4 cm), all inside. Before D44: set 1 +15/+18/+13% (ROM
++6 to +11 cm), set 1 calibrated 2 of 3 reps, set 2 no set. Set 1 raw is right but for rep 3 (+11%,
++5.1 cm), which is mostly the uncalibrated pod's accel x/y bias: correcting that alone takes it to
++6.4% (-0.3 cm), and the calibration (D42) cures it. Live, no real set dips or runs ahead. On the
+suite (29 scenarios x 3 seeds, raw and calibrated: 174 runs) the count is right in 174 (76 before),
+the card in 64 (9), the live view in 134 (18); on held-out physics (608 runs) the count in 560
+(126), the card in 149 (0). The 10-31 deadlift reads as before (worst -1.3%), and bench and squat
+are untouched. The largest share of the suite's remaining card misses is its own: the fakes are 4 to
+10x calmer than 11-02 as the bar breaks the floor, so a still straddles the dip bottom; next come
+the raw x/y bias and a start walk that halts on a lull, which the real sets show too (D44 Open).
 
 ## 7. Turnarounds are outputs, never anchors
 

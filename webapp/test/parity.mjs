@@ -45,6 +45,48 @@ const BENCH_GUARDS = [
   ["tng_light_r32_pause", 1, 0.12, 0.07],
   ["bounce_16g", 1, 0.12, 0.07],
 ];
+// make_fake_deadlift.py's GUARDS (D44): [scenario, seed, sensor, per-rep MCV tolerance, set mean tolerance, ROM
+// tolerance (m) or none]. A row per sensor: raw reads a slow pull high (the pod's accel bias, which its calibration
+// takes out: single_heavy +15%, ROM +10 cm raw, 0% calibrated). Each D44 rule reverted alone fails one of these or a
+// real 11-02 set below (decisions.md D44)
+const DEADLIFT_GUARDS = [
+  ["held3_quiet", 1, "raw", 0.12, 0.07],         // the floor's flat test: 2 of 3
+  ["held3_quiet", 1, "cal", 0.08, 0.05, 0.02],
+  ["single_heavy", 1, "raw", 0.20, 0.20],        // the start still, the stop into the window's end: 0 reps
+  ["single_heavy", 1, "cal", 0.05, 0.05, 0.02],
+  ["held3_hitch", 1, "raw", 0.09, 0.06],         // past a hitch and its drift floor: +18%; the floor height: +15%
+  ["held3_hitch", 1, "cal", 0.06, 0.04, 0.02],
+  ["tng5", 1, "raw", 0.05, 0.03, 0.025],         // the touch: reps 2 to 5 -27 to -51%
+  ["tng5", 1, "cal", 0.07, 0.03, 0.02],
+  ["sweep_v025", 1, "raw", 0.05, 0.04],          // the open tail's bias (live, below)
+  ["sweep_v025", 1, "cal", 0.05, 0.03, 0.02],
+  ["held3_one", 1, "raw", 0.09, 0.06],           // the floor height test: rep 2 -40%
+  ["held3_one", 1, "cal", 0.06, 0.05, 0.02],
+  ["reset_fast5", 1, "raw", 0.05, 0.03, 0.02],   // first contact: -16 to -35%
+  ["reset_fast5", 1, "cal", 0.05, 0.03, 0.02],
+  ["reset_sink12_hold0", 4, "raw", 0.08, 0.05],  // TA_FLOOR_REACH 1.5: at 1.0 the last rep is lost (2 of 3)
+  ["reset_sink12_hold0", 4, "cal", 0.08, 0.05],
+];
+// ... live: [scenario, seed, sensor, check the shown MCV, offMax]
+const DEADLIFT_LIVE = [
+  ["held3_quiet", 1, "raw", false],   // held-back neighbours: without them the count goes 3, 2, 3 at the set's close
+  ["held3_quiet", 1, "cal", true],
+  ["held3_hitch", 1, "raw", true],
+  ["single_heavy", 1, "cal", true],
+  ["tng5", 1, "cal", true],
+  ["sweep_v025", 1, "raw", true, 4],  // the open tail's bias: a dip and 10 passes off without it
+  ["held3_one", 1, "raw", true],
+];
+const DL_FILE = ([name, seed, sensor]) => `analysis/data/fake_deadlift_${name}_s${seed}_${sensor}.csv`;
+// 2026-11-02 at the gym (D44), filmed: truth is the pod's own concentric (from the bar-bend dip's bottom, v = 0, to
+// lockout), synced to the video. Set 1 kept hands on the bar between reps, set 2 let go (the app logged no set)
+const G1102 = "analysis/data/gym-2026-11-02";
+const SET1102_1 = `${G1102}/session-2026-11-02-110601/bar-deadlift-2026-11-02-1106-set01.csv`;
+const SET1102_2 = `${G1102}/session-2026-11-02-110916/drop-deadlift-2026-11-02-1109-111239.csv`;
+const TRUTH1102 = {
+  [SET1102_1]: { mcv: [0.2459, 0.2012, 0.1936], rom: [0.4345, 0.4427, 0.4519], tops: [50.147, 56.214, 64.015] },
+  [SET1102_2]: { mcv: [0.2389, 0.2123, 0.1424], rom: [0.4300, 0.4246, 0.4510], tops: [32.744, 40.412, 49.012] },
+};
 
 const defaults = [
   "analysis/data/fake_reps_pause.csv",
@@ -73,6 +115,11 @@ const defaults = [
   "analysis/data/fake_motion_deadlift_soft.csv",   // set-downs the gyro doesn't confirm still land the bar (D43)
   // make_fake_bench.py's guard set (D43), calibrated: paused, racked and bounced bench at the pod's rate
   ...BENCH_GUARDS.map(([name, seed]) => `analysis/data/fake_bench_${name}_s${seed}_cal.csv`),
+  // make_fake_deadlift.py's guard set (D44), raw and calibrated, and the 11-02 deadlifts; set 2 also cut inside
+  // its second rep's window (live, the set-down still ringing)
+  ...DEADLIFT_GUARDS.map(DL_FILE),
+  SET1102_1,
+  [SET1102_2, "deadlift", { cuts: [42.75] }],
   ["analysis/data/fake_session_squat.csv", "squat"],     // a whole session as one analysis: rests, guards
   ["analysis/data/fake_session_squat.csv", "machine"],
   ["analysis/data/gym-2026-10-31/session-2026-10-31-142804/bar-deadlift-2026-10-31-1428-set01.csv", "free"],   // no rack cut (TA_RACKED)
@@ -220,14 +267,36 @@ const sessions = [
   // a floor lift lands on every jolt, not only the impacts (rep 3 read +31% when it didn't)
   ["analysis/data/fake_motion_deadlift_soft.csv", ["deadlift"], [6], [[0.4194, 0.3732, 0.4370, 0.3636, 0.3400, 0.3537]], { tol: 0.05, mean: 0.03 }],
 ];
+// A guard's truth: its CSV and _truth.json come from a generator, and a missing one fails (a skip would hide the guard)
+function guardReps(rel, gen) {
+  if (process.argv.length > 2) return null;
+  const csv = path.resolve(ROOT, rel), tj = csv.replace(/\.csv$/, "_truth.json");
+  if (existsSync(csv) && existsSync(tj)) return JSON.parse(readFileSync(tj, "utf8")).reps;
+  failures++;
+  console.log(`FAIL guard missing: ${rel} (run python analysis/${gen})`);
+  return null;
+}
 // make_fake_bench.py's guards (BENCH_GUARDS), raw and calibrated, against each file's own _truth.json
 for (const [name, seed, tol, mean, rom] of BENCH_GUARDS) {
   for (const sensor of ["raw", "cal"]) {
     const rel = `analysis/data/fake_bench_${name}_s${seed}_${sensor}.csv`;
-    const tj = path.resolve(ROOT, rel.replace(/\.csv$/, "_truth.json"));
-    const reps = existsSync(tj) ? JSON.parse(readFileSync(tj, "utf8")).reps : null;
-    sessions.push(reps ? [rel, ["bench"], [reps.length], [reps.map((r) => r.mcv)], { tol, mean, rom, roms: [reps.map((r) => r.rom)] }] : [rel, ["bench"]]);
+    const reps = guardReps(rel, "make_fake_bench.py");
+    if (reps) sessions.push([rel, ["bench"], [reps.length], [reps.map((r) => r.mcv)], { tol, mean, rom, roms: [reps.map((r) => r.rom)] }]);
   }
+}
+// make_fake_deadlift.py's guards (DEADLIFT_GUARDS), each sensor its own row, against each file's own _truth.json
+for (const g of DEADLIFT_GUARDS) {
+  const [, , , tol, mean, rom] = g;
+  const rel = DL_FILE(g);
+  const reps = guardReps(rel, "make_fake_deadlift.py");
+  if (reps) sessions.push([rel, ["deadlift"], [reps.length], [reps.map((r) => r.mcv)], { tol, mean, rom, roms: [reps.map((r) => r.rom)] }]);
+}
+// the 11-02 deadlifts against the video, raw (the app had no calibration), each rep at the video's budget (8%, 3 cm,
+// the mean 5%) but set 1's rep 3, which reads +11%, ROM +5 cm: the uncalibrated pod's accel x/y bias, which the
+// set-down's turn of the sleeve puts on the vertical (+6%, -0.5 cm calibrated). Set 2's rep 2 reads ROM -2.8 cm (-2.0
+// before TA_FLOOR_REACH 1.5, D44): a trip there by a few mm is that known edge
+for (const [rel, tol, rom] of [[SET1102_1, [0.08, 0.08, 0.13], [0.03, 0.03, 0.06]], [SET1102_2, 0.08, 0.03]]) {
+  sessions.push([rel, ["deadlift"], [3], [TRUTH1102[rel].mcv], { tol, mean: 0.05, rom, roms: [TRUTH1102[rel].rom] }]);
 }
 for (const [rel, lifts, expect, truth, opt] of process.argv.length > 2 ? [] : sessions) {
   const file = path.resolve(ROOT, rel);
@@ -280,11 +349,12 @@ for (const [rel, lifts, expect, truth, opt] of process.argv.length > 2 ? [] : se
     if (want === undefined) return;
     const err = (r.mcv - want) / want;
     if (Math.abs(err) > Math.abs(worstTruth)) worstTruth = err;
-    if (Math.abs(err) > (opt?.tol ?? MCV_TRUTH)) problems.push(`known answer: set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(3)} vs true ${want.toFixed(3)} (${(err * 100).toFixed(1)}%)`);
+    const tol = Array.isArray(opt?.tol) ? opt.tol[j] : opt?.tol ?? MCV_TRUTH;   // one for the set, or one a rep
+    if (Math.abs(err) > tol) problems.push(`known answer: set ${k + 1} rep ${j + 1} MCV ${r.mcv.toFixed(3)} vs true ${want.toFixed(3)} (${(err * 100).toFixed(1)}%)`);
   }));
   if (opt?.rom) js.forEach((s, k) => s.reps.forEach((r, j) => {
     const want = opt.roms[k]?.[j];
-    if (want !== undefined && Math.abs(r.rom - want) > opt.rom) problems.push(`known answer: set ${k + 1} rep ${j + 1} ROM ${r.rom.toFixed(3)} vs true ${want.toFixed(3)} m`);
+    if (want !== undefined && Math.abs(r.rom - want) > (Array.isArray(opt.rom) ? opt.rom[j] : opt.rom)) problems.push(`known answer: set ${k + 1} rep ${j + 1} ROM ${r.rom.toFixed(3)} vs true ${want.toFixed(3)} m`);
   }));
   if (truth && opt?.mean) js.forEach((s, k) => {
     if (!truth[k]) return;                // a set the truth doesn't have: the count check reports it
@@ -338,6 +408,22 @@ for (const [name, seed] of BENCH_GUARDS) {
     if (existsSync(tj)) live.push([rel, "bench", JSON.parse(readFileSync(tj, "utf8")).reps.length, { dips: LIVE_DIPS[name] ?? 0 }]);
   }
 }
+// make_fake_deadlift.py's guards live (D44) and the 11-02 deadlifts, raw: never ahead, no dip. Set 1's rep 3 isn't
+// held to its MCV (null: the raw sensor, above). Set 2's 11 off passes: reps 1 and 2 shown 13 to 20% low through each
+// lowering, from about 0.5 s after the lockout until the set-down's still anchors the rep's end, and one at 39.5 s
+// (rep 1 read again during rep 2's pull)
+for (const g of DEADLIFT_LIVE) {
+  const [, , , checkMcv, offMax] = g;
+  if (offMax !== undefined && !checkMcv) throw new Error(`DEADLIFT_LIVE ${g}: an offMax needs the MCV check`);
+  const rel = DL_FILE(g);
+  const tj = path.resolve(ROOT, rel.replace(/\.csv$/, "_truth.json"));
+  if (!existsSync(tj)) continue;                     // its session row above has failed already
+  const reps = JSON.parse(readFileSync(tj, "utf8")).reps;
+  const off = offMax === undefined ? {} : { lockouts: reps.map((r) => r.t_end), offMax };
+  live.push([rel, "deadlift", reps.length, checkMcv ? { mcv: reps.map((r) => r.mcv), ...off } : {}]);
+}
+live.push([SET1102_1, "deadlift", 3, { mcv: [...TRUTH1102[SET1102_1].mcv.slice(0, 2), null], lockouts: TRUTH1102[SET1102_1].tops, offMax: 1 }]);
+live.push([SET1102_2, "deadlift", 3, { mcv: TRUTH1102[SET1102_2].mcv, lockouts: TRUTH1102[SET1102_2].tops, offMax: 13 }]);
 for (const [rel, lift, final, { ahead = 0, dips: allowed = 0, mcv: truthMcv = null, lockouts = null, offMax = 0 } = {}] of process.argv.length > 2 ? [] : live) {
   const file = path.resolve(ROOT, rel);
   if (!existsSync(file)) { console.log(`skip (not found): ${rel}`); continue; }
@@ -355,16 +441,17 @@ for (const [rel, lift, final, { ahead = 0, dips: allowed = 0, mcv: truthMcv = nu
     counts.push(rr.length);
     if (rr.length) (shown[rr.length - 1] ??= []).push(Math.round(rr[rr.length - 1].mcv * 1000) / 1000);
     const j = rr.length - 1;
-    if (lockouts && j >= 0 && j < lockouts.length && T - rec.t[0] >= lockouts[j] + 0.3 && Math.abs(rr[j].mcv / truthMcv[j] - 1) > LIVE_OFF) off++;
+    if (lockouts && j >= 0 && j < lockouts.length && truthMcv[j] !== null && T - rec.t[0] >= lockouts[j] + 0.3 && Math.abs(rr[j].mcv / truthMcv[j] - 1) > LIVE_OFF) off++;
   }
   const dips = counts.filter((c, i) => i && c < counts[i - 1]).length;
   const most = Math.max(...counts);
   const mode = (xs) => xs.reduce((best, x) => (xs.filter((y) => y === x).length > xs.filter((y) => y === best).length ? x : best), xs[0]);
-  const held = truthMcv ? truthMcv.map((want, k) => (shown[k] ? mode(shown[k]) / want - 1 : null)) : [];
-  const offMcv = held.filter((e) => e === null || Math.abs(e) > LIVE_MCV);
+  // a rep whose truth is null isn't held to its MCV (undefined); one never shown is a failure (null)
+  const held = truthMcv ? truthMcv.map((want, k) => (want === null ? undefined : shown[k] ? mode(shown[k]) / want - 1 : null)) : [];
+  const offMcv = held.filter((e) => e !== undefined && (e === null || Math.abs(e) > LIVE_MCV));
   const bad = dips > allowed || most > final + ahead || counts.at(-1) !== final || offMcv.length > 0 || (lockouts && off > offMax);
   if (bad) failures++;
-  const heldNote = (truthMcv ? `, shown MCV vs truth ${held.map((e) => (e === null ? "none" : `${(e * 100).toFixed(1)}%`)).join(" ")}` : "") +
+  const heldNote = (truthMcv ? `, shown MCV vs truth ${held.map((e) => (e === undefined ? "-" : e === null ? "none" : `${(e * 100).toFixed(1)}%`)).join(" ")}` : "") +
     (lockouts ? `, ${off} passes after a lockout showing it over ${LIVE_OFF * 100}% off (allowed ${offMax})` : "");
   console.log(`${bad ? "FAIL" : "PASS"} live ${path.basename(rel)} [${lift}]: ${counts.length} passes, final ${counts.at(-1)} (want ${final}), most ${most}, dips ${dips} (allowed ${allowed})${heldNote}`);
 }

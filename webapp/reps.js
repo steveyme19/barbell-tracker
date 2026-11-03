@@ -24,6 +24,8 @@ export const SETTINGS = {
   V_STOP_FRAC: 0.03,     // look for a rep's start/end where v <= this x its peak, then walk on while v
                          // keeps falling: to v = 0, or to where a too-short pause's drift floor begins (D32)
   WALK_MIN_FS: 150,      // Hz: the walk needs v smooth near zero; Chrome's 60 Hz wobbles there (D32)
+  HITCH_V: 0.1,          // a stop near the top the bar moves on up out of, faster than this x the peak, ...
+  HITCH_ROM: 0.008,      // m: ... rising this much, was a hitch or a grind's stall, not the end (D44)
   STICK_SMOOTH: 0.05,    // s: velocity averaged over this before looking for the sticking dip
   STICK_PROM: 0.10,      // the dip sits this x the rep's peak below the lower peak around it (provisional, 5.3)
   STICK_RANGE: [0.10, 0.90],   // ... between these fractions of the ROM
@@ -53,13 +55,16 @@ export const SETTINGS = {
   TA_FLAT_A: 0.5,        // m/s^2  this of 0
   TA_PAUSE: 0.25,        // s: a flat stretch this long next to a turnaround can be a pause ...
   TA_REACH: 0.5,         // s: ... if it reaches to within this of the coarse turnaround ...
-  TA_FLOOR_REACH: 1.0,   // s: ... or, on the floor, ends within this before it (rep 1's low lands at a hitch)
+  TA_FLOOR_REACH: 1.5,   // s: ... or, on the floor, ends within this before it (rep 1's low lands at a hitch,
+                         //    a slow pull's after the bar-bend dip's sink 1.2 s late, D44)
   TA_COAST_DV: 0.35,     // m/s: ... isn't a coast (speed changes of opposite sign, both over this) ...
   TA_NEAR_FRAC: 0.4,     // ... and is at the turnaround's height (within this x the bigger move)
   TA_HOLD_V: 0.03,       // m/s: ... and the coarse height moves through it slower than this (D43)
   TA_EDGE: 0.25,         // s: the first/last pause's anchor averages 2 x this next to the set (and a
                          //    lockout that ends TA_START_DROP lower than it started or under its top, D43)
   TA_START_DROP: 0.005,  // m: ... on the coarse height
+  TA_FLOOR_FLAT_A: 0.2,  // m/s^2: on the floor a rest is flat to this, not TA_FLAT_A (a slow pull's middle, D44)
+  LAND_GAP: 0.3,         // s: jolt runs this close are one set-down, closed at its first contact (D44)
   TA_SET_EDGE: 3.0,      // s: a window still this close to the first/last anchor is part of the set
   // The vertical (D40): bar lifts at the pod's rate use the acceleration along up (Madgwick, D33)
   VERTICAL_FS: [150, 300],   // Hz: only at the pod's rate (a 402 Hz hand-held phone stays on |a|)
@@ -454,7 +459,7 @@ function verticalAccel(t, acc, gyro, runs, fs, S) {
 }
 
 /** Velocity with straight-line drift removed between each pair of still periods. */
-export function velocityBetweenAnchors(a, t, fs, runs) {
+export function velocityBetweenAnchors(a, t, fs, runs, floor = false) {
   const v = new Float64Array(a.length);
   const windows = [];
   for (let k = 0; k + 1 < runs.length; k++) {
@@ -474,9 +479,15 @@ export function velocityBetweenAnchors(a, t, fs, runs) {
   for (const x of tail) maxAbs = Math.max(maxAbs, Math.abs(x));
   if (tail.length > 0.2 * fs && maxAbs > 0.5) {
     const tw = t.slice(last).map((x) => x - t[last]);
-    const vRaw = integrate(tail, tw);
+    // on the floor less the last still's own average: the sensor's offset where the bar rested (D44, see reps.py)
+    let bias = 0;
+    if (floor) {
+      for (let i = runs[runs.length - 1][0]; i <= last; i++) bias += a[i];
+      bias /= last + 1 - runs[runs.length - 1][0];
+    }
+    const vRaw = integrate(tail.map((x) => x - bias), tw);
     for (let i = 0; i < vRaw.length; i++) v[last + i] = vRaw[i];
-    windows.push({ i0: last, i1: a.length - 1, dur: tw[tw.length - 1], rawEnd: NaN, anchored: false });
+    windows.push({ i0: last, i1: a.length - 1, dur: tw[tw.length - 1], rawEnd: NaN, anchored: false, bias });
   }
   return { v, windows };
 }
@@ -712,7 +723,8 @@ function findPause(a, t, xc, k, lo, hi, fs, flat, floor, first, last, S) {
     if (into * out < 0 && Math.min(Math.abs(into), Math.abs(out)) > S.TA_COAST_DV) continue;
     // a lockout's coarse height doesn't move through it (TA_HOLD_V); before the first rep or after the
     // last, a run that passes that needs no height check (see reps.py, D43)
-    const mid = Math.floor((rs + re) / 2);
+    // on the floor the height is read where the run is nearest k: the high-pass bends a long rest up by its middle (D44)
+    const mid = floor ? Math.min(Math.max(k, rs), re) : Math.floor((rs + re) / 2);
     const slow = Math.abs(xc[re] - xc[rs]) <= S.TA_HOLD_V * (t[re] - t[rs]);
     const outer = !floor && slow && ((first && mid <= k) || (last && mid >= k));
     if (!outer && Math.abs(xc[mid] - xc[k]) > S.TA_NEAR_FRAC * move) continue;
@@ -731,7 +743,7 @@ function confirmedAt(x, k, minMove) {
 
 /** span_velocity() in reps.py: raw velocity less a straight line through the two anchors' zeros;
  * on a floor lift (hit given) the span closes on height at the landing instead. */
-function spanVelocity(vr, tw, s, e, vs, ve, hit = null) {
+function spanVelocity(vr, tw, s, e, vs, ve, hit, S) {
   const tt = Float64Array.from(tw.subarray(s, e + 1), (x) => x - tw[s]);
   const v = Float64Array.from(vr.subarray(s, e + 1), (x) => x - vs);
   const T = tt[tt.length - 1];
@@ -740,6 +752,13 @@ function spanVelocity(vr, tw, s, e, vs, ve, hit = null) {
     for (let i = 0; i < tt.length; i++) if (hit[s + i] && tt[i] > T / 2) land = i;
     if (land >= 0) {
       while (land > 0 && hit[s + land - 1]) land--;          // back to the onset of that last jolt
+      for (;;) {                                             // back to the first contact (D44), in the second half too
+        let prev = -1;
+        for (let i = 0; i < land; i++) if (hit[s + i] && tt[land] - tt[i] <= S.LAND_GAP && tt[i] > T / 2) { prev = i; break; }
+        if (prev < 0) break;
+        land = prev;
+        while (land > 0 && hit[s + land - 1]) land--;
+      }
       if (tt[land] > 0) {
         const x = integrate(v.subarray(0, land + 1), tt.subarray(0, land + 1));
         const c = (2 * x[land]) / tt[land] ** 2;
@@ -771,8 +790,12 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   const n = Math.max(1, Math.trunc(S.TA_FLAT_WIN * fs));
   const fm = rolling(am, n).mean;
   const flat = Uint8Array.from(fm, (x) => (Math.abs(x) < S.TA_FLAT_A ? 1 : 0));
+  const floorFlat = Uint8Array.from(fm, (x) => (Math.abs(x) < S.TA_FLOOR_FLAT_A ? 1 : 0));   // a floor rest's test (D44)
+  // a stop: a blanked jolt the bar comes to rest after; on the floor a flat run into the window's end is one
+  // however short (a heavy single's still begins 0.35 s after its set-down; see reps.py, D44)
+  const toEnd = floor ? L - 1 : -1;
   const stops = runsOf(blank).map(([, je]) => je)
-    .filter((je) => runsOf(flat.subarray(je)).some(([rs, re]) => rs <= n && re - rs >= S.TA_PAUSE * fs));
+    .filter((je) => runsOf(flat.subarray(je)).some(([rs, re]) => rs <= n && (re - rs >= S.TA_PAUSE * fs || je + re === toEnd)));
   let vc = new Float64Array(L);
   const starts = [0, ...stops], ends = [...stops, L - 1];
   for (let j = 0; j < starts.length; j++) {
@@ -797,6 +820,7 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
       racked = true;                                     // no rep in progress after it, live or not
     }
   }
+  const lowsAll = [...lows], highsAll = [...highs];     // before the open window's wait (below)
   if (floor && !w.anchored) {
     // no end still yet (live): a turnaround the high-pass confirms only in the last TA_SIGMA waits, but
     // the last low once the bar has landed (a stop between the high before it and TA_REACH after it; see reps.py)
@@ -809,20 +833,35 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
     highs = highs.filter((k) => confirmedAt(xc, k, S.TA_MIN_MOVE) <= cut);
   }
   const turns = [...lows, ...highs].sort((p, q) => p - q);
-  // 2. anchors
+  // 2. anchors. A turnaround the wait holds back is still a rest's neighbour: its height is real, only its
+  // confirmation is late (D44: else the count dips at a set's close; see reps.py)
+  const nb = floor && !w.anchored ? [...lowsAll, ...highsAll].sort((p, q) => p - q) : turns;
   const rests = [];
   const resting = floor ? lows : highs;
   for (const k of resting) {
-    const j = turns.indexOf(k);
-    const lo = j > 0 ? turns[j - 1] : 0;
-    const hi = j + 1 < turns.length ? turns[j + 1] : rack;
-    rests.push([k, findPause(am, tw, xc, k, lo, hi, fs, flat, floor, k === resting[0], k === resting[resting.length - 1], S)]);
+    const j = nb.indexOf(k);
+    const lo = j > 0 ? nb[j - 1] : 0;
+    const hi = j + 1 < nb.length ? nb[j + 1] : rack;
+    rests.push([k, findPause(am, tw, xc, k, lo, hi, fs, floor ? floorFlat : flat, floor, k === resting[0], k === resting[resting.length - 1], S)]);
   }
   const closed = w.anchored || racked;
   const edge = Math.trunc(S.TA_EDGE * fs);
   let anchors = [];
+  const ks = [];                                         // each anchor's coarse turnaround
   rests.forEach(([k, p], j) => {
-    if (p === null) { anchors.push([k, k, k]); return; }  // touch-and-go
+    ks.push(k);
+    if (p === null) {
+      if (floor) {
+        // on the floor the turn is the touch (D44): the last jolt since the top before it, within TA_FLOOR_REACH
+        // before the coarse low, anchors at its coarse blank's last sample (see reps.py)
+        let prev = Math.max(k - Math.trunc(S.TA_FLOOR_REACH * fs), 0);
+        for (const h of highsAll) if (h < k) prev = Math.max(prev, h);
+        let bj = -1;
+        for (let i = prev; i <= k; i++) if (blank[i]) bj = i;
+        if (bj >= 0) k = bj;
+      }
+      anchors.push([k, k, k]); return;                   // touch-and-go
+    }
     let [ps, pe] = p;
     if (j === 0 && rests.length > 1) {
       ps = Math.max(ps, pe - 2 * edge);    // before rep 1: its end, unless the descent began in it: the 2 x
@@ -836,10 +875,14 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
     }
     anchors.push([Math.floor((ps + pe) / 2), ps, pe]);
   });
-  // the window's own stills anchor the set's ends when they're part of it (see reps.py)
+  // the window's own stills anchor the set's ends when they're part of it (see reps.py). On the floor (D44) the
+  // start still is the floor when nothing anchors it before the first coarse top, and it takes the place of a
+  // rest whose coarse low is within TA_FLOOR_REACH of it
   const end = L - 1;
-  if (anchors.length && anchors[0][0] <= S.TA_SET_EDGE * fs) {
-    anchors = [[0, 0, 0], ...anchors.filter((an) => an[0] > S.TA_REACH * fs)];
+  // (a window with no coarse top holds no rep: a bump in the setup isn't anchored, see reps.py)
+  const bare = floor && highsAll.length > 0 && (!anchors.length || anchors[0][0] > highsAll[0]);
+  if ((anchors.length && anchors[0][0] <= S.TA_SET_EDGE * fs) || bare) {
+    anchors = [[0, 0, 0], ...anchors.filter((an, i) => an[0] > S.TA_REACH * fs && !(floor && ks[i] <= S.TA_FLOOR_REACH * fs))];
   }
   if (anchors.length && w.anchored && !racked && end - anchors[anchors.length - 1][0] <= S.TA_SET_EDGE * fs) {
     anchors = [...anchors.filter((an) => an[0] < end - S.TA_REACH * fs), [end, end, end]];
@@ -854,11 +897,16 @@ function turnaroundVelocity(a, t, fs, w, lift, S) {
   const zero = anchors.map(([, s0, s1]) => { let m = 0; for (let i = s0; i <= s1; i++) m += vr[i]; return m / (s1 + 1 - s0); });
   for (let j = 0; j + 1 < anchors.length; j++) {
     const s = anchors[j][0], e = anchors[j + 1][0];
-    if (e > s) v.set(spanVelocity(vr, tw, s, e, zero[j], zero[j + 1], floor ? hit : null), s);
+    if (e > s) v.set(spanVelocity(vr, tw, s, e, zero[j], zero[j + 1], floor ? hit : null, S), s);
   }
   if (!closed) {
     const s = anchors[anchors.length - 1][0];
     for (let i = s; i < L; i++) v[i] = vr[i] - zero[zero.length - 1];
+    // still on the floor rest the window starts from (no top before it): less that still's bias too (D44, as the tail)
+    if (floor && !highsAll.some((h) => h < s)) {
+      const b = w.bias ?? 0;
+      for (let i = s; i < L; i++) v[i] -= b * (tw[i] - tw[s]);
+    }
   }
   return v;
 }
@@ -902,12 +950,37 @@ export function usualBottom(x, S = SETTINGS) {
   return lows.length >= 3 ? median(lows.map((i) => x[i])) : null;
 }
 
+/** past_hitches() in reps.py: a stop near the top that the bar moves on up out of (over HITCH_V x the peak, rising
+ * HITCH_ROM from it and above the end, counted from the stop's drift floor) isn't the rep's end: the next stop is (D44). */
+function pastHitches(x, v, t, lo, end, hi, vz, S) {
+  let pk = v[lo];
+  for (let i = lo; i <= hi; i++) pk = Math.max(pk, v[i]);
+  const thr = S.HITCH_V * pk;
+  let stop = end;                          // the latest stop near the top: the end, or a blip after it
+  while (stop < hi) {
+    let k = stop + 1;
+    while (k <= hi && v[k] <= thr) k++;
+    if (k > hi) break;                     // never moved on again: the end stands
+    let e = k + 1;                         // the next stop near the top
+    while (e <= hi && !(v[e] <= vz && x[e] >= x[hi] - S.MIN_ROM)) e++;
+    e = Math.min(e, hi);
+    while (e < hi && v[e] > S.V_ZERO && v[e + 1] < v[e]) e++;
+    let fl = 0;                            // the stop's drift floor (see reps.py)
+    for (let i = stop; i < k; i++) fl = Math.min(fl, v[i]);
+    if (fl < -thr) fl = 0;
+    if (x[e] - x[stop] - fl * (t[e] - t[stop]) >= S.HITCH_ROM && x[e] - x[end] - fl * (t[e] - t[end]) >= S.HITCH_ROM) end = e;
+    stop = e;
+  }
+  return end;
+}
+
 /**
  * One rep per bottom-to-top move. bottomRef = the usual bottom height (bench, deadlift,
  * machine): a rep may start from a stop near it even if the move began lower, which
- * cuts a setup move off the first rep. See find_reps() in reps.py.
+ * cuts a setup move off the first rep. hitch: on past a hitch or a stall to the top (D44).
+ * See find_reps() in reps.py.
  */
-export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopFrac = 0) {
+export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopFrac = 0, hitch = false) {
   const { lows, highs } = turningPoints(x, S.MIN_ROM);
   const reps = [];
   for (const lo of lows) {
@@ -939,6 +1012,8 @@ export function findReps(x, v, t, windows, S = SETTINGS, bottomRef = null, stopF
     }
     if (found) {                       // on to v = 0, or to where a pause's drift floor begins
       while (end < hi && v[end] > S.V_ZERO && v[end + 1] < v[end]) end++;
+      // on past a hitch or a stall to the top (D44), once it's a rep (a smaller rise isn't one yet)
+      if (hitch && x[end] - x[start] >= S.MIN_ROM) end = pastHitches(x, v, t, lo, end, hi, vz, S);
     }
     if (end <= start) continue;        // a flat stretch (turnaround anchors zero the walkout and rerack)
     const rom = x[end] - x[start];
@@ -1024,7 +1099,7 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
     a = verticalAccel(t, acc, gyro, runs, fs, S);
   }
 
-  const { v, windows } = velocityBetweenAnchors(a, t, fs, runs);
+  const { v, windows } = velocityBetweenAnchors(a, t, fs, runs, (S.TA_REST[lift] ?? "top") === "bottom");
   // Windows with no still between their reps get turnaround anchors (D40): a broken window, or a bar
   // lift's window holding an impact. Not a hand-held phone test, nor a browser's 60 Hz
   const real = lift !== "phone" && fs >= S.WALK_MIN_FS;
@@ -1040,7 +1115,9 @@ export function analyze(tIn, aRaw, S = SETTINGS, imu = null) {
   const x = integrate(v, t);
   // the walk to a pause's start (D32): bar and stack lifts at a real sensor rate, not hand-held tests
   const walk = lift !== "phone" && fs >= S.WALK_MIN_FS;
-  const reps = findReps(x, v, t, windows, S, usualBottom(x, S), walk ? S.V_STOP_FRAC : 0);
+  // past a hitch or a stall to the top (D44): a bar lift off the floor (the deadlift), not a stack's squeeze or shrug
+  const hitch = walk && (S.TA_REST[lift] ?? "top") === "bottom" && S.TA_BAR.includes(lift);
+  const reps = findReps(x, v, t, windows, S, usualBottom(x, S), walk ? S.V_STOP_FRAC : 0, hitch);
   for (const r of reps) r.sticking = stickingPoint(x, v, t, r, S);   // analytics.md section 4
   return { t, fs, g, a, runs, windows, v, x, reps, ignored: nCandidates - runs.length, lift, mount, noise };
 }

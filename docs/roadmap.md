@@ -127,6 +127,9 @@ Bluetooth to the XIAO (same time as 4.1).
       *2026-11-01: bench on synthetics (make_fake_bench.py, exact known answers at the pod's rate):
       paused, heavy, bounced and racked bench fixed there (D43). Next: the end walk (fast reps with a
       lockout pause read 4 to 14% low), then a real bench session.*
+      *2026-11-03: the filmed 11-02 deadlifts (hands on and off between reps, a hitch, a grind; set 2
+      logged no set) read right against the video since D44 (make_fake_deadlift.py, nine floor rules).
+      Next: the end walk, a real touch-and-go deadlift, the pod's calibration run (puck off).*
 - [ ] **2.3 Metrics + quality flags.** §9 and §10: MCV, MPV, peak velocity, ROM, and
       flags per rep.
 - [ ] **2.4 Bar path + bar tilt.** §11 and §12. Get the bar axis from the roll gesture,
