@@ -5,6 +5,8 @@ app's numbers are relative until phase 3 gives a reference. Written 2026-10-31 f
 audit (pod build 9, the app installed 10-31 13:34). Updated 2026-11-01: the app with D40 to D42
 installed 11-01 11:30 (on the phone, the 10-31 sets replay as 8 / 6 / 3 / 5 / 10 reps), the pod on D38's
 firmware (bench-checked 11-01), and a bench section. Updated 2026-11-02: the bench section for D43.
+Updated 2026-11-03: the app with D44 installed; on the phone the 10-31 sets still replay as
+8 / 6 / 3 / 5 / 10 reps and both 11-02 deadlift sets as 3 (set 2 logged no set before).
 
 ## Before leaving
 
