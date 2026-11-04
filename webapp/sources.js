@@ -4,7 +4,10 @@
 // NativeSensorSource is the Android app's phone sensor (docs/android.md A2). The pod's
 // Bluetooth stream (PodLink, docs/ble.md) is decoded by PodStream, a line-for-line port of
 // analysis/podlink.py checked by webapp/test/pod.mjs; PodWebSource (bottom) feeds it over Web
-// Bluetooth. The app's own Bluetooth source comes in docs/ble-plan.md step 12.
+// Bluetooth. The app's own Bluetooth source comes in docs/ble-plan.md step 12. Since D45 the
+// frames travel inside CRP (docs/ble.md 2): PodCrpLink runs the session over the vendored client.
+
+import { CRPClient, ErrorCode, PacketType, Status } from "./crp/crp-client.js";
 
 /** Live phone sensor via DeviceMotion. Chrome typically delivers ~60 Hz. */
 export class PhoneSource {
@@ -123,6 +126,8 @@ export class ReplaySource {
 // PodLink v1: the pod's Bluetooth stream (docs/ble.md). A line-for-line port of
 // analysis/podlink.py (the reference, decision P1); webapp/test/pod.mjs checks it against the
 // Python test vectors (analysis/make_fake_pod.py). Pure code, no DOM: Node imports it too.
+// Since D45 the frames travel inside CRP (docs/ble.md 2, analysis/crp.py): podFrameOf() takes a
+// frame out of a packet, and PodStream itself never sees CRP.
 
 export const POD = {
   SERVICE: "9ba40001-6de5-429c-b225-8134b9953e9d",
@@ -140,11 +145,37 @@ export const POD = {
   GYRO_LSB: 4.375 * 8 / 1000,              // deg/s per count at +-1000 deg/s
   TICK_HZ: 32768,
   LIVE_BACK: 600,                          // STREAM_LIVE lead-in for a fresh session (~2.8 s)
+  // the pod's CRP registers (docs/ble.md 2.3, D45)
+  REG_PROTO: 0x00010000, REG_INFO: 0x00010001, REG_STATUS: 0x00010002, REG_CAL: 0x00010003,
+  REG_DATA: 0x00010004, REG_CTRL: 0x00010005, REG_PUSH: 0x00010006,
+  REG_LINK_KIND: 0x00030001, REG_LINK_MTU: 0x00030002, REG_LINK_N_MAX: 0x00030003,
+  REG_BENCH: 0x00040001,                   // USB only
+  DEVICE_ID: 0x444F5042,                   // the pod's HELLO device_id, "BPOD" (42 50 4F 44 on the wire)
 };
 const SLEEP_REASONS = { 0: "none", 1: "idle", 2: "lid-down", 3: "low battery", 4: "command", 5: "IMU lost" };
+const FRAME_READS = [POD.REG_INFO, POD.REG_STATUS, POD.REG_CAL];   // an OK RESPONSE to a READ of these carries a frame
+const FRAME_PUSHES = [POD.REG_DATA, POD.REG_STATUS];              // so does a push (WRITE txn 0) to these
 
 /** The u32 difference x as a signed 32-bit number (Python: int32). */
 const int32 = (x) => x | 0;
+
+/** The PodLink frame a CRP packet carries (a Uint8Array), or null (docs/ble.md 7, Feeding the
+ * decoder): an OK RESPONSE to a READ of INFO, STATUS or CAL gives its value; a push (WRITE txn 0)
+ * to DATA or STATUS gives its value; anything else (HELLO, NOP, LOG, BUSY, the answer to a write,
+ * a client's WRITE, a short or unknown packet) gives null. Pure: nothing is counted here, so a
+ * malformed frame inside a good packet still reaches the decoder's own checks (`bad`). */
+export function podFrameOf(pkt) {
+  const b = pkt instanceof Uint8Array ? pkt : new Uint8Array(pkt.buffer ?? pkt, pkt.byteOffset ?? 0, pkt.byteLength);
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (b.length >= 8 && b[0] === PacketType.RESPONSE && b[2] === Status.OK) {   // 0C txn status ch reg:u32 value
+    if (FRAME_READS.includes(dv.getUint32(4, true))) return b.slice(8);
+    return null;
+  }
+  if (b.length >= 6 && b[0] === PacketType.WRITE && b[1] === 0) {               // 04 00 reg:u32 value
+    if (FRAME_PUSHES.includes(dv.getUint32(2, true))) return b.slice(6);
+  }
+  return null;
+}
 
 /** DataView (or bytes) -> frame object, or null if malformed (docs/ble.md 7, Input checks). */
 export function decodeFrame(dv) {
@@ -213,8 +244,9 @@ class PodEpoch {
 }
 
 /**
- * The phone's decoder for the pod's stream. Feed every frame of any type, in arrival order,
- * with its arrival time in ms: stream.frame(dataView, arrivalMs). Samples come out in index
+ * The phone's decoder for the pod's stream. Feed every CRP packet the pod sends, in arrival order,
+ * with its arrival time in ms: stream.packet(u8, arrivalMs) (D45); or every frame of any type
+ * (captures from before D45): stream.frame(dataView, arrivalMs). Samples come out in index
  * order through onSample({ t, ax, ay, az, gx, gy, gz }); onEvent(kind, info) reports epochs,
  * gaps, faults, stops, sleep and requests (need-command, need-info).
  */
@@ -306,7 +338,13 @@ export class PodStream {
     ep.open = false;
   }
 
-  // ---- the one entry point ----
+  // ---- the entry points ----
+  /** A CRP packet from the pod (D45): its frame, if it carries one, goes to frame(). */
+  packet(pkt, arrivalMs) {
+    const f = podFrameOf(pkt);
+    if (f !== null) this.frame(f, arrivalMs);
+  }
+
   frame(dv, arrivalMs) {
     const f = decodeFrame(dv);
     if (f === null) { this.stats.bad += 1; return; }
@@ -567,6 +605,121 @@ export class PodStream {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The pod's CRP session (D45, docs/ble.md 2 and 7) over the vendored CRPClient (webapp/crp): HELLO,
+// the reads with their BUSY retry, PUSH, CTRL and BYE. It never feeds the decoder: the transport
+// hands every packet to PodSource.packet() first (its tap, before it emits "packet"), so PodStream
+// sees them all in arrival order with their own times. No retries (the engine runs a repeated
+// WRITE again, so a retried STOP answers twice), and no heartbeat on Bluetooth (the pod ignores
+// the client's silence there; USB clients send a NOP every 1 s).
+
+/** The status of a transaction a RESPONSE rejected (crp-client.js J1), or null if it went
+ * unanswered (a timeout, the link). A DOMException has a numeric code too, but no reg. */
+const crpStatusOf = (err) => (err && Number.isInteger(err.code) && Number.isInteger(err.reg) ? err.code : null);
+
+export class PodCrpLink {
+  /**
+   * transport: what CRPClient takes (send(u8), on("packet" | "connected" | "disconnected")).
+   * heartbeatMs: 0 on Bluetooth, 1000 on USB. busyRetryMs / busyForMs: the BUSY retry (docs/ble.md
+   * 5). now / sleep: the clock the retry runs on (tests drive both).
+   */
+  constructor(transport, { heartbeatMs = 0, txnTimeoutMs = 5000, busyRetryMs = 200, busyForMs = 3000,
+    now = () => Date.now(), sleep = (ms) => sleepMs(ms) } = {}) {
+    this.client = new CRPClient(transport, { txnTimeoutMs, txnRetries: 0, heartbeatMs });
+    this.txnTimeoutMs = txnTimeoutMs;
+    this.busyRetryMs = busyRetryMs;
+    this.busyForMs = busyForMs;
+    this.now = now;
+    this.sleep = sleep;
+    this.peer = null;                   // the pod's HELLO (CRPClient's parse)
+    this.busy = 0;                      // BUSY answers to reads (each retried)
+    this.mtuRead = null;                // the MTU register, read after the BUSY retries gave up
+  }
+
+  /** HELLO (CRPClient.sendHello's defaults), then the pod's, which must say device_id "BPOD"
+   * (docs/ble.md 2.4: every Ansync device shares the service). Resolves to the pod's HELLO; fails
+   * on a BYE (the pod refuses our version), another device, a dropped link or no answer. */
+  hello() {
+    const c = this.client;
+    this.peer = null;
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const done = (err, h) => {
+        clearTimeout(timer);
+        c.off("hello", onHello); c.off("bye", onBye); c.off("disconnected", onDown);
+        if (err) reject(err); else resolve(h);
+      };
+      const onHello = (h) => {
+        if (h.deviceId !== POD.DEVICE_ID) {
+          return done(new Error(`Not a pod: its HELLO says device 0x${h.deviceId.toString(16).padStart(8, "0")}.`));
+        }
+        this.peer = h;
+        done(null, h);
+      };
+      const onBye = () => done(new Error("The pod refused the session (BYE)."));
+      const onDown = () => done(new Error("The link dropped before the pod's HELLO."));
+      timer = setTimeout(() => done(new Error("The pod didn't answer HELLO.")), this.txnTimeoutMs);
+      c.on("hello", onHello); c.on("bye", onBye); c.on("disconnected", onDown);
+      try { c.sendHello({}); } catch (err) { done(err); }
+    });
+  }
+
+  /** READ reg (INFO, STATUS or CAL) with the BUSY retry (docs/ble.md 5): every busyRetryMs for
+   * busyForMs, then the MTU register (10 B, fits at MTU 23) says why. Resolves to the value, the
+   * frame (the transport's tap already fed it to the decoder). Fails with err.code = the status
+   * (BUSY after giving up, with err.mtu = the MTU read, or null), or CRPClient's own error when
+   * unanswered. */
+  async readFrame(reg) {
+    const t0 = this.now();
+    for (;;) {
+      try {
+        return (await this.client.read(reg)).payload;
+      } catch (err) {
+        if (crpStatusOf(err) !== ErrorCode.BUSY) throw err;
+      }
+      this.busy += 1;
+      if (this.now() - t0 + this.busyRetryMs > this.busyForMs) break;
+      await this.sleep(this.busyRetryMs);
+    }
+    this.mtuRead = await this.mtu().catch(() => null);
+    throw Object.assign(new Error(`The pod's link is too small (MTU ${this.mtuRead ?? "unknown"}).`),
+      { code: ErrorCode.BUSY, reg, mtu: this.mtuRead });
+  }
+
+  /** WRITE PUSH: on = this session takes the pod's pushes (DATA, STATUS). Step 4 of the connection
+   * order, after the reads: a STATUS pushed before the reconnect INFO would belong to the old epoch
+   * (docs/ble.md 7). Fails unless OK. */
+  async push(on) {
+    await this.client.write(POD.REG_PUSH, new Uint8Array([on ? 1 : 0]));
+  }
+
+  /** WRITE CTRL with an op (command(), stopCommand(), SLEEP). Resolves to its status: 0 OK,
+   * 3 INVALID_VALUE (unknown op or length), 8 BUSY (from the SLEEP op on), docs/ble.md 2.3. Fails
+   * only when unanswered (a timeout, the link, a session end), and is never retried. */
+  async ctrl(b) {
+    try {
+      await this.client.write(POD.REG_CTRL, b);
+      return Status.OK;
+    } catch (err) {
+      const st = crpStatusOf(err);
+      if (st === null) throw err;
+      return st;
+    }
+  }
+
+  /** The link's MTU register (u16), or null if the answer isn't 2 bytes. */
+  async mtu() {
+    const v = (await this.client.read(POD.REG_LINK_MTU)).payload;
+    return v.length === 2 ? v[0] | (v[1] << 8) : null;
+  }
+
+  /** BYE (base 0, our device_id 0) and every open transaction fails. Final: a new session needs a
+   * new PodCrpLink. */
+  close() {
+    this.client.close();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The pod over Web Bluetooth (desktop and Android Chrome, on https or localhost; docs/ble-plan.md
 // section 3 and step 6). Pick the pod with PodWebSource.pick() inside a click (the browser's
 // chooser needs the user gesture), then use it like any other source: start(), stop(). A new
@@ -626,6 +779,16 @@ export class PodSource {
 
   log(kind, arrival, payload) {
     this.capture?.log.push([kind, arrival, payload]);
+  }
+
+  /** One CRP packet the pod sent (D45) into the decoder, through podFrameOf, stamped with its
+   * arrival (ms): the transport's tap, for every packet in arrival order, the ones without a frame
+   * too (the capture's pkt rows, so a replay sees the whole story). Nothing after the session
+   * ended, as frame(). */
+  packet(u8, t = Date.now()) {
+    if (this.closed) return;
+    this.log("pkt", t, hexOf(u8));
+    this.stream.packet(u8, t);
   }
 
   /** One frame (a read or a notification) into the decoder, stamped with its arrival (ms). Nothing

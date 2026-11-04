@@ -1,10 +1,10 @@
 // ble.ino: the PodLink v1 Bluetooth service (docs/ble.md; plan: docs/ble-plan.md step 5).
-// GATT table, advertising, the sender, CTRL commands, STATUS and the link-setup timeline.
-// The send rules mirror the Pod class in analysis/make_fake_pod.py, which the decoders were
-// tested against: STATUS before DATA, a built frame is resent byte-identical, loss counted
-// once per index, the STOP drain is capped. Every notification, STATUS included, goes out on
-// the DATA characteristic: Windows can deliver notifications of two characteristics out of
-// order (measured 2026-10-23, D28), one characteristic keeps them in the order sent.
+// GATT table, advertising, events, the link-setup timeline, and bleLink's Bluetooth side: its
+// send (one notification), the readable STATUS, connect, disconnect and the sleep prologue. The
+// stream itself (the sender, CTRL commands, STATUS) is link.ino's, run on bleLink.
+// Every notification, STATUS included, goes out on the DATA characteristic: Windows can deliver
+// notifications of two characteristics out of order (measured 2026-10-23, D28), one
+// characteristic keeps them in the order sent.
 //
 // Threads: Bluefruit's BLE task (priority 3) preempts loop() (priority 1) at any point. So:
 //   - the BLE-task callbacks below only copy values, set flags or queue bytes. Nothing else,
@@ -32,13 +32,14 @@ volatile uint32_t hvnDone = 0;                // notifications the SoftDevice fi
 volatile uint16_t evMtu = 23, evInterval = 0, evLatency = 0, evTimeout = 0, evDl = 27;
 volatile uint8_t evPhy = 1;                   // 1 = 1M, 2 = 2M, 4 = coded
 volatile bool linkEvent = false;              // one of the values above changed
-volatile bool dataOn = false;                 // the central subscribed to DATA (CCCD)
+                                              // bleLink.pushOn (pod.ino): the central subscribed to DATA (CCCD)
 volatile uint32_t dataOnMs = 0;               // millis() when DATA notifications were turned on
 volatile uint32_t ctrlDropped = 0;            // CTRL writes lost to a full queue
 
 // ---- loop()-only state ----
+// The stream (cursor, frames, drains, STATUS queue) is bleLink's (pod.ino, link.ino): bleLink.up
+// = connected, bleLink.mtu = loop's copy of evMtu, taken when its STATUS is queued.
 bool bleOk = false;                           // begin() worked and boot_id was drawn: advertising
-bool connected = false;
 uint16_t connHdl = BLE_CONN_HANDLE_INVALID;
 uint32_t seenConnects = 0, seenDisconnects = 0;
 uint32_t hvnQueued = 0;                       // notifications handed to the SoftDevice
@@ -46,27 +47,10 @@ uint32_t connectMs = 0;
 uint8_t linkStep = 0;                         // link-setup timeline progress (docs/ble.md 5)
 uint32_t retryMs = 0;                         // the timeline's one retry after BUSY, while retried
 bool retried = false;
-uint16_t mtuNow = 23;                         // loop's copy of evMtu, taken when its STATUS is queued
-uint32_t nextStatusMs = 0, lastStatusValueMs = 0;
+uint32_t lastStatusValueMs = 0;
 bool lastUsb = false, lastChg = false;
 
-bool streaming = false;
-uint32_t bleCursor = 0;                       // next index to send
-uint8_t cmdSeq = 0;                           // cmd_seq of the stream being sent
-uint16_t pktSeq = 0;                          // +1 per DATA frame accepted by the SoftDevice
-bool resyncPending = false, overflowPending = false;
-uint32_t lostMark = 0;                        // indices below this were already counted as lost
-uint8_t dataFrame[POD_DATA_MAX];              // a built DATA frame waiting for a free slot
-uint16_t dataLen = 0;                         // 0 = none built
-uint8_t dataN = 0;
-bool draining = false;                        // a STOP drain (or the sleep drain) is running
-bool sleepDrain = false;                      // the drain is the sleep prologue's: no stream_stopped after it
-uint32_t drainHead = 0, drainDeadlineMs = 0;
 uint8_t sleepReasonNow = 0;                   // the going_to_sleep STATUS's sleep_reason
-const uint8_t STATUS_Q = 8;
-uint8_t statusQ[STATUS_Q][20];                // built STATUS frames, sent before any further DATA
-uint8_t nStatusQ = 0;
-uint32_t framesSent = 0;
 uint32_t lastBleLineMs = 0;
 
 // ---- BLE-task callbacks: copy, flag, queue, nothing else ----
@@ -84,7 +68,7 @@ void bleEventCb(ble_evt_t* e) {
       evInterval = c.conn_params.max_conn_interval;
       evLatency = c.conn_params.slave_latency;
       evTimeout = c.conn_params.conn_sup_timeout;
-      dataOn = false;                         // no bonding: every connection starts unsubscribed
+      bleLink.pushOn = false;                 // no bonding: every connection starts unsubscribed
       bleUp = true;
       nConnects++;
       linkEvent = true;
@@ -93,7 +77,7 @@ void bleEventCb(ble_evt_t* e) {
     case BLE_GAP_EVT_DISCONNECTED:
       if (h != evConn) break;
       bleUp = false;
-      dataOn = false;
+      bleLink.pushOn = false;
       discReason = e->evt.gap_evt.params.disconnected.reason;
       nDisconnects++;
       break;
@@ -138,7 +122,7 @@ void bleEventCb(ble_evt_t* e) {
 void bleCccdCb(uint16_t h, BLECharacteristic* chr, uint16_t value) {
   (void)h; (void)chr;
   bool on = value & BLE_GATT_HVX_NOTIFICATION;
-  dataOn = on;
+  bleLink.pushOn = on;
   if (on) dataOnMs = millis();
 }
 
@@ -153,50 +137,9 @@ void bleCtrlCb(uint16_t h, BLECharacteristic* chr, uint8_t* data, uint16_t len) 
 }
 
 // ---- helpers ----
-static inline uint32_t get32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
-
 uint32_t inFlight() {
   int32_t d = (int32_t)(hvnQueued - hvnDone);
   return d < 0 ? 0 : d;
-}
-
-// Samples per DATA frame at the current MTU (docs/ble.md 5), 0 when not connected.
-uint8_t nMax() {
-  if (!connected) return 0;
-  int n = ((int)mtuNow - 3 - 14) / 14;        // already clamped to 23..247 by the event callback
-  if (n < 0) n = 0;
-  return n > POD_MAX_N ? POD_MAX_N : n;
-}
-
-// A STATUS frame now. extra = event bits; h = head (the stopped stream's end for stream_stopped).
-void buildStatus(uint8_t* f, uint8_t extra, uint32_t h) {
-  uint8_t nm = nMax();
-  uint8_t flags = extra | (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0) |
-                  (lastBattV < LOW_BATT_WARN_V && !usbPowered() ? POD_S_BATT_LOW : 0) |
-                  (streaming ? POD_S_STREAMING : 0) | (connected && nm < 4 ? POD_S_MTU_TOO_SMALL : 0);
-  uint8_t reason = (extra & POD_S_GOING_TO_SLEEP) ? sleepReasonNow : 0;   // only the STATUS that reports it
-  podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), h, lostBle, missedDrdy, reason, nm,
-                connected ? evInterval : 0);
-}
-
-// Queue a STATUS for the phone, and refresh the readable value with a plain one (event bits
-// belong only to the one STATUS that reports the event: a read after a boot_mismatch must not
-// report it again). Not connected: only the readable value. A full queue (notify stalled for
-// seconds) drops its oldest plain STATUS; event STATUS frames are kept.
-void queueStatus(uint8_t extra, uint32_t h) {
-  uint8_t f[20];
-  buildStatus(f, 0, head);
-  chrStatus.write(f, 20);
-  if (!connected) return;
-  buildStatus(f, extra, h);
-  if (nStatusQ == STATUS_Q) {
-    const uint8_t EVENTS = POD_S_GOING_TO_SLEEP | POD_S_STREAM_STOPPED | POD_S_BOOT_MISMATCH;
-    uint8_t drop = 0;
-    while (drop < STATUS_Q - 1 && (statusQ[drop][1] & EVENTS)) drop++;
-    memmove(statusQ[drop], statusQ[drop + 1], (STATUS_Q - 1 - drop) * 20);
-    nStatusQ--;
-  }
-  memcpy(statusQ[nStatusQ++], f, 20);
 }
 
 // One notification, never waiting: true if the SoftDevice took it. Any refusal (no free slot,
@@ -214,150 +157,24 @@ bool hvx(uint16_t valueHandle, const uint8_t* p, uint16_t len) {
   return true;
 }
 
-// A STATUS goes out on DATA, in order with the DATA frames. DATA not subscribed: it counts as
-// sent (queueStatus already refreshed the readable value).
-bool sendStatus(const uint8_t* f) {
-  return !dataOn || hvx(chrData.handles().value_handle, f, 20);
+// ---- bleLink's Bluetooth side (link.ino calls these through bleLink, set in bleSetup) ----
+// Every packet goes out on DATA, STATUS included (D28, top of this file).
+bool bleSend(const uint8_t* p, uint16_t len) {
+  return hvx(chrData.handles().value_handle, p, len);
 }
 
-bool sendData() {
-  return dataOn && hvx(chrData.handles().value_handle, dataFrame, dataLen);
+uint16_t bleInterval() {
+  return evInterval;                          // live: the BLE task copies every update
 }
 
-// Count the samples from `from` up to lo as lost, once per index (docs/ble.md 4).
-void countLost(uint32_t from, uint32_t lo) {
-  uint32_t f = from > lostMark ? from : lostMark;
-  if (lo > f) lostBle += lo - f;
-  if (lo > lostMark) lostMark = lo;
-}
-
-// Build the next DATA frame from bleCursor into dataFrame. false = nothing to send yet.
-bool buildData() {
-  uint8_t nm = nMax();
-  if (nm < 4) return false;                   // MTU too small: no quiet degrading
-  uint32_t h = head;                          // the sampler task moves it: read it once
-  if (h - bleCursor > RING_N) {               // sampling lapped the cursor
-    uint32_t lo = h - RING_N;
-    countLost(bleCursor, lo);
-    bleCursor = lo;
-    overflowPending = true;
-  }
-  uint32_t end = draining ? drainHead : h;
-  if ((int32_t)(end - bleCursor) <= 0) return false;
-  uint32_t pending = end - bleCursor;
-  uint32_t t0 = ring[bleCursor & RING_MASK].ticks;
-  uint32_t age = (uint32_t)rtcExtend() - t0;
-  uint8_t full = pending < nm ? pending : nm;
-  uint8_t n = full;
-  for (uint8_t k = 1; k < full; k++) {        // a frame starts at every IMU restart, dt < 60000
-    uint32_t i = bleCursor + k;
-    if (isRestart(i) || ring[i & RING_MASK].ticks - t0 > POD_DT_MAX) { n = k; break; }
-  }
-  bool cutShort = n < full;
-  if (n < nm && !(draining || cutShort || age >= POD_AGE_TICKS)) return false;   // wait for a full frame
-  uint8_t flags = (resyncPending ? POD_F_RESYNC : 0) | (overflowPending ? POD_F_OVERFLOW : 0) |
-                  (isRestart(bleCursor) ? POD_F_IMU_RESTART : 0) |
-                  (draining && bleCursor + n == drainHead ? POD_F_FINAL : 0);
-  dataLen = podPackData(dataFrame, ring, RING_MASK, bleCursor, n, pktSeq, flags, cmdSeq);
-  dataN = n;
-  __asm__ volatile("" ::: "memory");          // the copy happens before the check below
-  if (head - bleCursor > RING_N) {            // the sampler overwrote the oldest slots mid-copy: drop
-    dataLen = 0;                              // the frame, the next pass's lap check counts the loss
-    return false;
-  }
-  return true;
-}
-
-// The end of a drain, done or capped. A STOP's says stream_stopped; the sleep prologue sends its
-// own going_to_sleep STATUS instead (bleSleepPrologue).
-void finishDrain() {
-  draining = false;
-  dataLen = 0;
-  streaming = false;
-  if (!sleepDrain) queueStatus(POD_S_STREAM_STOPPED, drainHead);
-}
-
-// One send pass: queued STATUS first, then up to 4 DATA frames.
-void sendPass() {
-  while (nStatusQ) {
-    if (!sendStatus(statusQ[0])) return;
-    memmove(statusQ[0], statusQ[1], (nStatusQ - 1) * 20);
-    nStatusQ--;
-  }
-  if (!(streaming && connected)) return;
-  for (int k = 0; k < 4; k++) {
-    if (!dataLen && !buildData()) break;
-    if (!sendData()) break;
-    bleCursor += dataN;
-    pktSeq++;
-    framesSent++;
-    resyncPending = overflowPending = false;
-    dataLen = 0;
-  }
-  if (draining && (int32_t)(bleCursor - drainHead) >= 0 && !dataLen) finishDrain();
-}
-
-// ---- CTRL ops (docs/ble.md 4) ----
-void handleCtrl(const uint8_t* b, uint8_t len) {
-  if (len == 0 || sleepCmd) return;           // after a SLEEP the pod ignores CTRL (docs/ble.md 6)
-  uint8_t op = b[0];
-  uint32_t head = ::head;                     // one snapshot for the whole command
-  if (op == POD_OP_STREAM_FROM || op == POD_OP_STREAM_LIVE) {
-    uint32_t cur;
-    if (op == POD_OP_STREAM_FROM) {
-      if (len != 10) return;
-      uint32_t boot = get32(b + 2), from = get32(b + 6);
-      if (boot != bootId) {                   // not this boot: say so, change nothing else
-        queueStatus(POD_S_BOOT_MISMATCH, head);
-        return;
-      }
-      uint32_t lo = head > RING_N ? head - RING_N : 0;    // this form: head - RING_N wraps early on
-      cur = from < lo ? lo : (from > head ? head : from);
-      overflowPending = false;
-      if (from < lo) {                        // asked for samples that already left the ring
-        countLost(from, lo);
-        overflowPending = true;
-      }
-    } else {
-      if (len != 4) return;
-      uint32_t back = b[2] | (b[3] << 8);
-      if (back > head) back = head;
-      if (back > RING_N) back = RING_N;
-      cur = head - back;
-      overflowPending = false;
-    }
-    draining = false;                         // a STREAM command ends a STOP drain, no STATUS
-    dataLen = 0;                              // a built, unsent frame belonged to the old stream
-    bleCursor = cur;
-    cmdSeq = b[1];
-    resyncPending = true;
-    streaming = true;
-    sessionHold = true;
-    queueStatus(0, head);                     // the STATUS answering it goes before its first DATA
-  } else if (op == POD_OP_STOP && len == 1) {
-    sessionHold = false;                      // released at once, not after the drain
-    if (!streaming) {
-      queueStatus(POD_S_STREAM_STOPPED, head);
-      return;
-    }
-    uint32_t backlog = head - bleCursor;
-    uint8_t nm = nMax();
-    draining = true;
-    drainHead = head;
-    drainDeadlineMs = millis() + 1500 + backlog * 1000 / (60 * (nm ? nm : 1));
-  } else if (op == POD_OP_SLEEP && len == 2 && b[1] <= 1) {
-    sleepCmd = b[1] == 0 ? 1 : 2;             // loop() runs it (the prologue can't run inside bleTick)
-  }
-  // Unknown ops, modes and wrong lengths are ignored.
+void bleReadable(const uint8_t* f) {
+  chrStatus.write(f, 20);
 }
 
 // ---- connection state (from the event counters) ----
 void onDisconnect() {
-  connected = false;
-  streaming = false;                          // the session hold stays: a dropout keeps it
-  draining = false;
-  dataLen = 0;
-  nStatusQ = 0;
+  bleLink.up = false;
+  endStream(bleLink);                         // the session hold stays: a dropout keeps it
   hvnQueued = hvnDone;                        // a dead link reports no TX complete
   connHdl = BLE_CONN_HANDLE_INVALID;
   msg.print("# ble disconnected, reason 0x");
@@ -366,16 +183,16 @@ void onDisconnect() {
 }
 
 void onConnect(uint32_t now) {
-  connected = true;
+  bleLink.up = true;
   connHdl = evConn;
   connectMs = now;
   linkStep = 0;
   retried = false;
-  mtuNow = evMtu;
+  bleLink.mtu = evMtu;
   hvnQueued = hvnDone;
-  nextStatusMs = now + 1000;
+  bleLink.nextStatusMs = now + 1000;
   uint8_t f[20];
-  buildStatus(f, 0, head);
+  buildStatus(bleLink, f, 0, head);
   chrStatus.write(f, 20);                     // the readable value is fresh at every connect
   msg.println("# ble connected");
   msg.send();
@@ -383,7 +200,7 @@ void onConnect(uint32_t now) {
 
 void printLink() {
   msg.print("# link mtu ");
-  msg.print(mtuNow);
+  msg.print(bleLink.mtu);
   msg.print(" interval ");
   msg.print(evInterval * 1.25, 2);
   msg.print(" ms latency ");
@@ -395,7 +212,7 @@ void printLink() {
   msg.print(" dl ");
   msg.print(evDl);
   msg.print(" n_max ");
-  msg.println(nMax());
+  msg.println(nMax(bleLink));
   msg.send();
 }
 
@@ -434,7 +251,7 @@ void linkSetup(uint32_t now) {
     if (evMtu > 23) linkStep = 2;              // the phone already exchanged (live value)
     else if (stepDone(sd_ble_gattc_exchange_mtu_request(connHdl, 247), now, "mtu")) linkStep = 2;
   }
-  if (linkStep == 2 && dataOn && (int32_t)(now - dataOnMs) >= 2000) {   // signed: dataOnMs can be after now
+  if (linkStep == 2 && bleLink.pushOn && (int32_t)(now - dataOnMs) >= 2000) {   // signed: dataOnMs can be after now
     ble_gap_conn_params_t p;                  // a named struct: g++ rejects &(type){...}
     p.min_conn_interval = 24;                 // 30 ms
     p.max_conn_interval = 40;                 // 50 ms
@@ -451,6 +268,11 @@ int bleFreeHeap = 0;
 char bleName[16];
 
 bool bleSetup() {
+  bleLink.kind = LINK_BLE;                    // the stream (link.ino) goes out through these
+  bleLink.send = bleSend;
+  bleLink.interval = bleInterval;
+  bleLink.readable = bleReadable;
+  bleLink.mtu = 23;
   Bluefruit.autoConnLed(false);               // the core's LED logic is active HIGH, the XIAO's LEDs are LOW
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);   // MTU 247, 125 ms events, 3 notify slots (HVN_SLOTS)
   if (!Bluefruit.begin()) {
@@ -513,7 +335,7 @@ bool bleSetup() {
   memset(f, 0, 64);
   f[0] = POD_T_CAL;                           // stub until roadmap 1.3: byte 1 = 0, no calibration
   chrCal.write(f, 64);
-  buildStatus(f, 0, head);
+  buildStatus(bleLink, f, 0, head);
   chrStatus.write(f, 20);
   lastUsb = usbPowered();
   lastChg = charging();
@@ -564,7 +386,7 @@ void bleBanner() {
 void bleLinkEvents(uint32_t now) {
   uint32_t nc = nConnects, nd = nDisconnects;
   if (nc != seenConnects || nd != seenDisconnects) {
-    if (connected) onDisconnect();            // any change ends the old link's state
+    if (bleLink.up) onDisconnect();           // any change ends the old link's state
     seenConnects = nc;
     seenDisconnects = nd;
     if (bleUp) onConnect(now);
@@ -584,42 +406,36 @@ void bleSleepPrologue(uint8_t reason) {
   uint32_t t0 = millis();
   uint32_t finalHead = head;
   bleLinkEvents(t0);
-  bool wasStreaming = connected && streaming;
-  uint32_t cursorAtStart = bleCursor;
+  bool wasStreaming = bleLink.up && bleLink.streaming;
+  uint32_t cursorAtStart = bleLink.cursor;
   if (wasStreaming) {
-    // A sleep during a STOP drain keeps the STOP's cap if that's sooner: the phone's stop wait is
-    // sized on it (make_fake_pod.py stop-then-sleep-at-cap)
-    uint32_t cap = t0 + 1500;
-    if (!(draining && (int32_t)(drainDeadlineMs - cap) < 0)) drainDeadlineMs = cap;
-    draining = sleepDrain = true;
-    drainHead = finalHead;
-    dataLen = 0;                              // a frame built for a STOP drain may carry its FINAL: rebuild it
-    while (connected && draining) {
+    startSleepDrain(bleLink, t0, finalHead);  // keeps a sooner STOP cap; a built frame is rebuilt
+    while (bleLink.up && bleLink.draining) {
       uint32_t now = millis();
       wdtFeed();
       bleLinkEvents(now);                     // a disconnect clears draining
-      if (!connected) break;
-      if ((int32_t)(now - drainDeadlineMs) >= 0 || nMax() < 4 || !dataOn) finishDrain();   // capped: the rest is sleep-tail
-      else sendPass();                        // finishes the drain at the final head
+      if (!bleLink.up) break;
+      if (drainCapped(bleLink, now)) finishDrain(bleLink);   // capped: the rest is sleep-tail
+      else sendPass(bleLink);                 // finishes the drain at the final head
       usbDrain();                             // the CSV catches up too (never blocks)
       delay(1);
     }
   }
   uint32_t tDrain = millis() - t0;
-  uint32_t sentTo = bleCursor;
+  uint32_t sentTo = bleLink.cursor;
   const char* statusWas = "none (no phone)";  // for the # line only
-  if (connected) {
+  if (bleLink.up) {
     sleepReasonNow = reason;
-    queueStatus(POD_S_GOING_TO_SLEEP, finalHead);
+    queueStatus(bleLink, POD_S_GOING_TO_SLEEP, finalHead);
     statusWas = "not confirmed in 300 ms";
     uint32_t t1 = millis();
-    while (connected && millis() - t1 < 300) {
+    while (bleLink.up && millis() - t1 < 300) {
       wdtFeed();
       bleLinkEvents(millis());
-      if (!connected) { statusWas = "lost with the link"; break; }   // onDisconnect dropped the queue
-      sendPass();                             // not streaming any more: the queued STATUS only
-      if (nStatusQ == 0 && inFlight() == 0) {
-        statusWas = dataOn ? "out" : "readable only (DATA off)";
+      if (!bleLink.up) { statusWas = "lost with the link"; break; }   // onDisconnect dropped the queue
+      sendPass(bleLink);                      // not streaming any more: the queued STATUS only
+      if (bleLink.nStatusQ == 0 && inFlight() == 0) {
+        statusWas = bleLink.pushOn ? "out" : "readable only (DATA off)";
         break;
       }
       delay(1);
@@ -662,7 +478,7 @@ void bleTick(uint32_t now) {
 
   CtrlMsg m;
   while (xQueueReceive(ctrlQueue, &m, 0) == pdTRUE) {
-    if (connected) handleCtrl(m.b, m.len);
+    if (bleLink.up) handleCtrl(bleLink, m.b, m.len);
   }
 
   bool usb = usbPowered(), chg = charging();
@@ -670,36 +486,29 @@ void bleTick(uint32_t now) {
   lastUsb = usb;
   lastChg = chg;
 
-  if (connected) {
+  if (bleLink.up) {
     linkSetup(now);
     if (linkEvent) {
       linkEvent = false;
-      mtuNow = evMtu;                         // n_max changes here, with its STATUS queued first
+      bleLink.mtu = evMtu;                    // n_max changes here, with its STATUS queued first
       printLink();
-      queueStatus(0, head);                   // n_per_packet / interval changed
+      queueStatus(bleLink, 0, head);          // n_per_packet / interval changed
     }
-    if (powerChanged) queueStatus(0, head);
-    if ((int32_t)(now - nextStatusMs) >= 0) {
-      nextStatusMs += 1000;
-      if ((int32_t)(now - nextStatusMs) >= 0) nextStatusMs = now + 1000;   // after a long stall
-      queueStatus(0, head);
-    }
-    if (draining && ((int32_t)(now - drainDeadlineMs) >= 0 || nMax() < 4 || !dataOn)) finishDrain();
-    sendPass();
+    linkTick(bleLink, now, powerChanged);     // power and 1 s STATUS, the drain's cap, a send pass
   } else if (powerChanged || now - lastStatusValueMs >= 1000) {
     lastStatusValueMs = now;
-    queueStatus(0, head);                     // not connected: only the readable value
+    queueStatus(bleLink, 0, head);            // not connected: only the readable value
   }
 
   if (usbOpen && now - lastBleLineMs >= 30000) {
     lastBleLineMs = now;
     msg.print("# ble ");
-    msg.print(connected ? "connected" : (Bluefruit.Advertising.isRunning() ? "advertising" : "NOT advertising"));
-    msg.print(streaming ? ", streaming" : "");
+    msg.print(bleLink.up ? "connected" : (Bluefruit.Advertising.isRunning() ? "advertising" : "NOT advertising"));
+    msg.print(bleLink.streaming ? ", streaming" : "");
     msg.print(", frames ");
-    msg.print(framesSent);
+    msg.print(bleLink.framesSent);
     msg.print(", lost ");
-    msg.print(lostBle);
+    msg.print(bleLink.lost);
     msg.print(", hold ");
     msg.println(sessionHold ? "on" : "off");
     msg.send();

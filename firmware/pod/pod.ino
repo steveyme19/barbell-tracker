@@ -96,7 +96,6 @@ uint32_t usbCursor = 0;                // next index the USB packer sends
 uint16_t usbPktSeq = 0;
 uint8_t usbFlags = 0;                  // RESYNC / OVERFLOW pending for the next USB frame
 uint32_t usbLost = 0;                  // USB-side loss: only the '# ring' line, never STATUS
-uint32_t lostBle = 0;                  // STATUS lost_overflow: the BLE stream's loss (step 5 on)
 bool sessionHold = false;              // a phone's STREAM command until STOP: long idle limit, no lid-down
 struct CtrlMsg { uint8_t len; uint8_t b[16]; };   // one CTRL write, queued from Bluefruit's task (ble.ino)
 const float LOW_BATT_WARN_V = 3.50;    // STATUS batt_low below this, on battery power only; every
@@ -108,6 +107,41 @@ volatile uint32_t lastMotionMs = 0;    // idle timer (the sampler sets it)
 uint32_t lastBattMs = 0;
 float lastBattV = 0;
 uint8_t lowBattCount = 0;
+
+// ---- one link's stream: its cursor, frames, drains and STATUS queue (link.ino runs it, docs/ble.md
+// 3 to 6). Every link runs the same code: Bluetooth's is bleLink (ble.ino), USB gets its own (D45).
+// Declared here because Arduino joins the tabs after this one. loop() owns all of it except
+// pushOn, which Bluefruit's task writes. ----
+const uint8_t LINK_BLE = 1, LINK_USB = 2;     // Link.kind: the KIND register values (docs/ble.md 2.3)
+const uint8_t STATUS_Q = 8;
+struct Link {
+  uint8_t kind;
+  // the link's own side, set by its owner before its first STATUS (ble.ino: bleSetup)
+  bool (*send)(const uint8_t* p, uint16_t len);   // one packet now, never waiting: true if the link took it
+  uint16_t (*interval)();                         // STATUS connection interval while up
+  void (*readable)(const uint8_t* f);             // refresh the readable STATUS value (NULL: none)
+  bool up;                                        // connected (loop()'s view, from the event counters)
+  volatile bool pushOn;                           // DATA notifications on (Bluetooth: the DATA CCCD)
+  uint16_t mtu;                                   // loop's copy of the MTU, taken when its STATUS is queued
+  uint32_t nextStatusMs;                          // the 1 s STATUS
+  bool streaming;
+  uint32_t cursor;                                // next index to send
+  uint8_t cmdSeq;                                 // cmd_seq of the stream being sent
+  uint16_t pktSeq;                                // +1 per DATA frame accepted by the link (the SoftDevice)
+  bool resyncPending, overflowPending;
+  uint32_t lostMark;                              // indices below this were already counted as lost
+  uint32_t lost;                                  // STATUS lost_overflow: this link's stream loss (step 5 on)
+  uint8_t dataFrame[POD_DATA_MAX];                // a built DATA frame waiting for a free slot
+  uint16_t dataLen;                               // 0 = none built
+  uint8_t dataN;
+  bool draining;                                  // a STOP drain (or the sleep drain) is running
+  bool sleepDrain;                                // the drain is the sleep prologue's: no stream_stopped after it
+  uint32_t drainHead, drainDeadlineMs;
+  uint8_t statusQ[STATUS_Q][20];                  // built STATUS frames, sent before any further DATA
+  uint8_t nStatusQ;
+  uint32_t framesSent;
+};
+Link bleLink;                                     // the Bluetooth link (ble.ino). A global: all zero at boot
 
 // ---- shared with the sampler task (sampler.ino; declared here because Arduino joins the tabs
 // after this one). Written there, read by loop() and ble.ino, or the other way round. ----
@@ -315,7 +349,7 @@ void podStatusInfo(uint32_t now) {
     uint8_t flags = (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0) |
                     (lastBattV < LOW_BATT_WARN_V && !usbPowered() ? POD_S_BATT_LOW : 0);
     uint8_t f[20];
-    podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), head, lostBle, missedDrdy, 0,
+    podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), head, bleLink.lost, missedDrdy, 0,
                   POD_MAX_N, 0);
     if (Serial.availableForWrite() >= 43) printFrame('S', f, 20);
   }

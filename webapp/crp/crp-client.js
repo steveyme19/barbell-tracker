@@ -590,7 +590,22 @@ export class CRPClient extends EventEmitter {
 
   /** Low-level send through transport. */
   _send(buf) {
-    this._transport.send(buf);
+    // LOCAL PATCH (pod, D45) J2: hand back what the transport's send returned (a promise for a
+    // Bluetooth write), so a transaction can fail with it
+    return this._transport.send(buf);
+  }
+
+  /**
+   * LOCAL PATCH (pod, D45) J2: a send whose promise rejects (a write the link refused) fails its
+   * transaction at once, instead of 5 s later as a timeout. Only while it's still this entry's
+   * txn: a late rejection never touches a reused id.
+   */
+  _watchSend(txnId, entry, sent) {
+    if (!sent || typeof sent.then !== 'function') return;
+    sent.then(undefined, (err) => {
+      if (this._pending.get(txnId) !== entry) return;
+      this._rejectTxn(txnId, err instanceof Error ? err : new Error(`CRP: send failed: ${err}`));
+    });
   }
 
   /**
@@ -608,7 +623,7 @@ export class CRPClient extends EventEmitter {
       };
       this._pending.set(txnId, entry);
       this._startTxnTimer(txnId, entry);
-      this._send(packet);
+      this._watchSend(txnId, entry, this._send(packet));   // LOCAL PATCH (pod, D45) J2
     });
   }
 
@@ -626,7 +641,7 @@ export class CRPClient extends EventEmitter {
     if (entry.retries < this._txnRetries) {
       entry.retries++;
       this._startTxnTimer(txnId, entry);
-      this._send(entry.packet); // retry
+      this._watchSend(txnId, entry, this._send(entry.packet)); // retry; LOCAL PATCH (pod, D45) J2
     } else {
       this._pending.delete(txnId);
       this._txnAlloc.free(txnId);
@@ -766,9 +781,14 @@ export class CRPClient extends EventEmitter {
       this.emit('error', { txnId, channel, code: status, reg });
 
       if (txnId !== 0) {
-        this._rejectTxn(txnId, new Error(
+        // LOCAL PATCH (pod, D45) J1: the Error carries the status number and the register, so a
+        // caller can tell BUSY (8, retried) from the rest without parsing the message
+        const err = new Error(
           `CRP ERROR: code=${codeName} reg=0x${reg.toString(16)} ch=${channel}`,
-        ));
+        );
+        err.code = status;
+        err.reg = reg;
+        this._rejectTxn(txnId, err);
       }
       return;
     }

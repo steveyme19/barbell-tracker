@@ -7,8 +7,12 @@ Standard library only.
 
     from podlink import PodStream
     s = PodStream(on_sample)          # on_sample({t, ax, ay, az, gx, gy, gz})
-    s.frame(raw_bytes, arrival_ms)    # every frame of any type, in arrival order
-    cmd = s.command()                 # bytes to write to CTRL (STREAM_LIVE / STREAM_FROM)
+    s.packet(crp_pkt, arrival_ms)     # every CRP packet the pod sends, in arrival order (D45)
+    s.frame(raw_bytes, arrival_ms)    # or every frame of any type (captures from before D45)
+    cmd = s.command()                 # bytes to write to the CTRL register (STREAM_LIVE / STREAM_FROM)
+
+Since D45 the frames travel inside CRP (docs/ble.md 2, analysis/crp.py): crp_frame() takes a
+frame out of a packet, and PodStream itself never sees CRP.
 
 The frame builders at the bottom (build_data, build_status, build_info) are the pod's side,
 used by the simulator in make_fake_pod.py.
@@ -17,6 +21,17 @@ used by the simulator in make_fake_pod.py.
 import math
 import struct
 from collections import deque
+
+import crp
+
+# ---- the pod's CRP registers (docs/ble.md 2.3) ----
+REG_PROTO, REG_INFO, REG_STATUS, REG_CAL = 0x00010000, 0x00010001, 0x00010002, 0x00010003
+REG_DATA, REG_CTRL, REG_PUSH = 0x00010004, 0x00010005, 0x00010006
+REG_LINK_KIND, REG_LINK_MTU, REG_LINK_N_MAX = 0x00030001, 0x00030002, 0x00030003
+REG_BENCH = 0x00040001                     # USB only
+DEVICE_ID = 0x444F5042                     # the pod's HELLO device_id, "BPOD" (42 50 4F 44 on the wire)
+FRAME_READS = (REG_INFO, REG_STATUS, REG_CAL)   # an OK RESPONSE to a READ of these carries a frame
+FRAME_PUSHES = (REG_DATA, REG_STATUS)           # so does a push (WRITE txn 0) to these
 
 # ---- constants (docs/ble.md sections 1 to 4) ----
 SERVICE = "9ba40001-6de5-429c-b225-8134b9953e9d"
@@ -48,6 +63,23 @@ def int32(x):
     """The u32 difference x as a signed 32-bit number (JS: x | 0)."""
     x &= 0xFFFFFFFF
     return x - 0x100000000 if x >= 0x80000000 else x
+
+
+def crp_frame(pkt):
+    """The PodLink frame a CRP packet carries, or None (docs/ble.md 7, Feeding the decoder):
+    an OK RESPONSE to a READ of INFO, STATUS or CAL gives its value; a push (WRITE txn 0) to DATA
+    or STATUS gives its value; anything else (HELLO, NOP, LOG, BUSY, the answer to a write, a
+    client's WRITE, a short or unknown packet) gives None. Pure: nothing is counted here, so a
+    malformed frame inside a good packet still reaches the decoder's own checks (`bad`)."""
+    b = bytes(pkt)
+    if len(b) >= 8 and b[0] == crp.RESPONSE and b[2] == crp.OK:      # 0C txn status ch reg:u32 value
+        if struct.unpack_from("<I", b, 4)[0] in FRAME_READS:
+            return b[8:]
+        return None
+    if len(b) >= 6 and b[0] == crp.WRITE and b[1] == 0:               # 04 00 reg:u32 value
+        if struct.unpack_from("<I", b, 2)[0] in FRAME_PUSHES:
+            return b[6:]
+    return None
 
 
 def decode_frame(b):
@@ -202,7 +234,13 @@ class PodStream:
             ep.next_idx = head
         ep.open = False
 
-    # ---- the one entry point ----
+    # ---- the entry points ----
+    def packet(self, pkt, arrival_ms):
+        """A CRP packet from the pod (D45): its frame, if it carries one, goes to frame()."""
+        f = crp_frame(pkt)
+        if f is not None:
+            self.frame(f, arrival_ms)
+
     def frame(self, b, arrival_ms):
         f = decode_frame(bytes(b))
         if f is None:
@@ -629,11 +667,15 @@ MANIFEST = "data/pod-capture-manifest.json"   # relative to analysis/
 
 def replay_rows(rows):
     """Feed capture rows (kind, arrival_ms, payload) into a fresh decoder, checking every logged
-    command against the one the decoder builds. Returns (samples, stream, events) or raises."""
+    command against the one the decoder builds. Returns (samples, stream, events) or raises.
+    pkt rows (a received CRP packet) go through packet(), frame rows (captures from before D45)
+    straight to frame(); tx rows (packets sent) and link rows are for reading only."""
     samples, events = [], []
     s = PodStream(samples.append, lambda k, i: events.append((k, i)))
     for kind, arr, payload in rows:
-        if kind == "frame":
+        if kind == "pkt":
+            s.packet(bytes.fromhex(payload), arr)
+        elif kind == "frame":
             s.frame(bytes.fromhex(payload), arr)
         elif kind == "cmd":
             b = s.command()

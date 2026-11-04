@@ -402,8 +402,12 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   - **USB:** a 2 KB byte spool replaces the slots. Engine packets go in if there's room; pushes
     need room plus 128 B.
 - **A disconnect or a session end ends the stream, not the session hold.**
-  - The pod stops streaming (STATUS b3 = 0), empties the spool and forgets its in-flight count (a
-    dead link reports no TX-complete).
+  - The pod stops streaming (STATUS b3 = 0) and forgets its in-flight count (a dead link reports
+    no TX-complete).
+  - The spool: a disconnect empties it, and so do a Bluetooth BYE or END. A HELLO doesn't: its own
+    answer may be waiting there, behind the old RESPONSEs, which still go in order. A USB session
+    end keeps its bytes, because the port may hold the start of a packet; the text resumes after
+    them.
   - On the next session it sends no DATA until a STREAM command arrives, whose first frame has RESYNC.
   - Frames sent but never delivered are lost from the link only: the phone's
     `STREAM_FROM(boot_id, next index)` gets them back from the ring.

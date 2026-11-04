@@ -51,13 +51,16 @@ def replay(rows):
     """The capture through a fresh decoder, like make_fake_pod.replay, also keeping each sample's
     epoch, each boot's lost_overflow range (as log_ble.py's receiver does), the arrival of the frame
     that revealed each gap (None for one finish() records) and, per frame, (arrival, the last
-    sample t the decoder had kept after it)."""
+    sample t the decoder had kept after it). A pkt row (a CRP packet, D45) counts as a frame when
+    podlink.crp_frame finds one in it, as PodStream.packet does; tx and link rows are skipped."""
     samples, lost_by_boot, gap_arr, frames = [], {}, [], []
     s = pl.PodStream(lambda smp: samples.append((len(s.epochs) - 1, smp)), lambda k, i: None)
     for kind, arr, payload in rows:
         n0 = len(s.gaps)
-        if kind == "frame":
-            b = bytes.fromhex(payload)
+        b = bytes.fromhex(payload) if kind in ("frame", "pkt") else None
+        if kind == "pkt":
+            b = pl.crp_frame(b)               # None: a packet with no frame (HELLO, NOP, BUSY, ...)
+        if b is not None:
             s.frame(b, arr)
             frames.append((arr, s.last_t))
             ep = s.ep
@@ -76,7 +79,7 @@ def replay(rows):
                 s.stop_wait_ms()
             elif payload.startswith("stop_timed_out="):
                 s.stop_timed_out()
-        gap_arr += [arr if kind == "frame" else None] * (len(s.gaps) - n0)
+        gap_arr += [arr if kind in ("frame", "pkt") else None] * (len(s.gaps) - n0)
     return samples, s, lost_by_boot, gap_arr, frames
 
 

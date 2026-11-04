@@ -5,15 +5,19 @@
 //   cd analysis && python make_fake_pod.py && cd ..
 //   node webapp/test/pod.mjs
 //
-// For every scenario it replays the logged decoder input (frames with their arrival times,
+// For every run it replays the logged decoder input (packets or frames with their arrival times,
 // command() calls, STOP, timer calls) into a fresh JS PodStream and requires exactly the same
 // output: samples (t and values bit for bit), gaps, counters, faults, events, command bytes,
-// stop-wait times and stop-timeout results. Any difference is a FAIL.
+// stop-wait times and stop-timeout results. Any difference is a FAIL. Each run is replayed twice
+// (D45): from fake_pod_packets.csv (every CRP packet the client received, through
+// PodStream.packet and so podFrameOf; tx and link rows are for reading only) and from
+// fake_pod_frames.csv (the frames Python's crp_frame took out of them, through PodStream.frame).
+// On the packets pass, podFrameOf must also give exactly the frames file's frames.
 
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { PodStream } from "../sources.js";
+import { PodStream, podFrameOf } from "../sources.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DATA = path.join(ROOT, "analysis", "data");
@@ -44,22 +48,22 @@ const groupBy = (rows) => {
   return m;
 };
 
-const hexToView = (hex) => {
+const hexToBytes = (hex) => {
   const b = new Uint8Array(hex.length / 2);
   for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(2 * i, 2), 16);
-  return new DataView(b.buffer);
+  return b;
 };
+const hexToView = (hex) => new DataView(hexToBytes(hex).buffer);
 const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const pyNum = (s) => (s === "None" ? null : parseFloat(s));   // Python repr() -> number / null
 
-const frames = groupBy(readCsv("fake_pod_frames.csv"));
 const expected = groupBy(readCsv("fake_pod_expected.csv"));
 const gapsWant = groupBy(readCsv("fake_pod_gaps.csv"));
 const statsWant = groupBy(readCsv("fake_pod_stats.csv"));
 const eventsWant = groupBy(readCsv("fake_pod_events.csv"));
 
-let nFail = 0;
-for (const [name, steps] of frames) {
+/** Replay one run's log into a fresh PodStream and compare everything with Python's. */
+function check(name, steps) {
   const fails = [];
   const samples = [];
   const events = [];
@@ -67,7 +71,9 @@ for (const [name, steps] of frames) {
 
   // 1. replay the decoder's input, checking every output the log carries along the way
   for (const st of steps) {
-    if (st.kind === "frame") {
+    if (st.kind === "pkt") {
+      s.packet(hexToBytes(st.payload), parseFloat(st.arrival_ms));
+    } else if (st.kind === "frame") {
       s.frame(hexToView(st.payload), parseFloat(st.arrival_ms));
     } else if (st.kind === "cmd") {
       const b = s.command();
@@ -85,7 +91,11 @@ for (const [name, steps] of frames) {
       } else if (fn === "stop_timed_out") {
         const got = s.stopTimedOut() ? "1" : "0";
         if (got !== val) fails.push(`step ${st.step}: stopTimedOut ${got}, Python ${val}`);
+      } else {
+        fails.push(`step ${st.step}: unknown call ${st.payload}`);
       }
+    } else if (st.kind !== "tx" && st.kind !== "link") {
+      fails.push(`step ${st.step}: unknown row kind ${st.kind}`);   // a new kind must not pass silently
     }
   }
 
@@ -144,11 +154,50 @@ for (const [name, steps] of frames) {
       }
     }
   }
-
-  if (fails.length) nFail++;
-  const gaps = s.gaps.map((g) => `${g.kind} ${g.n}`).join(", ") || "no gaps";
-  console.log(`${fails.length ? "FAIL" : "PASS"}  ${name.padEnd(28)} ${String(samples.length).padStart(6)} samples, ${gaps}`);
-  for (const f of fails.slice(0, 6)) console.log(`      - ${f}`);
+  return { fails, samples, gaps: s.gaps };
 }
-console.log(`\n${frames.size - nFail}/${frames.size} scenarios PASS (JS PodStream vs Python podlink)`);
-process.exit(nFail ? 1 : 0);
+
+/** The packets file's run as the frames file has it: podFrameOf (JS) on every pkt row must give
+ * exactly the frame rows Python's crp_frame gave, same bytes and arrivals, in order. */
+function adapterDiffers(pktSteps, frameSteps) {
+  const js = [];
+  for (const st of pktSteps) {
+    if (st.kind !== "pkt") continue;
+    const f = podFrameOf(hexToBytes(st.payload));
+    if (f !== null) js.push(`${st.arrival_ms} ${toHex(f)}`);
+  }
+  const py = (frameSteps ?? []).filter((st) => st.kind === "frame").map((st) => `${st.arrival_ms} ${st.payload}`);
+  if (js.length !== py.length) return `podFrameOf gives ${js.length} frames, crp_frame ${py.length}`;
+  const i = js.findIndex((v, k) => v !== py[k]);
+  return i < 0 ? null : `frame ${i}: podFrameOf ${js[i].slice(0, 40)}..., crp_frame ${py[i].slice(0, 40)}...`;
+}
+
+let nRuns = 0, nFail = 0;
+const names = {};
+const frameRuns = groupBy(readCsv("fake_pod_frames.csv"));
+for (const [file, label] of [["fake_pod_packets.csv", "packets"], ["fake_pod_frames.csv", "frames"]]) {
+  const runs = label === "frames" ? frameRuns : groupBy(readCsv(file));
+  names[label] = [...runs.keys()];
+  console.log(`-- ${file}: ${runs.size} runs, through PodStream.${label === "packets" ? "packet" : "frame"}`);
+  for (const [name, steps] of runs) {
+    const { fails, samples, gaps } = check(name, steps);
+    if (label === "packets") {
+      // every run starts with the pod's HELLO at least, or this file isn't CRP at all
+      if (!steps.some((st) => st.kind === "pkt")) fails.push("no pkt rows");
+      const d = adapterDiffers(steps, frameRuns.get(name));
+      if (d) fails.push(d);
+    }
+    nRuns++;
+    if (fails.length) nFail++;
+    const gapText = gaps.map((g) => `${g.kind} ${g.n}`).join(", ") || "no gaps";
+    console.log(`${fails.length ? "FAIL" : "PASS"}  ${name.padEnd(28)} ${String(samples.length).padStart(6)} samples, ${gapText}`);
+    for (const f of fails.slice(0, 6)) console.log(`      - ${f}`);
+  }
+}
+// both files hold the same runs, in the same order, and every run has its expected outputs
+const same = names.packets.join("|") === names.frames.join("|");
+const orphans = [...statsWant.keys()].filter((n) => !names.packets.includes(n));
+if (!same) console.log("FAIL  the two vector files hold different runs");
+if (orphans.length) console.log(`FAIL  stats rows without a replay: ${orphans.join(", ")}`);
+console.log(`\n${nRuns - nFail}/${nRuns} replays PASS (JS PodStream vs Python podlink: ${names.packets.length} runs x packets and frames)`);
+process.exit(nFail || !same || orphans.length ? 1 : 0);
