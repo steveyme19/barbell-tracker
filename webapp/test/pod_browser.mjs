@@ -4,8 +4,8 @@
 //   node webapp/test/pod_browser.mjs [--url=http://localhost:8765/webapp/] [--seconds=20]
 //                                    [--reps [--rom=18in | --rom=46] [--exercise=Deadlift]]
 //
-// Needs: the pod advertising nearby (Bluetooth headphones off: they starve the laptop's
-// scanning, D28), the web app served on localhost (the .claude/launch.json "webapp" server, or
+// Needs: the pod advertising nearby with D45 firmware (the CRP service; Bluetooth headphones off:
+// they starve the laptop's scanning, D28), the web app served on localhost (the .claude/launch.json "webapp" server, or
 // python -m http.server). It launches Chrome with a throwaway profile, answers the Bluetooth
 // chooser through CDP's DeviceAccess domain (no click needed), then:
 //   1. Connect pod, Start: the footer shows ~211 Hz, 16/pkt, lost 0; |a| at rest ~9.8 (raw pod)
@@ -22,7 +22,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decodeFrame, POD } from "../sources.js";
+import { decodeFrame, podFrameOf, POD } from "../sources.js";
 import { sleep, openChrome, pickPod, replayCapture, worstDiff } from "./cdp.mjs";
 
 const arg = (k, d) => process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=").slice(1).join("=") ?? d;
@@ -86,10 +86,12 @@ async function main() {
       const pod = await js("window.barDebug.pod()");
       const tails = pod.gapList.filter((g) => g.kind.endsWith("-tail"));
       const idxLoss = pod.gapList.filter((g) => !g.kind.startsWith("imu"));
-      // the head the pod reported when it stopped (a later 1 s STATUS reports a bigger one)
+      // the head the pod reported when it stopped (a later 1 s STATUS reports a bigger one); the
+      // capture's pkt rows are CRP packets (D45), whose frame podFrameOf takes out
+      const u8 = (hex) => Uint8Array.from(hex.match(/../g), (h) => parseInt(h, 16));
       const stopHead = (await js("window.barDebug.podCaptureData().csv")).trim().split("\n").slice(1)
-        .map((row) => row.split(",")).filter((r) => r[2] === "frame")
-        .map((r) => decodeFrame(Uint8Array.from(r[4].match(/../g), (h) => parseInt(h, 16))))
+        .map((row) => row.split(",")).filter((r) => r[2] === "pkt" || r[2] === "frame")
+        .map((r) => (r[2] === "pkt" ? podFrameOf(u8(r[4])) : u8(r[4]))).filter((f) => f !== null).map((f) => decodeFrame(f))
         .filter((f) => f?.type === POD.T_STATUS && (f.flags & POD.S_STREAM_STOPPED)).at(-1)?.head;
       check(pod.stats.stopped === 1 && !tails.length && pod.lastIdx + 1 === stopHead,
         `End took ${((Date.now() - tEnd) / 1000).toFixed(1)} s: stopped ${pod.stats.stopped}, tails ${JSON.stringify(tails)}, ` +
@@ -120,14 +122,14 @@ async function main() {
         const png = join(tmpdir(), `pod-set-card-${stamp}.png`);
         writeFileSync(png, Buffer.from(shot.data, "base64"));
         note(`set card screenshot: ${png}`);
-        // keep the raw data (P2): the set as the app saves it, and the frames for podlink.py
+        // keep the raw data (P2): the set as the app saves it, and the packets for podlink.py
         const rec = await js("window.barDebug.recording()");
         writeFileSync(join(ROOT, "analysis", "data", rec.name), rec.csv);
         writeFileSync(join(ROOT, "analysis", "data", `pod-capture-${stamp}.csv`), (await js("window.barDebug.podCaptureData()")).csv);
         note(`saved analysis/data/${rec.name} and analysis/data/pod-capture-${stamp}.csv`);
       }
 
-      // the same frames through the Python reference decoder (P1) must give the same samples
+      // the same packets through the Python reference decoder (P1) must give the same samples
       const cap = await js("window.barDebug.podCaptureData()");
       const ref = replayCapture(cap.csv, PYTHON, ROOT);
       if (ref.error) {

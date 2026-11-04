@@ -149,7 +149,7 @@ struct podcrp_link {
   uint8_t end_why;                    // the PODCRP_END_* the next session end reports, 0 = END
   bool in_engine;                     // inside crp_engine_process: pushes and LOGs are refused
   bool sent;                          // the transport took the last packet (for podcrp_log)
-  uint16_t mtu_eff;                   // BLE: min(ATT MTU, 247). USB: 1027, so packets up to 1024
+  uint16_t mtu_eff;                   // BLE: min(ATT MTU, 247). USB: 1027, so packets up to 1024 (its MTU register says 0)
   uint32_t tx_drops;                  // engine packets dropped: spool full, or too big to send
   volatile uint32_t rx_drops;         // client packets dropped: queue full, too long, bad length
   volatile uint8_t rx_head, rx_tail;  // RX queue: the producer owns head, loop() owns tail

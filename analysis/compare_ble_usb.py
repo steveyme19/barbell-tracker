@@ -17,15 +17,33 @@ same, to print precision and 2 us), then matches every sample by time. Pass (ble
     the receiver decoded, the stream ended with the pod's stream_stopped (no tail lost, no stop
     timeout), no faults, pkt_seq gaps 0, no unexplained gaps, and for each boot the pod's own
     lost_overflow counter rose by exactly the samples its overflow gaps count.
+
+    python compare_ble_usb.py --exact data/pod-capture-A.csv data/pod-capture-B.csv
+
+--exact: PodStream against PodStream, both sides unrounded (D45: say log_ble.py over Bluetooth and
+log_ble.py --usb, run at the same time). Each argument is a run's capture, or its bar-pod CSV or
+pod-link JSON (the capture beside it is used). Both captures are replayed through a fresh decoder
+(podlink.py), every sample keyed by (boot_id, index), so there is nothing to align. Pass:
+  - each capture replays (every logged command is the one the decoder builds) and, where its
+    pod-link JSON is there, to exactly what its receiver decoded live (count and gaps);
+  - the same pod (INFO serial), and samples in common;
+  - per side and boot, the kept indices plus the counted index gaps cover one range exactly once:
+    whatever a side lacks that the other has is a counted gap of its own;
+  - every sample both kept is bit for bit the same, and per boot t differs by one constant (to
+    1 ns: the same ticks, another tOffset);
+  - no faults, no unexplained gaps, pkt_seq gaps 0, on both sides.
 """
 
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 
 TOL_A, TOL_G, TOL_T = 6e-5, 6e-4, 3e-6
 LEAD_IN = 600 + 50                 # STREAM_LIVE(600) samples from before the receiver started (+ slack)
+EXACT_T = 1e-9                     # --exact: the per-boot t offset holds to float rounding
+VALUES = ("ax", "ay", "az", "gx", "gy", "gz")
 
 
 def load(path):
@@ -143,8 +161,136 @@ def compare(usb_path, ble_path, link_path=None):
     return ok
 
 
+# ---- --exact: PodStream against PodStream ----
+def capture_of(path):
+    """A run's capture from any of its files: pod-capture-<tag>.csv itself, or bar-pod-<tag>.csv /
+    pod-link-<tag>.json beside it (log_ble.py's names). Anything else is taken as a capture."""
+    p = Path(path)
+    for pre, ext in (("bar-pod-", ".csv"), ("pod-link-", ".json")):
+        if p.name.startswith(pre) and p.suffix == ext:
+            return p.with_name("pod-capture-" + p.stem[len(pre):] + ".csv")
+    return p
+
+
+def replay_keyed(path):
+    """A capture through a fresh decoder, by podlink.replay_rows' rules (pkt and frame rows fed,
+    cmd rows checked against command(), stop and call rows replayed, the rest skipped), each
+    sample keyed by (boot_id, index). Returns ({key: sample}, the decoder, keys seen twice)."""
+    import podlink as pl
+    keyed, twice = {}, [0]
+    s = None
+
+    def on_sample(smp):
+        k = (s.ep.boot_id, s.ep.last_idx)          # last_idx is set before on_sample is called
+        twice[0] += k in keyed
+        keyed[k] = smp
+    s = pl.PodStream(on_sample)
+    for kind, arr, payload in pl.read_capture(path):
+        if kind == "pkt":
+            s.packet(bytes.fromhex(payload), arr)
+        elif kind == "frame":
+            s.frame(bytes.fromhex(payload), arr)
+        elif kind == "cmd":
+            b = s.command()
+            if ("none" if b is None else b.hex()) != payload:
+                raise ValueError(f"replayed command {'none' if b is None else b.hex()} != logged {payload}")
+        elif kind == "stop":
+            s.stop_command()
+        elif kind == "call":
+            if payload == "finish":
+                s.finish()
+            elif payload.startswith("stop_timed_out="):
+                s.stop_timed_out()
+    return keyed, s, twice[0]
+
+
+def tiling(keyed, s):
+    """Per boot: the kept indices plus the index gaps (every kind but imu holes) must cover one
+    range exactly once. Returns ({boot: (lo, hi)}, [problems])."""
+    spans, bad = {}, []
+    for boot in sorted({b for b, _ in keyed} | {g["boot_id"] for g in s.gaps if not g["kind"].startswith("imu")}):
+        cover = [(i, i + 1, "sample") for b, i in keyed if b == boot]
+        cover += [(g["idx"], g["idx"] + g["n"], g["kind"]) for g in s.gaps
+                  if g["boot_id"] == boot and not g["kind"].startswith("imu") and g["n"] > 0]
+        cover.sort()
+        if not cover:
+            continue
+        at = cover[0][0]
+        for a, z, what in cover:
+            if a != at:
+                bad.append(f"boot {boot}: at index {at} the next is {what} from {a}"
+                           + (" (a silent hole)" if a > at else " (an overlap)"))
+                break
+            at = z
+        spans[boot] = (cover[0][0], at)
+    return spans, bad
+
+
+def exact(a_path, b_path):
+    ok = True
+
+    def check(good, msg):
+        nonlocal ok
+        print(("PASS  " if good else "FAIL  ") + msg)
+        ok = ok and bool(good)
+
+    sides = []
+    for path in (a_path, b_path):
+        cap = capture_of(path)
+        try:
+            keyed, s, twice = replay_keyed(cap)
+        except (OSError, ValueError, KeyError) as e:
+            check(False, f"{cap.name} doesn't replay: {e}")
+            return False
+        spans, bad = tiling(keyed, s)
+        print(f"{cap.name}: {len(keyed)} samples, {len(s.epochs)} epoch(s), "
+              f"gaps {[(g['kind'], g['n']) for g in s.gaps]}, spans {spans}")
+        check(not twice, f"{cap.name}: every (boot, index) kept once ({twice} twice: a reboot without a new boot_id?)")
+        link = cap.with_name("pod-link-" + cap.stem[len("pod-capture-"):] + ".json")
+        if cap.name.startswith("pod-capture-") and link.exists():
+            j = json.loads(link.read_text())
+            check(j["samples"] == len(keyed) and j["gaps"] == json.loads(json.dumps(s.gaps)),
+                  f"{cap.name}: the replay is what the receiver decoded live ({len(keyed)} samples, "
+                  f"{link.name} says {j['samples']}; gaps {'equal' if j['gaps'] == json.loads(json.dumps(s.gaps)) else 'differ'})")
+        check(not bad, f"{cap.name}: kept indices + counted gaps cover each boot exactly once" + (f": {bad}" if bad else ""))
+        check(not s.faults and s.stats["pkt_seq_gaps"] == 0 and not any(g["kind"] == "unexplained" for g in s.gaps),
+              f"{cap.name}: faults {s.faults}, pkt_seq gaps {s.stats['pkt_seq_gaps']}, "
+              f"reconnects {s.stats['reconnects']}, stopped {s.stats['stopped']}")
+        sides.append((cap, keyed, s, spans))
+
+    (ca, ka, sa, spa), (cb, kb, sb, spb) = sides
+    check(sa.serial is not None and sa.serial == sb.serial,
+          f"the same pod: serial {sa.serial and hex(sa.serial)} and {sb.serial and hex(sb.serial)}")
+    both = sorted(set(ka) & set(kb))
+    check(len(both) > 0, f"{len(both)} samples in both, over {len({b for b, _ in both})} boot(s)")
+    diff = [k for k in both if tuple(ka[k][v] for v in VALUES) != tuple(kb[k][v] for v in VALUES)]
+    check(not diff, f"every sample in both is bit for bit the same ({len(diff)} differ"
+                    + (f", first at boot {diff[0][0]} index {diff[0][1]})" if diff else ")"))
+    for boot in sorted({b for b, _ in both}):
+        dts = [kb[k]["t"] - ka[k]["t"] for k in both if k[0] == boot]
+        dev = max(abs(d - dts[0]) for d in dts)
+        check(dev <= EXACT_T, f"boot {boot}: t({cb.name}) = t({ca.name}) + {dts[0]:.9f} s over {len(dts)} samples "
+                              f"(worst deviation {dev * 1e9:.3f} ns)")
+        # what one side lacks inside both spans: by the tiling check, its own counted gaps
+        lo = max(spa[boot][0], spb[boot][0])
+        hi = min(spa[boot][1], spb[boot][1])
+        for name, mine, other, s in ((ca.name, ka, kb, sa), (cb.name, kb, ka, sb)):
+            lack = [i for i in range(lo, hi) if (boot, i) not in mine and (boot, i) in other]
+            if lack:
+                kinds = sorted({g["kind"] for g in s.gaps if g["boot_id"] == boot and g["idx"] <= lack[-1]
+                                and g["idx"] + g["n"] > lack[0] and not g["kind"].startswith("imu")})
+                print(f"      boot {boot}: {name} lacks {len(lack)} samples the other has, counted as {kinds}")
+    print("PASS" if ok else "FAIL")
+    return ok
+
+
 if __name__ == "__main__":
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        sys.exit(0)
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) < 2:
         sys.exit(__doc__)
+    if "--exact" in sys.argv:
+        sys.exit(0 if exact(*args[:2]) else 1)
     sys.exit(0 if compare(*args[:3]) else 1)

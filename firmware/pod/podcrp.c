@@ -115,7 +115,10 @@ static crp_status_t r_read(void *ctx, uint32_t reg, uint8_t *buf, uint32_t *len)
     case PODCRP_REG_PROTO: buf[0] = PODCRP_PROTO_VALUE; n = 1; break;
     case PODCRP_REG_PUSH: buf[0] = l->push; n = 1; break;
     case PODCRP_REG_KIND: buf[0] = l->kind; n = 1; break;
-    case PODCRP_REG_MTU: put16(buf, l->mtu_eff); n = 2; break;
+    case PODCRP_REG_MTU:                      // USB has no ATT MTU: 0, as make_fake_pod.py's on_read
+      put16(buf, l->kind == PODCRP_USB ? 0 : l->mtu_eff);
+      n = 2;
+      break;
     case PODCRP_REG_TX_DROPS: put32(buf, l->tx_drops); n = 4; break;
     case PODCRP_REG_RX_DROPS: put32(buf, l->rx_drops); n = 4; break;
     default:                                  // INFO, STATUS, CAL and the sketch's values

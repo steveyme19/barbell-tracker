@@ -646,9 +646,11 @@ class Pod:
 
     def ctrl(self, link, b):
         """A WRITE to CTRL on this link (docs/ble.md 2.3 and 4). Returns the RESPONSE's status."""
-        if self.sleeping:
-            return crp.BUSY                   # the sleep prologue, from the SLEEP op on
-        op = b[0] if b else None
+        if not 1 <= len(b) <= 10:
+            return crp.INVALID_VALUE          # podcrp.c checks the length before the pod's handler
+        if self.sleeping or self.sleep_req is not None:
+            return crp.BUSY                   # from the SLEEP op on (firmware: sleepCmd, then inPrologue)
+        op = b[0]
         if op == pl.OP_STREAM_FROM and len(b) == 10:
             _, seq, boot, frm = struct.unpack("<BBII", b)
             if boot != self.boot_id:
@@ -678,7 +680,7 @@ class Pod:
             nm = max(link.n_max(), 1)
             link.drain = {"head": self.head, "kind": "stop",
                           "deadline": self.b.now + 1500 + backlog / (60 * nm) * 1000}
-        elif op == pl.OP_SLEEP and len(b) == 2:
+        elif op == pl.OP_SLEEP and len(b) == 2 and b[1] <= 1:   # modes 0 and 1 only (docs/ble.md 4)
             self.sleep_req = 4                # loop() runs the prologue after this WRITE's RESPONSE
         else:
             return crp.INVALID_VALUE          # unknown op or wrong length: nothing changes

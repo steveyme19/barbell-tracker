@@ -148,7 +148,7 @@ The other groups are read-only mirrors for Ansync's dashboard; the app doesn't r
   | offset | name | type | notes |
   |---|---|---|---|
   | 01 | KIND | u8 | 1 Bluetooth, 2 USB |
-  | 02 | MTU | u16 | |
+  | 02 | MTU | u16 | the ATT MTU on Bluetooth, 0 on USB |
   | 03 | N_MAX | u8 | |
   | 04 | INTERVAL | u16 | 1.25 ms units |
   | 05 | PHY | u8 | |
@@ -166,8 +166,8 @@ How writes are answered:
 | write | answer |
 |---|---|
 | CTRL, op taken | OK. A STREAM_FROM with the wrong boot_id counts as taken: its real answer is the boot_mismatch STATUS |
-| CTRL, unknown op or wrong length | INVALID_VALUE, and nothing changes |
-| CTRL, from the SLEEP op on | BUSY |
+| CTRL, unknown op, wrong length or a SLEEP mode other than 0 and 1 | INVALID_VALUE, and nothing changes. A CTRL value of 0 or more than 10 B gets it even during the sleep prologue: its length is checked first |
+| CTRL, from the SLEEP op on (also the next CTRL in the same pass, on either link) | BUSY |
 | a read-only register | ACCESS_DENIED |
 | an unknown register | UNKNOWN_REG |
 

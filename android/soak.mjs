@@ -103,7 +103,7 @@ async function end() {
     const dir = `/sdcard/Documents/BarTracker/${st.folder}`;
     const files = adb("shell", "ls", dir).split(/\s+/).filter(Boolean);
     for (const f of files) adb("pull", `${dir}/${f}`, join(out, f));
-    // the capture (every frame, command and call, for podlink.py), in 2 MB pieces
+    // the capture (every packet, command and call, for podlink.py), in 2 MB pieces
     const n = await js("window.barDebug.podCaptureData()?.csv.length ?? 0");
     let csv = "";
     for (let i = 0; i < n; i += 2e6) csv += await js(`window.barDebug.podCaptureData().csv.slice(${i}, ${i + 2e6})`);

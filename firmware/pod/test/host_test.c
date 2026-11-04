@@ -687,7 +687,7 @@ static void t_errors(void) {
   req(l, rd(0x60, PODCRP_REG_KIND));
   expect(l, resp(0x60, 0, PODCRP_REG_KIND, "02"), "USB: KIND = 2");
   req(l, rd(0x61, PODCRP_REG_MTU));
-  expect(l, resp(0x61, 0, PODCRP_REG_MTU, "03 04"), "USB: MTU = 1027 (packets up to 1024)");
+  expect(l, resp(0x61, 0, PODCRP_REG_MTU, "00 00"), "USB: MTU = 0 (no ATT MTU, as make_fake_pod.py's on_read)");
   req(l, wr(0x62, PODCRP_REG_BENCH, "77"));
   expect(l, resp(0x62, 0, PODCRP_REG_BENCH, ""), "USB: BENCH 'w' answered by its hook");
   check(F.bench_calls == 1 && F.bench_c == 'w', "the hook got 'w'");

@@ -11,9 +11,11 @@
 //     asleep it isn't checked (D38). Below LOW_BATT_WARN_V (the app's battery-low warning) every
 //     sleep on battery is IMU-off too, so a pod left near empty drains about half as fast
 //   - charging at 100 mA (FAST_CHARGE) instead of the default 50 mA
-//   - Bluetooth (ble.ino): the PodLink v1 service, docs/ble.md. Every sample also goes into a
-//     38 s ring, and the phone streams from it and resumes after a dropout without losing samples
-//     (before any sleep the phone gets the rest of the stream, the reason and a clean disconnect)
+//   - Bluetooth (ble.ino) and USB (usb.ino): the PodLink v1 frames over CRP, docs/ble.md (D45).
+//     Every sample also goes into a 38 s ring, and the phone streams from it and resumes after a
+//     dropout without losing samples (before any sleep the phone gets the rest of the stream, the
+//     reason and a clean disconnect). USB starts in text mode (the CSV below); a level 1 HELLO
+//     switches it to CRP, with its own stream from the same ring (link.ino runs both)
 //   - sampling (sampler.ino): the IMU's data-ready interrupt wakes a top-priority task that
 //     stamps, reads and stores each sample; loop() only sends (USB CSV, Bluetooth) from the ring,
 //     so neither the radio nor a stuck USB host can delay or drop a sample
@@ -22,17 +24,20 @@
 // results are in firmware/README.md.
 //
 // One line per IMU sample:  t_us,ax,ay,az,gx,gy,gz  (t_us from RTC2 on the 32.768 kHz crystal,
-// D25; m/s^2 incl. gravity; deg/s). Lines starting with # are messages.
+// D25; m/s^2 incl. gravity; deg/s). Lines starting with # are messages (LOG packets in CRP mode).
 // Bench commands over USB: s = sleep (wake on motion), o = sleep with the IMU off,
 // w = dry run of s (no System OFF; reports whether INT1 fires falsely), i = stop the IMU's
 // sampling (no data-ready; after ~1 s the sampler restarts it: tests IMU_RESTART),
-// h = hang loop() (tests the watchdog: a reset after 8 s).
+// h = hang loop() (tests the watchdog: a reset after 8 s). In text mode a character; in CRP mode
+// a write to the BENCH register (usb.ino).
 
 #include <Adafruit_TinyUSB.h>  // USB serial on the Seeed nRF52 core
 #include <Wire.h>
 #include <LSM6DS3.h>
 #include <bluefruit.h>   // Bluetooth (Bluefruit52Lib, ships with the core)
-#include "podlink.h"   // PodLink v1 frames and UUIDs (docs/ble.md)
+#include "podlink.h"   // PodLink v1 frames (docs/ble.md)
+#include "podcrp.h"    // the CRP glue (docs/ble.md 2). Here in the first tab: Arduino puts its generated
+                       // prototypes ahead of any include in a later tab, and they use podcrp_link_t
 
 // ---- settings ----
 const uint16_t ODR_HZ = 208;           // IMU sample rate: 104, 208, 416 or 833
@@ -49,7 +54,7 @@ const uint8_t WAKE_THS = 2;            // wake-up threshold, 31.25 mg per step a
                                        // 1.8x margin on the gentlest, 3 would give only 1.2x.
 
 const float G = 9.80665;               // m/s^2 per g
-const uint16_t FW_BUILD = 9;           // INFO fw_build: the BLE plan step this firmware is from
+const uint16_t FW_BUILD = 10;          // INFO fw_build: 10 = the CRP link (D45); 9 was the BLE plan's step 9
 
 // ---- IMU registers used directly (LSM6DS3TR-C datasheet) ----
 const uint8_t REG_DRDY_PULSE_CFG_G = 0x0B;   // bit 7 DRDY_PULSED: data-ready as a ~75 us pulse
@@ -80,8 +85,6 @@ LSM6DS3 imu(I2C_MODE, 0x6A);           // the Sense's built-in IMU (LSM6DS3TR-C)
 uint32_t rtcWraps = 0, rtcLast = 0;    // RTC2 timestamp unwrapping (D25)
 
 // ---- PodLink ring (docs/ble.md, docs/ble-plan.md step 4) ----
-const bool PKT_OVER_USB = false;       // step 4 bench test: DATA / STATUS / INFO frames as P / S / I
-                                       // hex lines next to the CSV (analysis/podlink.py --usb checks them)
 const uint32_t RING_N = 8192;          // samples, a power of two: 128 KiB, ~38.8 s at 211 Hz
 const uint32_t RING_MASK = RING_N - 1;
 PodSample ring[RING_N];
@@ -89,40 +92,37 @@ volatile uint32_t head = 0;            // samples stored since boot = the next i
                                        // task writes it, after the slot; readers copy it once per pass
 uint32_t restartIdx[40];               // first index after each recent IMU restart
 uint8_t nRestart = 0;                  // how many of restartIdx are used (oldest dropped first)
-uint32_t bootId = 0;                   // random per boot (INFO)
+uint32_t bootId = 0;                   // random per boot (INFO; ble.ino drawBootId). 0 = the RNG failed:
+                                       // no advertising, and USB stays in text mode (usb.ino)
 uint8_t wakeReason = 0;                // INFO: 0 power-on / upload, 1 motion, 2 USB, 3 reset pin
+uint32_t resetReas = 0;                // RESETREAS at boot (the RESETREAS register)
 uint32_t wakeLatch0 = 0, wakeLatch1 = 0;   // GPIO LATCH at boot: the pins that met their SENSE level
-uint32_t usbCursor = 0;                // next index the USB packer sends
-uint16_t usbPktSeq = 0;
-uint8_t usbFlags = 0;                  // RESYNC / OVERFLOW pending for the next USB frame
-uint32_t usbLost = 0;                  // USB-side loss: only the '# ring' line, never STATUS
 bool sessionHold = false;              // a phone's STREAM command until STOP: long idle limit, no lid-down
-struct CtrlMsg { uint8_t len; uint8_t b[16]; };   // one CTRL write, queued from Bluefruit's task (ble.ino)
 const float LOW_BATT_WARN_V = 3.50;    // STATUS batt_low below this, on battery power only; every
                                        // sleep is then IMU-off (goToSleep, D38)
-uint32_t lastRingLineMs = 0;
-bool usbWasOpen = false;
-uint32_t lastPodStatusMs = 0, lastPodInfoMs = 0;
 volatile uint32_t lastMotionMs = 0;    // idle timer (the sampler sets it)
 uint32_t lastBattMs = 0;
 float lastBattV = 0;
 uint8_t lowBattCount = 0;
+uint8_t lastPower = 0;                 // USB power and charging as of the last pass: a change sends a
+                                       // STATUS at once (podLinkTick; one variable: Arduino's prototype
+                                       // scan takes "bool a = false, b = false;" for a function)
 
 // ---- one link's stream: its cursor, frames, drains and STATUS queue (link.ino runs it, docs/ble.md
-// 3 to 6). Every link runs the same code: Bluetooth's is bleLink (ble.ino), USB gets its own (D45).
-// Declared here because Arduino joins the tabs after this one. loop() owns all of it except
-// pushOn, which Bluefruit's task writes. ----
+// 3 to 6). Every link runs the same code: bleLink (ble.ino) and usbLink (usb.ino, CRP mode), each
+// with its own CRP link (podcrp.c). Declared here because Arduino joins the tabs after this one.
+// loop() owns all of it except txOn, which Bluefruit's task writes. ----
 const uint8_t LINK_BLE = 1, LINK_USB = 2;     // Link.kind: the KIND register values (docs/ble.md 2.3)
 const uint8_t STATUS_Q = 8;
 struct Link {
   uint8_t kind;
-  // the link's own side, set by its owner before its first STATUS (ble.ino: bleSetup)
-  bool (*send)(const uint8_t* p, uint16_t len);   // one packet now, never waiting: true if the link took it
-  uint16_t (*interval)();                         // STATUS connection interval while up
-  void (*readable)(const uint8_t* f);             // refresh the readable STATUS value (NULL: none)
-  bool up;                                        // connected (loop()'s view, from the event counters)
-  volatile bool pushOn;                           // DATA notifications on (Bluetooth: the DATA CCCD)
-  uint16_t mtu;                                   // loop's copy of the MTU, taken when its STATUS is queued
+  // the link's own side, set once at boot (link.ino: linksInit)
+  podcrp_link_t* crp;                             // its CRP link: STATUS and DATA go out as pushes on it
+  uint16_t (*interval)();                         // STATUS connection interval while up (USB: 0)
+  bool up;                                        // Bluetooth: connected (loop()'s view, from the event
+                                                  // counters); USB: in CRP mode
+  volatile bool txOn;                             // Bluetooth: TX notifications on (the CCCD); USB: always
+  uint16_t mtu;                                   // Bluetooth: loop's copy of min(ATT MTU, 247), taken when its STATUS is queued
   uint32_t nextStatusMs;                          // the 1 s STATUS
   bool streaming;
   uint32_t cursor;                                // next index to send
@@ -141,7 +141,15 @@ struct Link {
   uint8_t nStatusQ;
   uint32_t framesSent;
 };
-Link bleLink;                                     // the Bluetooth link (ble.ino). A global: all zero at boot
+Link bleLink;                                     // the Bluetooth link (ble.ino). Globals: all zero at boot
+Link usbLink;                                     // USB in CRP mode (usb.ino)
+podcrp_link_t crpBle, crpUsb;                     // their CRP engines, spools and registers (podcrp.h)
+bool inPrologue = false;                          // the sleep prologue runs: CTRL and BENCH answer BUSY
+
+// USB's mode (usb.ino, docs/ble.md 2.5): the '#' lines below pick text or LOG by it
+const uint8_t USB_TEXT = 0, USB_CRP = 1, USB_FLUSH = 2;   // FLUSH: back to text once the CRP bytes are out
+uint8_t usbMode = USB_TEXT;
+bool usbLog(char* line, uint16_t n);              // usb.ino: a '#' line as a LOG packet
 
 // ---- shared with the sampler task (sampler.ino; declared here because Arduino joins the tabs
 // after this one). Written there, read by loop() and ble.ino, or the other way round. ----
@@ -157,7 +165,7 @@ volatile uint32_t holes = 0;           // stored samples > 1.5 periods apart (a 
 volatile uint32_t maxLatency = 0;      // RTC2 ticks from a data-ready pulse to its sample stored
 // STATUS sleep_reason codes (docs/ble.md 3)
 const uint8_t SLEEP_IDLE = 1, SLEEP_LID_DOWN = 2, SLEEP_LOW_BATT = 3, SLEEP_COMMAND = 4, SLEEP_IMU_LOST = 5;
-uint8_t sleepCmd = 0;                  // the phone's SLEEP op (ble.ino): 1 = motion wake, 2 = IMU off
+uint8_t sleepCmd = 0;                  // a SLEEP op on either link (link.ino): 1 = motion wake, 2 = IMU off
 
 uint32_t csvCursor = 0;                // next ring index the USB CSV prints
 bool csvWasOpen = false;
@@ -165,22 +173,25 @@ uint32_t csvLost = 0;                  // CSV lines the ring overwrote before US
 uint32_t seenRestarts = 0;
 
 // A '#' line for USB, sent whole or not at all: a host that holds the port open without reading
-// must never block loop() (Serial.write would wait for it forever).
+// must never block loop() (Serial.write would wait for it forever). In CRP mode it goes out as a
+// LOG packet instead (docs/ble.md 2.5), and while the port flushes back to text it's dropped.
 class MsgLine : public Print {
  public:
   size_t write(uint8_t c) override {
-    if (n < sizeof(buf)) buf[n++] = c;
+    if (n < sizeof(buf) - 1) buf[n++] = c;    // room for the NUL a LOG needs
     return 1;
   }
   using Print::write;
   void send() {
-    if (n && usbOpen && Serial.availableForWrite() >= (int)n) Serial.write(buf, n);
-    else if (n) dropped++;
+    if (!n) return;
+    if (usbMode == USB_CRP) { if (!usbLog(buf, n)) dropped++; }
+    else if (usbMode == USB_TEXT && usbOpen && Serial.availableForWrite() >= (int)n) Serial.write(buf, n);
+    else dropped++;
     n = 0;
   }
   uint32_t dropped = 0;
  private:
-  char buf[200];
+  char buf[201];
   uint16_t n = 0;
 };
 MsgLine msg;
@@ -263,102 +274,15 @@ void wdtFeed() {
   NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 }
 
-// Print a frame as "<tag> <hex>" in one write (a P line is ~480 characters).
-void printFrame(char tag, const uint8_t* f, uint16_t len) {
-  static char line[3 + 2 * POD_DATA_MAX + 2];
-  static const char hx[] = "0123456789abcdef";
-  line[0] = tag;
-  line[1] = ' ';
-  for (uint16_t i = 0; i < len; i++) {
-    line[2 + 2 * i] = hx[f[i] >> 4];
-    line[3 + 2 * i] = hx[f[i] & 15];
-  }
-  line[2 + 2 * len] = '\n';
-  Serial.write(line, 3 + 2 * len);
-}
-
-// Step 4: pack the ring into DATA frames the same way the BLE sender will (docs/ble.md 5) and
-// print them on USB. Full frames of 16, or a part frame once its oldest sample is 80 ms old;
-// a frame always starts at an IMU restart and never spans more than 60000 ticks.
-void usbPack() {
-  bool open = (bool)Serial;
-  if (open && !usbWasOpen) {                                 // a PC just opened the port
-    usbCursor = head;
-    usbFlags = POD_F_RESYNC;
-  }
-  usbWasOpen = open;
-  if (!open) return;
-  for (int frames = 0; frames < 4; frames++) {
-    uint32_t h = head;
-    if (h - usbCursor > RING_N) {                            // the ring lapped us
-      usbLost += (h - RING_N) - usbCursor;
-      usbCursor = h - RING_N;
-      usbFlags |= POD_F_OVERFLOW;
-    }
-    uint32_t pending = h - usbCursor;
-    if (pending == 0) return;
-    uint8_t n = pending < POD_MAX_N ? pending : POD_MAX_N;
-    uint32_t t0 = ring[usbCursor & RING_MASK].ticks;
-    bool cut = false;
-    for (uint8_t k = 1; k < n; k++) {
-      uint32_t i = usbCursor + k;
-      if (isRestart(i) || ring[i & RING_MASK].ticks - t0 > POD_DT_MAX) { n = k; cut = true; break; }
-    }
-    uint32_t age = (uint32_t)rtcExtend() - t0;
-    if (n < POD_MAX_N && !cut && age < POD_AGE_TICKS) return;   // wait for a full frame
-    uint8_t flags = usbFlags | (isRestart(usbCursor) ? POD_F_IMU_RESTART : 0);
-    uint8_t f[POD_DATA_MAX];
-    uint16_t len = podPackData(f, ring, RING_MASK, usbCursor, n, usbPktSeq, flags, 0);
-    __asm__ volatile("" ::: "memory");                       // the copy happens before the check below
-    if (head - usbCursor > RING_N) continue;                 // overwritten during the copy: the lap check takes it
-    // A P line (up to 479 B) is bigger than the 256 B USB FIFO, so it can't wait for room for all
-    // of it: this bench mode (PKT_OVER_USB, a reading PC) may block for the rest of a line.
-    if (Serial.availableForWrite() < 64) return;
-    printFrame('P', f, len);
-    usbCursor += n;
-    usbPktSeq++;
-    usbFlags = 0;
-  }
-}
-
-void podStatusInfo(uint32_t now);
-
-// Everything the link does per loop pass, with or without a new sample (like the simulator's
-// send pass): the BLE sender, and on the USB bench the P / S / I lines.
+// Everything the links do per loop pass, with or without a new sample (like the simulator's
+// pod step): Bluetooth, then USB in CRP mode, each its own CRP pass around its stream. A power
+// change queues a STATUS on both.
 void podLinkTick(uint32_t now) {
-  bleTick(now);
-  if (!PKT_OVER_USB) return;
-  usbPack();
-  podStatusInfo(now);
-}
-
-void podStatusInfo(uint32_t now) {
-  if (!usbOpen) return;
-  if (now - lastRingLineMs >= 30000) {                       // USB-side diagnostics, not STATUS
-    lastRingLineMs = now;
-    msg.print("# ring head ");
-    msg.print(head);
-    msg.print(" usblost ");
-    msg.print(usbLost);
-    msg.print(" restarts ");
-    msg.println(nRestart);
-    msg.send();
-  }
-  if (now - lastPodStatusMs >= 1000) {
-    lastPodStatusMs = now;
-    uint8_t flags = (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0) |
-                    (lastBattV < LOW_BATT_WARN_V && !usbPowered() ? POD_S_BATT_LOW : 0);
-    uint8_t f[20];
-    podPackStatus(f, flags, (uint16_t)(lastBattV * 1000), (uint32_t)rtcExtend(), head, bleLink.lost, missedDrdy, 0,
-                  POD_MAX_N, 0);
-    if (Serial.availableForWrite() >= 43) printFrame('S', f, 20);
-  }
-  if (now - lastPodInfoMs >= 5000) {
-    lastPodInfoMs = now;
-    uint8_t f[32];
-    podPackInfo(f, FW_BUILD, bootId, NRF_FICR->DEVICEID[0], ODR_HZ, RING_N, wakeReason);
-    if (Serial.availableForWrite() >= 67) printFrame('I', f, 32);
-  }
+  uint8_t power = (usbPowered() ? POD_S_USB : 0) | (charging() ? POD_S_CHARGING : 0);
+  bool powerChanged = power != lastPower;
+  lastPower = power;
+  bleTick(now, powerChanged);
+  usbTick(now, powerChanged);
 }
 
 // Read IMU registers with the whole I2C transaction sequenced by the TWIM hardware: address
@@ -471,14 +395,15 @@ void flashDeepPowerDown() {
 void goToSleep(bool motionWake, const char* why, uint8_t reason, bool dryRun = false) {
   bool onBattery = !usbPowered();
   if (onBattery && lastBattV < LOW_BATT_WARN_V) motionWake = false;
+  inPrologue = true;                                         // CTRL and BENCH answer BUSY from here (docs/ble.md 6)
   samplerPark();                                             // sampling stops: head is final, and the
   wdtFeed();                                                 // I2C bus is loop()'s from here on
   msg.print("# sleeping: ");
   msg.println(why);
   msg.send();
-  bleSleepPrologue(reason);                                  // the phone gets the rest, the reason and a clean disconnect
+  sleepPrologue(reason);                                     // every link gets the rest, the reason; Bluetooth a clean disconnect
   wdtFeed();
-  Serial.flush();
+  msgFlush();
   blink(motionWake ? LED_BLUE : LED_RED, 3);
   // INT1 carries the wake-up next, not data-ready (the sampler detached its interrupt)
   imu.writeRegister(REG_INT1_CTRL, 0x00);
@@ -533,7 +458,7 @@ void goToSleep(bool motionWake, const char* why, uint8_t reason, bool dryRun = f
     msg.print(" INT1_CTRL 0x");
     msg.println(readReg(REG_INT1_CTRL), HEX);
     msg.send();
-    Serial.flush();
+    msgFlush();
     delay(100);
     NVIC_SystemReset();                                      // start fresh, like a real wake
   }
@@ -618,7 +543,10 @@ void setup() {
   NRF_P1->LATCH = wakeLatch1;
   wakeReason = (why & POWER_RESETREAS_OFF_Msk) ? 1 : (why & POWER_RESETREAS_VBUS_Msk) ? 2
              : (why & POWER_RESETREAS_RESETPIN_Msk) ? 3 : 0;
+  resetReas = why;
   Serial.begin(115200);                                      // the wait for a PC comes after the sampler starts
+  bleIdentity();                                             // the address and name (ble.ino): the links need the name
+  linksInit();                                               // both CRP links, idle until a phone or a HELLO (link.ino)
 
   if (!imuStart()) {
     // On battery, don't sit here awake: sleep with the IMU off (USB or reset wakes it). Checked
@@ -668,7 +596,7 @@ void setup() {
   // link runs as in loop(): advertising is on, so a phone may connect now (its # lines are
   // dropped until a PC opens the port).
   uint32_t t0 = millis();
-  while (!Serial && usbPowered() && millis() - t0 < 2000) { wdtFeed(); bleTick(millis()); delay(10); }
+  while (!Serial && usbPowered() && millis() - t0 < 2000) { wdtFeed(); podLinkTick(millis()); delay(10); }
 
   Serial.print("# pod firmware, IMU WHO_AM_I 0x");
   Serial.print(who, HEX);
@@ -702,19 +630,8 @@ void loop() {
   wdtFeed();
   usbOpen = (bool)Serial;
 
-  if (usbOpen && Serial.available()) {                       // bench commands (top of file)
-    char c = Serial.read();
-    if (c == 's') goToSleep(true, "command s", SLEEP_COMMAND);
-    if (c == 'o') goToSleep(false, "command o", SLEEP_COMMAND);
-    if (c == 'w') goToSleep(true, "command w (dry run)", SLEEP_COMMAND, true);
-    if (c == 'i') imuStopReq = true;                         // the sampler stops the IMU (it owns the bus)
-    if (c == 'h') {                                          // bench: hang; the watchdog resets in 8 s
-      msg.println("# hanging loop() on purpose: the watchdog resets in 8 s");
-      msg.send();
-      Serial.flush();                                        // loop() won't return to send it
-      for (;;) {}
-    }
-  }
+  usbRead(now);                                              // usb.ino: bench commands (top of file) in text
+                                                             // mode, the switch to CRP, CRP bytes for its pass
   if (sleepReq == SLEEP_LID_DOWN) {                         // still no PC and no session?
     if (!usbOpen && !sessionHold) goToSleep(true, "lid-down gesture", SLEEP_LID_DOWN);
     sleepReq = 0;
@@ -727,18 +644,20 @@ void loop() {
   }
 
   housekeeping(now);
-  podLinkTick(now);                                          // Bluetooth (and the P / S / I bench lines)
-  if (sleepCmd) goToSleep(sleepCmd == 1, sleepCmd == 1 ? "BLE SLEEP" : "BLE SLEEP, IMU off", SLEEP_COMMAND);
+  podLinkTick(now);                                          // Bluetooth, then USB in CRP mode
+  benchRun();                                                // a BENCH write (usb.ino), now that its RESPONSE is out
+  if (sleepCmd) goToSleep(sleepCmd == 1, sleepCmd == 1 ? "SLEEP op" : "SLEEP op, IMU off", SLEEP_COMMAND);
   usbDrain();
   delay(5);                                                  // the CPU sleeps; the sampler wakes on its own
 }
 
 // The CSV over USB, from the ring: never blocks (a host that holds the port open without reading
-// stalls only USB, counted in csvLost) and starts live when the port opens.
+// stalls only USB, counted in csvLost) and starts live when the port opens. Text mode only: CRP
+// mode stops it, and the way back sets csvCursor = head (usb.ino).
 void usbDrain() {
   if (usbOpen && !csvWasOpen) csvCursor = head;
   csvWasOpen = usbOpen;
-  if (!usbOpen) return;
+  if (!usbOpen || usbMode != USB_TEXT) return;
   for (int k = 0; k < 32; k++) {
     uint32_t h = head;
     if (h - csvCursor > RING_N) {                            // the host fell 38 s behind

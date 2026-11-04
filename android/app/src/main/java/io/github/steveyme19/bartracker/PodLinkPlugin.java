@@ -15,6 +15,7 @@ import android.bluetooth.BluetoothStatusCodes;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.BroadcastReceiver;
@@ -47,31 +48,37 @@ import java.util.UUID;
 
 /**
  * The pod over Bluetooth LE for the app (docs/ble-plan.md section 3 "Android app", step 11;
- * protocol docs/ble.md). A dumb pipe: it connects, subscribes to DATA (STATUS frames ride on it
- * too, D28) and hands every frame to JS untouched. It never parses one: the only decoders are
- * podlink.py and the PodStream port in webapp/sources.js, so no third one can drift.
+ * protocol docs/ble.md). A dumb pipe: it connects, subscribes to the CRP service's TX (every packet
+ * the pod sends comes on it, in order, D28 and D45) and hands every packet to JS untouched; JS's
+ * packets go to RX. It never parses one: the CRP session runs in JS (PodCrpLink in
+ * webapp/sources.js) and the only decoders are podlink.py and its PodStream port, so no third one
+ * can drift.
  *
  * Methods:
  *   connect({ any? }) -> { name, address, mtu, link, wallMs, elapsedMs }: the saved pod with a 10 s
- *     timeout, else an 8 s scan for the PodLink service. The scan takes the saved pod the moment it
- *     hears it; with none saved, the strongest. It never swaps the saved pod for another one unless
- *     any: true (pick a new pod: skip the saved one, take the strongest); the address is saved once
- *     a connect works (it comes from FICR, so it stays the same across reboots). Then the connection order
- *     (docs/ble.md 7): services, MTU 247, read INFO, read STATUS (both go out as frames), the DATA
- *     CCCD. wallMs / elapsedMs map the events' arrival times to the wall clock.
- *   write({ b, link? }): b = base64 bytes, written to CTRL with response (queued). With link, a
- *     write meant for an earlier link (JS computed it before a reconnect) is refused.
- *   reread(): read INFO and STATUS again, both out as frames (the decoder's need-info).
+ *     timeout, else an 8 s scan for the CRP service, taking only names starting BarPod- (every
+ *     Ansync CRP device shares the service). The scan takes the saved pod the moment it hears it;
+ *     with none saved, the strongest. It never swaps the saved pod for another one unless any: true
+ *     (pick a new pod: skip the saved one, take the strongest); the address is saved once a connect
+ *     works (FICR XOR a fixed mask, so it stays the same across reboots). Then its part of the
+ *     connection order (docs/ble.md 7, step 1): services, MTU 247, the TX CCCD. wallMs / elapsedMs
+ *     map the events' arrival times to the wall clock. The rest of the order (HELLO, the reads,
+ *     PUSH, the command) is JS's, over write().
+ *   write({ b, link? }): b = base64, one CRP packet, written to RX with response (queued: one GATT
+ *     operation at a time, in call order). With link, a write meant for an earlier link (JS
+ *     computed it before a reconnect) is refused.
  *   disconnect(): the last batch out, then disconnect and close.
  * Events:
- *   "pod" { f: [base64 frame, ...], w: [arrival, SystemClock.elapsedRealtime() ms, ...] }, ~50 ms batches
+ *   "pod" { f: [base64 packet, ...], w: [arrival, SystemClock.elapsedRealtime() ms, ...] }, ~50 ms batches
  *   "podState" { state: connecting | linking | ready | lost | closed, status, mtu, link }
  * A link that drops without disconnect() is reconnected with autoConnect (it waits for the pod by
- * itself, screen off too); "linking" says its link is up and the order runs (End waits for it, so
- * its STOP reaches the pod), then "ready" (with a new link number)
- * says JS can write its STREAM command (CCCDs don't persist without bonding). Bluetooth switched
- * off counts as a drop, and the reconnect waits until it's back on. A link that goes 5 s without a
- * frame is dead whatever Android says (the pod sends a STATUS every second).
+ * itself, screen off too); "linking" says its link is up and the GATT chain runs (End waits for it,
+ * so its STOP reaches the pod), then "ready" (with a new link number) says JS can run the CRP
+ * connection order and write its STREAM command (CCCDs don't persist without bonding, and the pod
+ * starts every link without a session). Bluetooth switched off counts as a drop, and the reconnect
+ * waits until it's back on. A link that goes 5 s without a packet is dead whatever Android says
+ * (once JS's HELLO opened the session the pod's engine sends a NOP after 1 s of silence, and once
+ * PUSH is on it pushes a STATUS every second).
  * Android 13+ only: the pod's address is random static, and only getRemoteLeDevice (API 33) can say
  * so. On 12 a reconnect after a Bluetooth restart waits forever for a public address.
  */
@@ -81,51 +88,54 @@ import java.util.UUID;
 public class PodLinkPlugin extends Plugin {
 
     private static final String TAG = "PodLink";
-    static final UUID SERVICE = UUID.fromString("9ba40001-6de5-429c-b225-8134b9953e9d");
-    static final UUID DATA = UUID.fromString("9ba40002-6de5-429c-b225-8134b9953e9d");
-    static final UUID CTRL = UUID.fromString("9ba40003-6de5-429c-b225-8134b9953e9d");
-    static final UUID STATUS = UUID.fromString("9ba40004-6de5-429c-b225-8134b9953e9d");
-    static final UUID INFO = UUID.fromString("9ba40005-6de5-429c-b225-8134b9953e9d");
+    // the CRP service (docs/ble.md 2.4, D45): Ansync's, 16-bit values on the Bluetooth base
+    static final UUID SERVICE = UUID.fromString("00005090-0000-1000-8000-00805f9b34fb");
+    static final UUID RX = UUID.fromString("000050b0-0000-1000-8000-00805f9b34fb");   // we write packets here
+    static final UUID TX = UUID.fromString("000050b1-0000-1000-8000-00805f9b34fb");   // the pod notifies every packet here
     static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+    static final String NAME_PREFIX = "BarPod-";
+    // The saved pod. Not v1's "address" key: since D45 the pod has a new static address (a new
+    // device to the phone), and the old one would cost every connect a 10 s timeout before the scan.
+    private static final String KEY_ADDRESS = "crpAddress";
 
-    private static final long BATCH_MS = 50;               // frames to JS every ~50 ms
+    private static final long BATCH_MS = 50;               // packets to JS every ~50 ms
     private static final long CONNECT_TIMEOUT_MS = 10_000;  // a direct connect to the saved pod
     private static final long SCAN_MS = 8_000;
     private static final long SETUP_TIMEOUT_MS = 30_000;    // connect() as a whole (connect, scan, connect)
     private static final long AUTO_RETRY_MS = 2_000;        // between autoConnect tries that fail at once
-    private static final long SILENT_MS = 5_000;            // no frame this long on a ready link: it's dead
+    private static final long SILENT_MS = 5_000;            // no packet this long on a ready link: it's dead
     private static final int MAX_133 = 3;                   // GATT_ERROR (133) before a link came up: retry
     private static final int GATT_ERROR = 133;
     private static final int SILENT = 8;                    // our status for a dead link (like a supervision timeout)
 
-    // the connection order, one GATT operation at a time; a callback only moves it on from its own step
-    private enum Step { IDLE, CONNECTING, DISCOVER, MTU, INFO, STATUS, CCCD, READY }
+    // the GATT chain, one operation at a time; a callback only moves it on from its own step
+    private enum Step { IDLE, CONNECTING, DISCOVER, MTU, CCCD, READY }
 
     private HandlerThread thread;      // every GATT call and all the state below run here, in order
     private Handler h;
 
     private BluetoothDevice device;
     private BluetoothGatt gatt;
-    private BluetoothGattCharacteristic chData, chCtrl, chInfo, chStatus;
+    private BluetoothGattCharacteristic chRx, chTx;
     private Step step = Step.IDLE;
     private BluetoothLeScanner scanner;
     private ScanCallback scanCb;
     private BluetoothDevice best;      // the strongest pod the scan heard
     private int bestRssi;
     private PluginCall permCall;       // connect() waiting on the Nearby devices prompt
-    private PluginCall pending;        // connect() until the connection order is done
+    private PluginCall pending;        // connect() until the GATT chain is done
     private boolean any;               // that connect() may pick (and save) a pod other than the saved one
-    private final ArrayDeque<Op> ops = new ArrayDeque<>();   // write() / reread() on a ready link; the head runs
+    private final ArrayDeque<Op> ops = new ArrayDeque<>();   // write()s on a ready link; the head runs
     private boolean opRunning;
     private boolean wanted;            // JS wants the link (false after disconnect())
     private boolean autoConnecting;    // reconnecting with autoConnect after a drop
     private int mtu = 23;
     private boolean mtuAsked;          // our requestMtu is out (an unrequested onMtuChanged must not move the chain)
     private int retries;               // 133 retries on this connect
-    private int link;                  // +1 every time the connection order completes ("ready")
+    private int link;                  // +1 every time the GATT chain completes ("ready")
     private int session;               // +1 at every close / failed setup: a delayed retry from an older one gives up
-    private long lastFrame;            // elapsedRealtime of the latest frame, for the watchdog
-    private JSArray bf, bw;            // the batch being filled: frames, arrival times
+    private long lastPacket;           // elapsedRealtime of the latest packet, for the watchdog
+    private JSArray bf, bw;            // the batch being filled: packets, arrival times
     private boolean flushQueued;
     private BroadcastReceiver adapterRx;
 
@@ -138,7 +148,7 @@ public class PodLinkPlugin extends Plugin {
 
     private static final class Op {
         final PluginCall call;
-        final byte[] bytes;            // a CTRL write, or null: reread INFO and STATUS
+        final byte[] bytes;            // one CRP packet, for RX
         Op(PluginCall call, byte[] bytes) { this.call = call; this.bytes = bytes; }
     }
 
@@ -223,18 +233,6 @@ public class PodLinkPlugin extends Plugin {
                 return;
             }
             ops.add(new Op(call, bytes));
-            nextOp();
-        });
-    }
-
-    @PluginMethod
-    public void reread(PluginCall call) {
-        h.post(() -> {
-            if (step != Step.READY) {
-                call.reject("The pod isn't connected.");
-                return;
-            }
-            ops.add(new Op(call, null));
             nextOp();
         });
     }
@@ -334,6 +332,13 @@ public class PodLinkPlugin extends Plugin {
                 h.post(() -> {
                     if (scanCb != this || pending == null) return;   // a stopped scan's late result
                     BluetoothDevice d = r.getDevice();      // a scanned device knows its address type
+                    // every Ansync CRP device shares the service: only a BarPod- name is a pod (the
+                    // advertised one; Android's cache can be stale or empty)
+                    ScanRecord rec = r.getScanRecord();
+                    String name = rec != null ? rec.getDeviceName() : null;
+                    if (name == null) name = d.getName();
+                    if (name == null || !name.startsWith(NAME_PREFIX)) return;
+                    prefs().edit().putString("name:" + d.getAddress(), name).apply();
                     if (d.getAddress().equals(mine)) {      // the saved pod woke up: take it now
                         best = d;
                         bestRssi = Integer.MAX_VALUE;
@@ -354,7 +359,7 @@ public class PodLinkPlugin extends Plugin {
         ScanFilter f = new ScanFilter.Builder().setServiceUuid(new ParcelUuid(SERVICE)).build();
         ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
         scanner.startScan(Collections.singletonList(f), s, me);
-        Log.i(TAG, "scanning for the pod");
+        Log.i(TAG, "scanning for the pod (CRP service, " + NAME_PREFIX + ")");
         h.postDelayed(scanEnd, SCAN_MS);
     }
 
@@ -427,15 +432,10 @@ public class PodLinkPlugin extends Plugin {
         }
 
         // Android 13+ hands the value in (the only versions we run on). Don't call super: it calls
-        // the old overload, and the frame would go to JS twice.
-        @Override
-        public void onCharacteristicRead(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] value, int status) {
-            arrived(g, c, value, status, true);
-        }
-
+        // the old overload, and the packet would go to JS twice.
         @Override
         public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] value) {
-            arrived(g, c, value, BluetoothGatt.GATT_SUCCESS, false);
+            if (TX.equals(c.getUuid())) arrived(g, value);
         }
 
         @Override
@@ -449,16 +449,14 @@ public class PodLinkPlugin extends Plugin {
         }
     };
 
-    /** A read or a notification, on Bluetooth's thread: stamp it now, copy it (the value array is
-     * Bluetooth's), then hand it to ours. */
-    private void arrived(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] value, int status, boolean read) {
+    /** A notification (one CRP packet), on Bluetooth's thread: stamp it now, copy it (the value
+     * array is Bluetooth's), then hand it to ours. */
+    private void arrived(BluetoothGatt g, byte[] value) {
         long w = SystemClock.elapsedRealtime();
         byte[] copy = value != null ? value.clone() : null;
-        UUID u = c.getUuid();
         h.post(() -> {
-            if (g != gatt) return;                          // a closed link's late callback
-            if (status == BluetoothGatt.GATT_SUCCESS && copy != null) add(copy, w);
-            if (read) onRead(u, status);
+            if (g != gatt || copy == null) return;          // a closed link's late callback
+            add(copy, w);
         });
     }
 
@@ -472,7 +470,7 @@ public class PodLinkPlugin extends Plugin {
             h.removeCallbacks(connectTimeout);
             Log.i(TAG, "connected " + g.getDevice().getAddress());
             step = Step.DISCOVER;
-            if (pending == null) state("linking", 0);   // a reconnect's link is up: its order runs
+            if (pending == null) state("linking", 0);   // a reconnect's link is up: its GATT chain runs
             if (!g.discoverServices()) dropped(GATT_ERROR);
             return;
         }
@@ -519,15 +517,13 @@ public class PodLinkPlugin extends Plugin {
         if (g != gatt || step != Step.DISCOVER) return;
         BluetoothGattService svc = status == BluetoothGatt.GATT_SUCCESS ? g.getService(SERVICE) : null;
         if (svc == null) {
-            failOrDrop("That isn't a pod (no PodLink service).", status);
+            failOrDrop("That isn't a pod (no CRP service: its firmware may be older than D45).", status);
             return;
         }
-        chData = svc.getCharacteristic(DATA);
-        chCtrl = svc.getCharacteristic(CTRL);
-        chInfo = svc.getCharacteristic(INFO);
-        chStatus = svc.getCharacteristic(STATUS);
-        if (chData == null || chCtrl == null || chInfo == null || chStatus == null) {
-            failOrDrop("The pod's service is missing a characteristic.", status);
+        chRx = svc.getCharacteristic(RX);
+        chTx = svc.getCharacteristic(TX);
+        if (chRx == null || chTx == null) {
+            failOrDrop("The pod's CRP service is missing a characteristic.", status);
             return;
         }
         step = Step.MTU;
@@ -544,50 +540,32 @@ public class PodLinkPlugin extends Plugin {
         }
         mtuAsked = false;
         Log.i(TAG, "mtu " + mtu + (status == BluetoothGatt.GATT_SUCCESS ? "" : " (request failed: " + status + ")"));
-        step = Step.INFO;
-        if (!g.readCharacteristic(chInfo)) failOrDrop("Couldn't read the pod's INFO.", GATT_ERROR);
+        subscribe();                                        // the MTU first: the pod's INFO RESPONSE needs it (docs/ble.md 5)
     }
 
-    private void onRead(UUID u, int status) {
-        if (step == Step.READY) {                           // a reread() op
-            onOpRead(u, status);
-            return;
-        }
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            failOrDrop("Couldn't read the pod (status " + status + ").", status);
-            return;
-        }
-        if (step == Step.INFO && u.equals(INFO)) {
-            step = Step.STATUS;
-            if (!gatt.readCharacteristic(chStatus)) failOrDrop("Couldn't read the pod's STATUS.", GATT_ERROR);
-        } else if (step == Step.STATUS && u.equals(STATUS)) {
-            subscribe();
-        }
-    }
-
-    /** Notifications on DATA: the only CCCD (STATUS frames ride on DATA, D28). */
+    /** Notifications on TX: the only CCCD (every packet the pod sends comes on TX, D28). */
     private void subscribe() {
         step = Step.CCCD;
-        BluetoothGattDescriptor d = chData.getDescriptor(CCCD);
-        if (d == null || !gatt.setCharacteristicNotification(chData, true)
+        BluetoothGattDescriptor d = chTx.getDescriptor(CCCD);
+        if (d == null || !gatt.setCharacteristicNotification(chTx, true)
                 || gatt.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) != BluetoothStatusCodes.SUCCESS) {
-            failOrDrop("Couldn't subscribe to the pod's DATA.", GATT_ERROR);
+            failOrDrop("Couldn't subscribe to the pod's TX.", GATT_ERROR);
         }
     }
 
     private void onCccd(BluetoothGatt g, int status) {
         if (g != gatt || step != Step.CCCD) return;
-        Log.i(TAG, "DATA CCCD write, status " + status);
+        Log.i(TAG, "TX CCCD write, status " + status);
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            failOrDrop("Couldn't subscribe to the pod's DATA (status " + status + ").", status);
+            failOrDrop("Couldn't subscribe to the pod's TX (status " + status + ").", status);
             return;
         }
         step = Step.READY;
         retries = 0;
         link++;
-        lastFrame = SystemClock.elapsedRealtime();
+        lastPacket = SystemClock.elapsedRealtime();
         h.postDelayed(watchdog, 1_000);
-        flush();                                            // INFO and STATUS reach JS before the resolve
+        flush();                                            // nothing should be waiting (the pod is silent until HELLO), but in order
         BluetoothDevice dev = g.getDevice();
         String name = dev.getName();
         if (name == null) name = prefs().getString("name:" + dev.getAddress(), null);
@@ -597,7 +575,7 @@ public class PodLinkPlugin extends Plugin {
             h.removeCallbacks(setupTimeout);
             // the pod that answered becomes the saved one (a picked new pod, or the first)
             if (saved() == null || any || dev.getAddress().equals(saved())) {
-                prefs().edit().putString("address", dev.getAddress()).apply();
+                prefs().edit().putString(KEY_ADDRESS, dev.getAddress()).apply();
             }
             JSObject res = new JSObject();
             res.put("name", name);
@@ -620,19 +598,20 @@ public class PodLinkPlugin extends Plugin {
     }
 
     /** A ready link that sends nothing for 5 s is dead, whatever Android says (Bluetooth off
-     * can drop our client without a callback). The pod sends a STATUS every second. */
+     * can drop our client without a callback). JS's HELLO goes out right after "ready"; from then
+     * the pod's engine sends a NOP after 1 s of silence, and a STATUS every second once PUSH is on. */
     private void checkSilence() {
         if (step != Step.READY) return;
-        if (SystemClock.elapsedRealtime() - lastFrame > SILENT_MS) {
-            Log.w(TAG, "no frame for " + SILENT_MS + " ms: the link is dead");
+        if (SystemClock.elapsedRealtime() - lastPacket > SILENT_MS) {
+            Log.w(TAG, "no packet for " + SILENT_MS + " ms: the link is dead");
             dropped(SILENT);
             return;
         }
         h.postDelayed(watchdog, 1_000);
     }
 
-    /** A step of the connection order failed: connect() pending gets the reason, a running link
-     * counts it as a drop (and reconnects). */
+    /** A step of the GATT chain failed: connect() pending gets the reason, a running link counts
+     * it as a drop (and reconnects). */
     private void failOrDrop(String why, int status) {
         Log.w(TAG, why);
         if (pending != null) failSetup(why);
@@ -640,7 +619,7 @@ public class PodLinkPlugin extends Plugin {
     }
 
     private void failSetup(String why) {
-        flush();                                            // a failed setup's INFO / STATUS reach JS first
+        flush();                                            // anything a failed setup got reaches JS first
         session++;
         h.removeCallbacks(setupTimeout);
         h.removeCallbacks(connectTimeout);
@@ -657,17 +636,15 @@ public class PodLinkPlugin extends Plugin {
     }
 
     // ---------------------------------------------------------------------------------------
-    // ops on a ready link, one at a time: CTRL writes and rereads
+    // writes on a ready link, one at a time, in call order: JS's CRP packets to RX, with response
+    // (the pod's engine reads one write as one packet, docs/ble.md 2.4)
 
     private void nextOp() {
         if (opRunning || ops.isEmpty() || step != Step.READY) return;
         Op op = ops.peek();
-        boolean ok = op.bytes == null
-                ? gatt.readCharacteristic(chInfo)          // reread: INFO, then STATUS (onOpRead)
-                : gatt.writeCharacteristic(chCtrl, op.bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS;
-        if (!ok) {
+        if (gatt.writeCharacteristic(chRx, op.bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) != BluetoothStatusCodes.SUCCESS) {
             ops.poll();
-            op.call.reject(op.bytes == null ? "Couldn't read the pod." : "Couldn't write to the pod.");
+            op.call.reject("Couldn't write to the pod.");
             nextOp();
             return;
         }
@@ -675,33 +652,11 @@ public class PodLinkPlugin extends Plugin {
     }
 
     private void onWrite(BluetoothGatt g, int status) {
-        if (g != gatt || !opRunning || ops.isEmpty() || ops.peek().bytes == null) return;
+        if (g != gatt || !opRunning || ops.isEmpty()) return;
         opRunning = false;
         Op op = ops.poll();
         if (status == BluetoothGatt.GATT_SUCCESS) op.call.resolve();
         else op.call.reject("The pod refused the write (status " + status + ").");
-        nextOp();
-    }
-
-    private void onOpRead(UUID u, int status) {
-        if (!opRunning || ops.isEmpty() || ops.peek().bytes != null) return;
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            opRunning = false;
-            ops.poll().call.reject("Couldn't read the pod (status " + status + ").");
-            nextOp();
-            return;
-        }
-        if (u.equals(INFO)) {
-            if (!gatt.readCharacteristic(chStatus)) {
-                opRunning = false;
-                ops.poll().call.reject("Couldn't read the pod's STATUS.");
-                nextOp();
-            }
-            return;
-        }
-        opRunning = false;
-        flush();                                            // the frames reach JS before the resolve
-        ops.poll().call.resolve();
         nextOp();
     }
 
@@ -711,11 +666,11 @@ public class PodLinkPlugin extends Plugin {
     }
 
     // ---------------------------------------------------------------------------------------
-    // frames to JS, and tidying up
+    // packets to JS, and tidying up
 
-    private void add(byte[] frame, long w) {
-        lastFrame = w;
-        bf.put(Base64.encodeToString(frame, Base64.NO_WRAP));
+    private void add(byte[] packet, long w) {
+        lastPacket = w;
+        bf.put(Base64.encodeToString(packet, Base64.NO_WRAP));
         bw.put(w);
         if (!flushQueued) {
             flushQueued = true;
@@ -773,11 +728,11 @@ public class PodLinkPlugin extends Plugin {
         mtuAsked = false;
         if (gatt != null) gatt.close();
         gatt = null;
-        chData = chCtrl = chInfo = chStatus = null;
+        chRx = chTx = null;
     }
 
     private void state(String s, int status) {
-        flush();                                            // no state passes a frame that came before it
+        flush();                                            // no state passes a packet that came before it
         JSObject o = new JSObject();
         o.put("state", s);
         o.put("status", status);
@@ -796,6 +751,6 @@ public class PodLinkPlugin extends Plugin {
     }
 
     private String saved() {
-        return prefs().getString("address", null);
+        return prefs().getString(KEY_ADDRESS, null);
     }
 }

@@ -1,5 +1,6 @@
-// podlink.h: PodLink v1, the pod's Bluetooth protocol (docs/ble.md is the spec; this mirrors it
-// byte for byte, and so do analysis/podlink.py and the PodStream in webapp/sources.js).
+// podlink.h: PodLink v1, the pod's frames (docs/ble.md is the spec; this mirrors it byte for byte,
+// and so do analysis/podlink.py and the PodStream in webapp/sources.js). They travel inside CRP on
+// Bluetooth and USB (docs/ble.md 2, D45; the glue is podcrp.c).
 // All multi-byte fields are little-endian. Byte 0 of every frame is its type.
 #pragma once
 #include <stdint.h>
@@ -22,15 +23,12 @@ const uint16_t POD_DATA_MAX = 14 + 14 * POD_MAX_N;           // 238 B
 const uint32_t POD_AGE_TICKS = 2621;                         // send a part frame after 80 ms
 const uint32_t POD_DT_MAX = 60000;                           // no dt past 60000 ticks (1.83 s)
 
-// ---- UUIDs: 9ba4xxxx-6de5-429c-b225-8134b9953e9d, Bluefruit's little-endian byte order.
-// One array per role: BLEUuid keeps a pointer, never a copy, so never patch a shared buffer.
-#define POD_UUID(role) {0x9D, 0x3E, 0x95, 0xB9, 0x34, 0x81, 0x25, 0xB2, 0x9C, 0x42, 0xE5, 0x6D, role, 0x00, 0xA4, 0x9B}
-static const uint8_t POD_UUID_SERVICE[16] = POD_UUID(0x01);
-static const uint8_t POD_UUID_DATA[16] = POD_UUID(0x02);
-static const uint8_t POD_UUID_CTRL[16] = POD_UUID(0x03);
-static const uint8_t POD_UUID_STATUS[16] = POD_UUID(0x04);
-static const uint8_t POD_UUID_INFO[16] = POD_UUID(0x05);
-static const uint8_t POD_UUID_CAL[16] = POD_UUID(0x06);
+// ---- CRP over Bluetooth (docs/ble.md 2.4): Ansync's 16-bit UUIDs on the Bluetooth base
+// (0000xxxx-0000-1000-8000-00805f9b34fb), not SIG-assigned values. A 16-bit BLEUuid holds its
+// value, so plain constants do (only a 128-bit one keeps a pointer).
+const uint16_t POD_CRP_SERVICE = 0x5090;   // the one service
+const uint16_t POD_CRP_RX = 0x50B0;        // client -> pod: write and write without response, one packet each
+const uint16_t POD_CRP_TX = 0x50B1;        // pod -> client: notify, one packet each
 
 // One IMU sample in the ring: its RTC2 ticks and the raw burst, gyro then accel (16 B).
 struct PodSample {
