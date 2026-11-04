@@ -55,8 +55,8 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
    `webapp/sources.js`; `make_fake_pod.py` (51 scenarios, over CRP since D45) writes the vectors
    and `pod.mjs` requires the JS to match them bit for bit. Under it, CRP: `python crp.py --selftest`,
    `node webapp/test/crp_wire.mjs` (Ansync's JS client against crp.py) and `bash firmware/pod/test/build.sh`
-   (the pod's C glue on the PC); `python podlink.py --replay-all` keeps the 21 pre-CRP captures
-   decoding the same (P2). The protocol itself: `docs/ble.md`.
+   (the pod's C glue on the PC); `python podlink.py --replay-all` keeps every committed pod capture
+   decoding the same (P2; `--write-manifest` pins a new one, never re-pin a changed old one). The protocol itself: `docs/ble.md`.
    The Python-only modules check themselves against planted faults, each built to fail on
    the bugs it has had (from `analysis/`): `python orientation.py --selftest`,
    `python consistency.py --selftest`, `python rpe.py --selftest`, `python check_soak.py --selftest`,

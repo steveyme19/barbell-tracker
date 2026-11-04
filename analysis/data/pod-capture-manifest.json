@@ -697,5 +697,64 @@
    "stopped": 2,
    "t_backwards": 0
   }
+ },
+ "pod-capture-2026-11-04-1433-s6usbcrp.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 62.927520751953125,
+  "rows": 976,
+  "samples": 13242,
+  "sha256": "efa58adfb81521e6d2b17954a4248e799e8e888086546203d09f80573a6d0303",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 13242,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-04-1436-s7outage.csv": {
+  "events": {
+   "epoch": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 260.58807373046875,
+  "rows": 3705,
+  "samples": 54832,
+  "sha256": "5e79c6b84754714435a2e1f2de1c07c05ca7028125abdd246f7479ef6e898192",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 3,
+   "samples": 54832,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 0,
+   "t_backwards": 0
+  }
  }
 }
