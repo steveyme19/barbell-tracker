@@ -1,5 +1,10 @@
 # BLE link v1 (PodLink): implementation plan
 
+> **Transport superseded by D45 (11-02):** the frames now travel inside CRP, Ansync's Channel
+> Register Protocol, on Bluetooth and USB (`docs/ble.md` section 2). This plan's GATT table, CTRL
+> characteristic and connection order are history; its frame semantics, tests and step record
+> still hold. D45's own stages and bench results: `docs/decisions.md` D45.
+
 **Status:** this is a read-only design. Nothing was built, flashed or run. The two judges picked different winners. This plan uses **PodLink v1** for the protocol and firmware architecture (judge 1's pick) and builds it in the **MVP-first order** (judge 2's pick), so real pod samples reach the app at step 6. It applies every must_fix item from both judges and the grafts listed for them.
 
 ## Progress

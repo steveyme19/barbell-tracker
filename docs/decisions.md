@@ -1138,6 +1138,39 @@ open the pod, and its registers are discoverable rather than a frozen table.
 *Baseline* (S0, PodLink v1 with the engine vendored and unused): 139,472 B flash, 147,008 B RAM
 (90,560 free).
 
+*Status (11-04).* Code done and committed: f5f6fdc (S0), a499670 (S1-S5), 87de3e4 (S6-S9), 9c09132
+(the first bench runs). The CRP build is 159,820 B flash and 163,460 B RAM (74,108 free).
+- **Offline, all PASS:**
+  - every rule-1 line;
+  - `crp.py --selftest`;
+  - make_fake_pod's 51 scenarios, 15 of them CRP (two negative controls; each rule has a mutation
+    that fails);
+  - pod.mjs 106/106 bit for bit;
+  - crp_wire.mjs;
+  - the C glue's host test (235 checks);
+  - `log_ble.py --selftest` (the tools against the simulated pod);
+  - pod_web 26, pod_native 19;
+  - the S5 per-link refactor, identical to v1 on 2,340 random event streams;
+  - `podlink.py --replay-all` (every committed capture decodes as before).
+- **On the pod:**
+  - ble_check all PASS on the first run (the static random address needed no Bluetooth toggle);
+  - USB CRP: 60 s, 0 gaps, then back to text;
+  - Bluetooth with 3, 10 and 30 s outages against a simultaneous USB text log: 54,832 of 54,832
+    samples matched, 0 missing.
+- **Old builds:** podlink-v1-final tags the last v1 commit. The APK installed before D45 can't
+  talk to a CRP pod.
+
+*Open:*
+- **Still to run on hardware:** the 60 s overflow outage, check_sleep (SLEEP x3, w x2), a 10 min
+  run, USB CRP for 10 min with a port reopen, BENCH w and --exact, Chrome (pod_browser,
+  pod_reconnect), the Pixel (APK, podlink_check, pod_session_check) and a soak.
+- **Simulator gaps** (the firmware follows ble.md here):
+  - the simulator models the sleep prologue on Bluetooth only;
+  - a HELLO right behind a USB BYE in the same pass stays in CRP on the pod but is lost in the
+    simulator.
+- **Level 1 framing** could swallow up to 1 KB if garbage were to sit right before a 1 to 4 byte
+  packet. Safe today, because the first packet after text is always the 10 B HELLO.
+
 ## Proposed (say yes or no)
 
 **P1: Python is the reference implementation.** Any port (JS in the web app, C on the

@@ -189,7 +189,12 @@ can check it on the phone.
 
 ## A4. Bluetooth to the XIAO (roadmap 1.4 / 4.1)
 
-Protocol: PodLink v1, `docs/ble.md` (D27). Build order: `docs/ble-plan.md`.
+Protocol: PodLink v1 frames inside CRP since D45 (`docs/ble.md` 2 and 7; D27 for the frames).
+Build order: `docs/ble-plan.md`. Since D45 the plugin is a pipe of CRP packets: it finds the
+pod by Ansync's service 0x5090 and a `BarPod-` name, runs discover, MTU 247, the TX CCCD,
+and READY, then JS runs the session itself (HELLO, READ INFO, READ STATUS, PUSH 1, CTRL) over
+`PodCrpLink`; writes go to RX with response, one GATT operation at a time. The saved address
+lives under the prefs key `crpAddress` (the pod's address changed with D45).
 
 - **Browser** (desktop Chrome, Android Chrome): Web Bluetooth, `PodWebSource` in sources.js.
   A "Connect pod" tap picks the pod (Web Bluetooth needs a user gesture). Reconnects only
