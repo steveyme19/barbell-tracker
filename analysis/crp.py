@@ -561,6 +561,34 @@ class SerialLink:
             self.ser.close()
 
 
+def bt_audio_connected():
+    """Names of Bluetooth audio devices connected right now (Windows; [] elsewhere or if the query
+    fails). Their audio link starves the laptop's Bluetooth scanning, so the pod looks dead (D28),
+    which has bitten more than once: the tools name them when a scan finds no pod."""
+    import subprocess
+    import sys
+    if sys.platform != "win32":
+        return []
+    # a present audio endpoint named after a paired Bluetooth device, e.g. "Headphones (soundcore
+    # Space 2)": the endpoints of disconnected headphones aren't present (Status OK)
+    ps = ("$bt = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | ForEach-Object { $_.FriendlyName }; "
+          "Get-PnpDevice -Class AudioEndpoint -Status OK -ErrorAction SilentlyContinue | "
+          "Where-Object { $n = $_.FriendlyName; $bt | Where-Object { $_ -and $n -like ('*(' + $_ + '*') } } | "
+          "ForEach-Object { $_.FriendlyName }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                             timeout=15).stdout
+    except Exception:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def no_pod_hint():
+    """' (connected Bluetooth audio: ...)' when there is any, for a 'no pod found' message."""
+    names = bt_audio_connected()
+    return f" (Bluetooth audio connected, it starves scanning, D28: {', '.join(names)})" if names else ""
+
+
 class BleakLink:
     """CRP over Bluetooth, level 0: one notification on TX = one packet, one write to RX = one
     packet. Writes go with response, one at a time behind a lock. Needs bleak."""

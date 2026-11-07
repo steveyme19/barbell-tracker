@@ -1161,9 +1161,21 @@ open the pod, and its registers are discoverable rather than a frozen table.
   talk to a CRP pod.
 
 *Open:*
-- **Still to run on hardware:** the 60 s overflow outage, check_sleep (SLEEP x3, w x2), a 10 min
-  run, USB CRP for 10 min with a port reopen, BENCH w and --exact, Chrome (pod_browser,
-  pod_reconnect), the Pixel (APK, podlink_check, pod_session_check) and a soak.
+- **On the pod, 11-07 (3cac7ae):**
+  - the 60 s Bluetooth outage against the USB truth: compare_ble_usb with the link JSON PASS, the
+    5,327 missing one counted overflow gap equal to the pod's own lost_overflow rise;
+  - the dry-run sleep (w): Bluetooth x2 and USB CRP (`log_ble.py --bench=w@T`), check_sleep PASS
+    (disconnect 90 and 134 ms on Bluetooth; USB has no deliberate disconnect, ble.md 6);
+  - Chrome: pod_browser PASS, and pod_reconnect --hands-free PASS (the reset placed 3.2 ms and the
+    sleep 1.1 ms from the USB clock truth);
+  - Bluetooth and USB CRP 10 min at once, with a USB port reopen: 0 gaps on both, `--exact` 125,826
+    samples bit for bit;
+  - the Pixel: podlink_check up to its reconnect (the plugin's chain, the order, 13.2 DATA and 1.00
+    STATUS pushes/s, 211 Hz with 0 gaps, a reconnect as a new boot); the phone then dozed mid-check,
+    which froze the harness's page.
+- **Still to run on hardware:** the real SLEEP op with a motion wake (hands), podlink_check end to
+  end and pod_session_check on the Pixel, and a soak (a laptop hour over Bluetooth against the USB
+  truth started 11-07).
 - **Simulator gaps** (the firmware follows ble.md here):
   - the simulator models the sleep prologue on Bluetooth only;
   - a HELLO right behind a USB BYE in the same pass stays in CRP on the pod but is lost in the

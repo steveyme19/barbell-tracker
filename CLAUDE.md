@@ -99,5 +99,6 @@ RPE estimate. Owner: Quentin (Purdue, Applied Physics). Read `README.md` and
 - nRF pins: after reset and after `detachInterrupt()` the input buffer is off, so `digitalRead()`
   always says LOW. `pinMode(pin, INPUT)` first (D29: this made D26's INT1 checks see nothing).
 - BLE tests from the laptop: disconnect Bluetooth headphones first, the audio link starves BLE
-  scanning (the pod looked dead). Windows can reorder notifications across characteristics,
+  scanning (the pod looked dead; it bit again 11-07). `log_ble.py` and `ble_check.py` name any
+  connected Bluetooth audio when a scan finds no pod (`crp.no_pod_hint`). Windows can reorder notifications across characteristics,
   which is why every pod notification goes out on DATA (D28).

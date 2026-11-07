@@ -100,7 +100,7 @@ class BleTarget:
         else:
             dev = await BleakScanner.find_device_by_filter(is_pod, timeout=10)
         if dev is None:
-            raise RuntimeError("no BarPod found")
+            raise RuntimeError("no BarPod found" + crp.no_pod_hint())
         self.address, self.name = dev.address, dev.name or self.name
         return crp.BleakLink(dev)
 

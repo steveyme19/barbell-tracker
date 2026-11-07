@@ -421,7 +421,7 @@ async def main():
         # ---- 1. advertisement ----
         pods = await find(name)
         if not pods:
-            r.check(False, "no BarPod found in 6 s of scanning")
+            r.check(False, "no BarPod found in 6 s of scanning" + crp.no_pod_hint())
             return r
         dev, nm, has_uuid, rssi = pods[0]
         r.check(len(nm) == 11 and nm[7:] == low16(dev.address),
