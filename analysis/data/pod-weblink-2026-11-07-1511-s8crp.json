@@ -1,0 +1,127 @@
+{
+ "name": "BarPod-3027",
+ "serial": 1106187551,
+ "bootId": 1437286398,
+ "odr": 208,
+ "ringN": 8192,
+ "accelLsb": 0.0023928226437419653,
+ "gyroLsb": 0.03500000014901161,
+ "perPacket": 16,
+ "intervalMs": 45,
+ "mtu": 247,
+ "volts": 4.155,
+ "podLost": 0,
+ "battLow": false,
+ "lost": 4936,
+ "gaps": 1,
+ "faults": [],
+ "stats": {
+  "samples": 23148,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 2,
+  "epochs": 3,
+  "clock_clamped": 0,
+  "stopped": 2
+ },
+ "linked": true,
+ "asleep": null,
+ "sleepMode": null,
+ "reconnects": 4,
+ "epochs": 3,
+ "linkEvents": [
+  {
+   "at": 1794082279276,
+   "kind": "lost"
+  },
+  {
+   "at": 1794082290976,
+   "kind": "back",
+   "tries": 1
+  },
+  {
+   "at": 1794082306190,
+   "kind": "lost"
+  },
+  {
+   "at": 1794082368574,
+   "kind": "back",
+   "tries": 1
+  },
+  {
+   "at": 1794082385655,
+   "kind": "lost"
+  },
+  {
+   "at": 1794082388134,
+   "kind": "back",
+   "tries": 1
+  },
+  {
+   "at": 1794082400551,
+   "kind": "asleep",
+   "reason": "command"
+  },
+  {
+   "at": 1794082414466,
+   "kind": "back",
+   "tries": 2
+  }
+ ],
+ "epochList": [
+  {
+   "bootId": 710343554,
+   "reboot": false,
+   "firstT": 0,
+   "tOffset": -115.52716064453125,
+   "wallBase": 1794082149821.7266,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 47100,
+   "podLost": 4936,
+   "missedDrdy": 0
+  },
+  {
+   "bootId": 137489433,
+   "reboot": true,
+   "firstT": 117.30747387695311,
+   "tOffset": 117.30378124999999,
+   "wallBase": 1794082382650.9497,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 3734,
+   "podLost": 0,
+   "missedDrdy": 0
+  },
+  {
+   "bootId": 1437286398,
+   "reboot": true,
+   "firstT": 147.7837473144531,
+   "tOffset": 147.7797189941406,
+   "wallBase": 1794082413126.8875,
+   "odr": 208,
+   "ringN": 8192,
+   "lastIdx": 1556,
+   "podLost": 0,
+   "missedDrdy": 0
+  }
+ ],
+ "gapList": [
+  {
+   "kind": "overflow",
+   "n": 4936,
+   "idx": 32901,
+   "t0": 40.82647705078125,
+   "t1": 64.28814697265625,
+   "boot_id": 710343554
+  }
+ ]
+}

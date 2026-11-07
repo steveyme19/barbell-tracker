@@ -756,5 +756,239 @@
    "stopped": 0,
    "t_backwards": 0
   }
+ },
+ "pod-capture-2026-11-07-1459-s7overflow.csv": {
+  "events": {
+   "epoch": 1,
+   "gap": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [
+   {
+    "boot_id": 2008755309,
+    "idx": 37411,
+    "kind": "overflow",
+    "n": 5327,
+    "t0": 38.622314453125,
+    "t1": 63.943145751953125
+   }
+  ],
+  "last_t": 198.64785766601562,
+  "rows": 2453,
+  "samples": 36473,
+  "sha256": "fdd0532f65cf8d303e570f24bd339a90d5e4efbb8967cf437b8da3b690a35f87",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 1,
+   "samples": 36473,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-1503-s9w1.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 75.2680651855469,
+  "rows": 923,
+  "samples": 13166,
+  "sha256": "54a9b621a5cc022131ba087f5381d39777345f69fb27b38774f20a540c952904",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 13166,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-1506-s9usbw1.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 66.75565502929686,
+  "rows": 870,
+  "samples": 11400,
+  "sha256": "98e54ebf212905563c85ef1d4c9d0950aaf6b1d9b5ed8c332acbff40e0a70944",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 11400,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-1508-s9w2.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 75.04110302734375,
+  "rows": 918,
+  "samples": 13106,
+  "sha256": "b90cb24640a0c1334577d421d867e739df781f97c84e4d39920f17f95160f6dd",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 13106,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-1511-s8crp.csv": {
+  "events": {
+   "epoch": 3,
+   "gap": 1,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [
+   {
+    "boot_id": 710343554,
+    "idx": 32901,
+    "kind": "overflow",
+    "n": 4936,
+    "t0": 40.82647705078125,
+    "t1": 64.28814697265625
+   }
+  ],
+  "last_t": 155.17812597656248,
+  "rows": 1579,
+  "samples": 23148,
+  "sha256": "1df7794e2f38476a09664985aece5e9cafbf3d232879314927a0dc71d6a7861c",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 3,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 2,
+   "samples": 23148,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-1513-s7exactble.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 597.9253845214844,
+  "rows": 8485,
+  "samples": 125826,
+  "sha256": "ca4b38cfac7ce8de0d0a421ab8d31f53f918f9ce8326195e89fafb3292040948",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 125826,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-1514-s6exactusb.csv": {
+  "events": {
+   "epoch": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 602.9861145019531,
+  "rows": 9219,
+  "samples": 126891,
+  "sha256": "44bb7796bac9f1c06c6d8999af44174b13e71036bece13f5e8556b0b654cd8c6",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 1,
+   "samples": 126891,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
  }
 }

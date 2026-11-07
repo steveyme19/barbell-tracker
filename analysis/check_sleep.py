@@ -11,7 +11,7 @@ Pass:
   - the pod said it was going to sleep, with the expected reason;
   - nothing was lost to the sleep: no sleep-tail gap (or at most --tail-ok samples), and no other
     index gap either;
-  - the disconnect came at once after the going_to_sleep STATUS (under 1 s: a deliberate one,
+  - Bluetooth: the disconnect came at once after the going_to_sleep STATUS (under 1 s: a deliberate one,
     not the 4 s supervision timeout);
   - after it, a new epoch from a rebooted pod with a new boot_id (the wake), no faults, and the
     run ended with the STOP handshake;
@@ -59,7 +59,11 @@ def main():
     tail = sum(g["n"] for g in tails)
     check(tail <= tail_ok, f"sleep-tail {tail} samples (allowed {tail_ok})")
     check(not others, f"no other gaps: {[(g['kind'], g['n']) for g in others]}")
-    if sleeps:
+    usb = str(link.get("transport", "")).startswith("usb")
+    if sleeps and usb:                 # USB has no deliberate disconnect (docs/ble.md 6): System OFF takes
+        ms = sleeps[0]["disconnect_after_ms"]   # the port down, the bench dry run resets ~10 s later
+        print(f"      USB: the link went {ms} ms after the going_to_sleep STATUS (no deliberate disconnect on USB)")
+    elif sleeps:
         ms = sleeps[0]["disconnect_after_ms"]
         check(ms is not None and ms < DISCONNECT_MS, f"disconnect {ms} ms after the going_to_sleep STATUS")
     eps = link.get("epochs", [])

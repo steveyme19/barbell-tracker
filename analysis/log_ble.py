@@ -25,6 +25,8 @@ matrix: the pod's side is the same as a real dropout, docs/ble.md 5). Times coun
 --sleep=T[:mode] sends the SLEEP op T s in (mode 0 = wake on motion, 1 = IMU off). After any
 sleep the receiver keeps trying to reconnect, so a pickup lands in a new epoch;
 --until-wake=S ends the run S s after the first sample from a pod that rebooted (woke).
+--bench=c@T (with --usb): writes the bench character c to the BENCH register T s in, say w@30
+(the dry run of a sleep, then a reset; check it with check_sleep.py --no-pickup).
 Check a sleep run with check_sleep.py.
 
 Saves, in data/ (P2), and never over an earlier run (a -2, -3 suffix in the same minute):
@@ -330,6 +332,17 @@ class Receiver:
         except crp.CrpError as e:      # the pod may drop the link before its answer arrives
             self.say(f"      SLEEP: {e}")
 
+    async def bench_command(self, c):
+        """USB only: the BENCH register (docs/ble.md 2.3), the bench characters over CRP: w is the
+        dry run of a sleep, then a reset (check_sleep.py --no-pickup)."""
+        self.log("ctrl", "", f"bench {c}")
+        try:
+            st = await self.session.write(pl.REG_BENCH, c.encode())
+            if st != crp.OK:
+                self.say(f"      the pod answered BENCH {c} {crp.STATUS_NAMES.get(st, st)}")
+        except crp.CrpError as e:      # the pod may reset before its answer arrives
+            self.say(f"      BENCH {c}: {e}")
+
     async def drop(self, bye=False):
         """Take the link down. bye: end the CRP session first (a run's end; USB goes back to text)."""
         self.linked = False
@@ -403,7 +416,7 @@ class Receiver:
         Path(link_path).write_text(json.dumps(self.summary(), indent=1))
 
 
-async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None):
+async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, benches=()):
     clock = rx.clock
     t0 = clock()
     el = lambda: clock() - t0
@@ -414,6 +427,7 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None):
     rx.say(f"Streaming from {rx.target}. Ctrl+C stops.")
     outages = sorted(outages, key=lambda o: o[1])
     sleeps = sorted(sleeps)
+    benches = sorted(benches)
     t_print = 0
     while not give_up():
         await asyncio.sleep(0.25)
@@ -451,6 +465,11 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None):
             rx.say(f"  {el():6.1f} s: SLEEP op, mode {mode}")
             await rx.sleep_command(mode)
             continue
+        if benches and el() >= benches[0][0] and rx.linked:
+            at, c = benches.pop(0)
+            rx.say(f"  {el():6.1f} s: BENCH {c}")
+            await rx.bench_command(c)
+            continue
         if outages and el() >= outages[0][1]:
             dur, at = outages.pop(0)
             rx.say(f"  {el():6.1f} s: outage {dur:g} s (dropping the link on purpose)")
@@ -477,9 +496,9 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None):
                    f"pod lost_overflow {st['lost_overflow'] if st else '?'}")
 
 
-async def session(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None):
+async def session(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, benches=()):
     try:
-        await run(rx, seconds, outages, quit_flag, sleeps, until_wake)
+        await run(rx, seconds, outages, quit_flag, sleeps, until_wake, benches)
         if rx.ended == "running":
             rx.ended = "quit" if quit_flag() else "done"
     except Exception as e:
@@ -516,6 +535,13 @@ def main():
         if a.startswith("--sleep="):
             at, _, mode = a.split("=", 1)[1].partition(":")
             sleeps.append((float(at), int(mode or 0)))
+    benches = []
+    for a in sys.argv:
+        if a.startswith("--bench="):
+            c, _, at = a.split("=", 1)[1].partition("@")
+            if not port or len(c) != 1:
+                sys.exit("--bench=c@T: one bench character, and only with --usb")
+            benches.append((float(at), c))
     until_wake = arg("until-wake", float)
     tag = datetime.now().strftime("%Y-%m-%d-%H%M") + (f"-{name}" if name else "")
     data = Path(__file__).parent / "data"
@@ -531,7 +557,7 @@ def main():
         signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGINT, on_int)
     try:
-        asyncio.run(session(rx, seconds, outages, lambda: quit_now[0], sleeps, until_wake))
+        asyncio.run(session(rx, seconds, outages, lambda: quit_now[0], sleeps, until_wake, benches))
     finally:
         rx.close(link_path)
         s = rx.stream

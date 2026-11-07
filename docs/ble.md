@@ -437,6 +437,9 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
   phone sees it at once instead of after the 4 s timeout), waiting at most 500 ms for the
   disconnect to complete; then the D26 sleep. Samples between the last sent frame and the final
   head are the phone's `sleep-tail` gap.
+- **USB in CRP mode** gets the same drain and going_to_sleep STATUS, then the 300 ms wait, but no
+  deliberate disconnect: System OFF takes the port down, and the bench dry run (`w`) resets about
+  10 s later. The PC learns of the sleep from that STATUS.
 - During the prologue the pod answers CTRL writes BUSY and does nothing (from the SLEEP op on). A disconnect during
   the sleep drain skips the STATUS and goes straight to sleep. Advertising stops as the prologue
   starts, so no phone connects while the IMU is set up for sleep.
