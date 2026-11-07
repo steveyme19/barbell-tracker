@@ -1173,9 +1173,16 @@ open the pod, and its registers are discoverable rather than a frozen table.
   - the Pixel: podlink_check up to its reconnect (the plugin's chain, the order, 13.2 DATA and 1.00
     STATUS pushes/s, 211 Hz with 0 gaps, a reconnect as a new boot); the phone then dozed mid-check,
     which froze the harness's page.
+  - a USB CRP soak, 11-07: 26 min, 328,816 samples, 0 gaps, 0 faults, 0 pkt_seq gaps, a phone
+    connecting over Bluetooth midway; it ended when the pod was unplugged and taken, short of the
+    pkt_seq wrap (about 76 min at 14.3 packets/s), which only the simulator covers so far. The unplug
+    showed a fault in log_ble's USB link: the write had no timeout, so a write to the vanished port
+    held the event loop for 97 s. SerialLink now opens with a 1 s write_timeout and treats a failed
+    write as the link going down, reported once (`crp.py --selftest`, 77 checks).
 - **Still to run on hardware:** the real SLEEP op with a motion wake (hands), podlink_check end to
   end and pod_session_check on the Pixel, and a soak (a laptop hour over Bluetooth against the USB
-  truth started 11-07).
+  truth: the first try, 11-07, found no pod because Bluetooth headphones were starving the scan,
+  D28; log_ble and ble_check now name them).
 - **Simulator gaps** (the firmware follows ble.md here):
   - the simulator models the sleep prologue on Bluetooth only;
   - a HELLO right behind a USB BYE in the same pass stays in CRP on the pod but is lost in the

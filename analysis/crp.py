@@ -500,6 +500,8 @@ class SerialLink:
     or an open serial-like object (read / write / in_waiting), which close() leaves open."""
     level = 1
     heartbeat = 1.0                 # USB clients send a NOP every 1 s (docs/ble.md 2.2)
+    write_timeout = 1.0             # a CDC write takes well under 1 ms; with no timeout, a write to a
+                                    # pod unplugged mid-run held the event loop for 97 s (11-07 soak)
 
     def __init__(self, port, baud=115200):
         self.port = port
@@ -512,16 +514,18 @@ class SerialLink:
         self._thread = None
         self._stop = threading.Event()
         self._owned = False
+        self._went_down = False
 
     async def open(self):
         self._loop = asyncio.get_running_loop()
         if isinstance(self.port, str):
             import serial           # pyserial, only for a real port
-            self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            self.ser = serial.Serial(self.port, self.baud, timeout=0.05, write_timeout=self.write_timeout)
             self._owned = True
         else:
             self.ser = self.port
         self._stop.clear()
+        self._went_down = False
         self._thread = threading.Thread(target=self._reader, name="crp-serial", daemon=True)
         self._thread.start()
         return self
@@ -547,11 +551,19 @@ class SerialLink:
             self.on_packet(pkt, ms)
 
     def _down(self):
+        if self._went_down:             # once per open: the reader and a failed write can both see it
+            return
+        self._went_down = True
         if self.on_down:
             self.on_down()
 
     def send(self, pkt):
-        self.ser.write(frame_l1(pkt))
+        try:
+            self.ser.write(frame_l1(pkt))
+        except Exception:
+            if not self._stop.is_set():
+                self._down()            # a port that's gone, or a write that timed out: the link is down
+            raise
 
     async def close(self):
         self._stop.set()
@@ -1097,6 +1109,50 @@ async def _check_session(check):
           "arrival ms from the reader, the thread stopped")
     check(SerialLink.heartbeat == 1.0 and SerialLink.level == 1 and BleakLink.heartbeat is None and BleakLink.level == 0,
           "link defaults: USB level 1 with a 1 s NOP, Bluetooth level 0 with none")
+
+    # an unplugged pod: the write fails (pyserial raises, or times out) and that's the link going down,
+    # reported once; without write_timeout the write itself hung the event loop for 97 s (11-07)
+    class _Gone(_FakeSerial):
+        def write(self, b):
+            raise OSError("the port is gone")
+    gone = _Gone(dev)
+    sg = SerialLink(gone)
+    downs = []
+    s10 = Session(sg, heartbeat=0)
+    s10_down = sg.on_down
+    sg.on_down = lambda: (downs.append(1), s10_down())
+    await sg.open()
+    raised = 0
+    for _ in range(2):
+        try:
+            await s10.send(nop())
+        except OSError:
+            raised += 1
+    by_write = list(downs) == [1] and not s10.active and s10.ended == "link down"
+    sg._loop.call_soon(sg._down)                 # the reader thread seeing it too
+    await asyncio.sleep(0.01)
+    await sg.close()
+    check(raised == 2 and by_write and downs == [1],
+          "SerialLink: a failed write raises and reports the link down, once, however many see it")
+    import sys, types
+    seen = {}
+    class _Owned(_FakeSerial):
+        def close(self):
+            seen["closed"] = True
+    fake_mod = types.SimpleNamespace(Serial=lambda *a, **k: seen.update(k) or _Owned(dev))
+    real_mod = sys.modules.get("serial")
+    sys.modules["serial"] = fake_mod
+    try:
+        sp = SerialLink("COM99")
+        await sp.open()
+        await sp.close()
+    finally:
+        if real_mod is None:
+            del sys.modules["serial"]
+        else:
+            sys.modules["serial"] = real_mod
+    check(seen.get("write_timeout") == SerialLink.write_timeout and 0 < SerialLink.write_timeout <= 2 and seen.get("closed"),
+          f"SerialLink opens a real port with a write timeout ({seen.get('write_timeout')} s), so a gone port can't hold the loop")
 
 
 def _check_vectors(check):
