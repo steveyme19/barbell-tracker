@@ -1179,10 +1179,62 @@ open the pod, and its registers are discoverable rather than a frozen table.
     showed a fault in log_ble's USB link: the write had no timeout, so a write to the vanished port
     held the event loop for 97 s. SerialLink now opens with a 1 s write_timeout and treats a failed
     write as the link going down, reported once (`crp.py --selftest`, 77 checks).
-- **Still to run on hardware:** the real SLEEP op with a motion wake (hands), podlink_check end to
-  end and pod_session_check on the Pixel, and a soak (a laptop hour over Bluetooth against the USB
-  truth: the first try, 11-07, found no pod because Bluetooth headphones were starving the scan,
-  D28; log_ble and ble_check now name them).
+  - the Pixel, 11-07 evening (the APK's web files equal webapp's): `podlink_check --install --drop`
+    PASS end to end (13.2 DATA and 1.01 STATUS pushes/s, 211.6 Hz, 0 gaps, a reconnect by itself
+    18.9 s after the w as a new boot, STOP, BYE, disconnect); `pod_session_check` PASS (the screen
+    off at 211.2 samples/s, the w in the dark with the app back by itself 15.0 s later and nothing
+    lost, the files saved, the app's capture replaying to the same 9,690 samples, a second session);
+  - the real SLEEP op over Bluetooth, 5 runs (s7sleep1..5): the link side PASS in all 5
+    (going_to_sleep 'command', the disconnect 140 to 147 ms after it, sleep-tail 0, a new boot, wake
+    reason motion). check_sleep's pickup-in-the-stream check PASS 3 of 5. Run 3 was a knock shorter
+    than the boot (sampling starts about 70 ms after boot). In run 4 a gentle hand lift didn't trip
+    the wake-on-motion (D26: 62.5 mg on the slope at 12.5 Hz), and the pod booted 64 s after the
+    sleep from a later touch. That is a question for D26, not for the link;
+  - a laptop soak over Bluetooth (s10blesoak), the pod on its cell: 40.7 min, 512,990 samples, 0
+    gaps, 0 faults, 0 pkt_seq gaps. It ended in a real idle sleep with the session held (reason
+    idle, 1,800 s without motion), the link dropping 136 ms after going_to_sleep. It never reached
+    the pkt_seq wrap. A first try at 21:31 died 80 s in when the laptop went down hard (Kernel-Power
+    41, no bugcheck, on AC at 81%); its partial files are kept (s10soak, s10soaktruth);
+  - the trap behind the laptop's empty scan: the Pixel's plugin had auto-reconnected and held the
+    pod's one link while the phone dozed (the pod's USB said `# ble connected, frames 0`). It was
+    not the connected JBL speaker the no-pod hint named: ble_check passed with it connected. The
+    hint now reads as one cause among others, and log_ble shows it only before the first connect.
+- **Amended 11-07, the link-hang audit:** a read-only review (4 areas, each finding checked by a
+  skeptic) looked for more of the class of the SerialLink write above. It found 3 more faults:
+  - `crp.Session` passed a link's own error through when the link refused a transaction's packet.
+    log_ble's handlers for "the link went" (SLEEP, BENCH, the decoder's requests) catch only
+    CrpError, so a write to a dying link ended the whole run instead of reconnecting. That happens
+    within the 4 s supervision timeout on Bluetooth, or just after an unplug on USB.
+    - The fix: such a refusal is now CrpLinkError (a CrpClosed and still an OSError), and BleakLink
+      reports a failed write as the link going down, once.
+    - The checks: `crp.py --selftest` (80), and log_ble_sim's ble-dead-write, where the radio goes
+      deaf half a second before a SLEEP op. Each fails with its fix taken out.
+  - PodWebSource's only sign of a dead link was gattserverdisconnected. Now a 5 s silence watchdog
+    covers it (docs/ble.md 2.2). The checks: pod_web's silentLink, including a browser that fires
+    nothing even for its own disconnect().
+  - PodLinkPlugin re-armed a dead link forever, even one with no session on it. Tonight's empty
+    scan was that loop: a podlink_check stopped mid-run had left the link wanted. The fix: a link
+    that carried nothing since "ready" is given up (`closed`, status 9), and PodNativeSource
+    re-arms with `connect()`. The checks: pod_native's givenUpRearms and stopDuringRearm. The APK
+    is rebuilt and installed; this one isn't checked on the phone yet.
+  - Two review rounds of these fixes (each claim checked by a skeptic) refuted one claim and found
+    eight low ones, all fixed:
+    - End during a re-arm's `connect()` skipped the STOP, both before the connect resolved and in
+      the gap between its resolve and its "ready", because the plugin sends "linking" only for its
+      own reconnects. Without the STOP the pod kept its session hold. Now End waits for that
+      "ready" (pod_native stopDuringRearmConnect, stopBetweenResolveAndReady).
+    - The watchdog's late-tick rule and its stop at End are tested now (pod_web frozenPage, a real
+      tick count).
+    - givenUpRearms follows the plugin's real path to status 9.
+    - ble_check no longer reports a refused HELLO as a BYE.
+    - Every new test fails with the line it guards taken out.
+  - Accepted as is: End waits at most 2 s for a re-arm's connect. One still scanning by then is
+    dropped without its STOP, which costs the bounded 30 min hold (docs/ble.md 6).
+- **Still to run on hardware:**
+  - the plugin's give-up on the Pixel: a connect with no HELLO must free the pod within about 6 s;
+  - the Web watchdog in Chrome on Android with Bluetooth switched off mid-stream;
+  - the pkt_seq wrap: a soak past about 77 min, the pod on USB power so it can't idle-sleep;
+  - D26's wake threshold against gentle pickups.
 - **Simulator gaps** (the firmware follows ble.md here):
   - the simulator models the sleep prologue on Bluetooth only;
   - a HELLO right behind a USB BYE in the same pass stays in CRP on the pod but is lost in the

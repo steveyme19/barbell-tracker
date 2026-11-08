@@ -87,8 +87,24 @@ class CrpClosed(CrpError):
     """A transaction that can't be answered any more: BYE, END 0xFF, close() or the link went down."""
 
 
+class CrpLinkError(CrpClosed, OSError):
+    """A transaction whose packet the link refused (a port that's gone, a Bluetooth link past its
+    supervision timeout). A CrpClosed, so a caller's handler for "the link went" takes it, and still
+    an OSError, as the link's own error was. Before the 11-07 audit the link's error came through
+    raw, and log_ble's SLEEP, BENCH and decoder-request handlers (all `except CrpError`) let it end
+    the run instead of reconnecting."""
+
+
 def now_ms():
     return time.time() * 1000       # the arrival clock: wall time, like the browser's Date.now()
+
+
+def _retrieved(fut):
+    """Mark a transaction's future as seen: when the link goes down mid-send, the down report fails
+    the future while its own await already raised, and asyncio would log "Future exception was
+    never retrieved" for it."""
+    if fut.done() and not fut.cancelled():
+        fut.exception()
 
 
 def _bytes(x):
@@ -380,7 +396,7 @@ class Session:
         self._hello_wait = fut
 
         async def go():
-            await self.send(hello(ver, max_ch, max_chunk, flags, device_id))
+            await self._send_txn(hello(ver, max_ch, max_chunk, flags, device_id))
             return await fut
         try:
             return await asyncio.wait_for(go(), self.timeout if timeout is None else timeout)
@@ -389,6 +405,7 @@ class Session:
         finally:
             if self._hello_wait is fut:
                 self._hello_wait = None
+            _retrieved(fut)
 
     async def read(self, reg, timeout=None):
         """(status, value) of a READ. Any status comes back as is (BUSY included); a timeout raises."""
@@ -418,7 +435,7 @@ class Session:
         self.pending[txn] = fut     # before sending: an answer can beat the write's own confirmation
 
         async def go():
-            await self.send(build_pkt(txn))
+            await self._send_txn(build_pkt(txn))
             return await fut
         try:
             return await asyncio.wait_for(go(), self.timeout if timeout is None else timeout)
@@ -428,6 +445,17 @@ class Session:
             if self.pending.get(txn) is fut:        # not answered or aborted: free it here
                 del self.pending[txn]
                 self.txns.free(txn)
+            _retrieved(fut)
+
+    async def _send_txn(self, pkt):
+        """send() for a transaction (HELLO, READ, WRITE): a link that refuses the packet raises
+        CrpLinkError, so the caller sees the link going, not a transport's own exception type."""
+        try:
+            await self.send(pkt)
+        except CrpError:
+            raise
+        except Exception as e:
+            raise CrpLinkError(f"CRP: the link refused the packet ({type(e).__name__}: {e})") from e
 
     # ---- inbound ----
     def _on_packet(self, pkt, arrival_ms):
@@ -596,9 +624,12 @@ def bt_audio_connected():
 
 
 def no_pod_hint():
-    """' (connected Bluetooth audio: ...)' when there is any, for a 'no pod found' message."""
+    """For a 'no pod found' message: names any connected Bluetooth audio, worded as one cause among
+    others, because a pod that's asleep or held by a phone (one connection at a time) doesn't
+    advertise either: on 11-07 the hint blamed a connected but idle speaker while a phone held the pod."""
     names = bt_audio_connected()
-    return f" (Bluetooth audio connected, it starves scanning, D28: {', '.join(names)})" if names else ""
+    return (f" (asleep, or connected to a phone? Bluetooth audio is connected too, which can starve "
+            f"scanning, D28: {', '.join(names)})") if names else ""
 
 
 class BleakLink:
@@ -614,9 +645,11 @@ class BleakLink:
         self.on_packet = None
         self.on_down = None
         self._lock = asyncio.Lock()
+        self._went_down = False
 
     async def open(self):
         from bleak import BleakClient, BleakScanner
+        self._went_down = False
         dev = self.target
         if isinstance(dev, str):
             dev = await BleakScanner.find_device_by_address(dev, timeout=self.timeout)
@@ -632,6 +665,9 @@ class BleakLink:
             self.on_packet(bytes(data), now_ms())
 
     def _down(self):
+        if self._went_down:             # once per open: a failed write and bleak's callback can both see it
+            return
+        self._went_down = True
         if self.on_down:
             self.on_down()
 
@@ -640,8 +676,15 @@ class BleakLink:
         return self.client.mtu_size if self.client else None
 
     async def send(self, pkt):
+        """A write that fails is the link going down: within the pod's 4 s supervision timeout
+        Windows can fail the write (Unreachable) before bleak reports the disconnect, and until
+        that report the caller would think the link was still up."""
         async with self._lock:
-            await self.client.write_gatt_char(RX_UUID, bytes(pkt), response=True)
+            try:
+                await self.client.write_gatt_char(RX_UUID, bytes(pkt), response=True)
+            except Exception:
+                self._down()
+                raise
 
     async def close(self):
         if self.client is not None and self.client.is_connected:
@@ -1153,6 +1196,70 @@ async def _check_session(check):
             sys.modules["serial"] = real_mod
     check(seen.get("write_timeout") == SerialLink.write_timeout and 0 < SerialLink.write_timeout <= 2 and seen.get("closed"),
           f"SerialLink opens a real port with a write timeout ({seen.get('write_timeout')} s), so a gone port can't hold the loop")
+
+    # a link that refuses a transaction's packet: the caller gets CrpLinkError (a CrpClosed, so
+    # "the link went" handlers take it, and still an OSError), and the future that the link's down
+    # report failed meanwhile is retrieved, so asyncio logs nothing (the 11-07 audit's finding)
+    import gc
+    logged = []
+    loop = asyncio.get_running_loop()
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _l, ctx: logged.append(ctx.get("message", "")))
+    try:
+        class _DownThenRaise(_FakeLink):
+            def send(self, pkt):
+                if self.fail:
+                    if self.on_down:
+                        self.on_down()                      # SerialLink's order: report, then raise
+                    raise OSError("the port is gone")
+                return super().send(pkt)
+        dl = _DownThenRaise(dev)
+        s11 = Session(dl)
+        await s11.hello()
+        dl.fail = True
+        kinds = None
+        try:
+            await s11.read(INFO_R)
+        except Exception as e:                      # keep only facts: the traceback would keep the future alive
+            kinds = (type(e).__name__, isinstance(e, CrpLinkError), isinstance(e, CrpClosed),
+                     isinstance(e, OSError), isinstance(e.__cause__, OSError))
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(old_handler)
+    check(kinds is not None and all(kinds[1:]) and not s11.pending
+          and not [m for m in logged if "never retrieved" in m],
+          f"a refused packet raises CrpLinkError (CrpClosed and OSError), nothing logged ({kinds}, {logged})")
+    s12 = Session(_DownThenRaise(dev))
+    s12.link.fail = True
+    try:
+        await s12.hello(timeout=1)
+        hello_err = None
+    except Exception as e:
+        hello_err = e
+    check(isinstance(hello_err, CrpLinkError), f"so does a HELLO the link refuses ({type(hello_err).__name__})")
+
+    # BleakLink: a write that fails reports the link down at once, once, and bleak's own disconnect
+    # callback after it reports nothing more
+    class _DeadClient:
+        mtu_size = 247
+        is_connected = False
+        async def write_gatt_char(self, uuid, data, response):
+            raise OSError("Could not write value: Unreachable")
+    bl = BleakLink("EF:D6:D5:3A:30:27")
+    bl.client = _DeadClient()
+    bdowns = []
+    bl.on_down = lambda: bdowns.append(1)
+    try:
+        await bl.send(nop())
+        braised = False
+    except OSError:
+        braised = True
+    at_once = list(bdowns)
+    bl._down()                                  # bleak's disconnected_callback, later
+    check(braised and at_once == [1] and bdowns == [1],
+          f"BleakLink: a failed write raises and reports the link down at once, once ({at_once} then {bdowns})")
 
 
 def _check_vectors(check):

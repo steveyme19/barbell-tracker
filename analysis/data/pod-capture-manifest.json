@@ -1019,5 +1019,220 @@
    "stopped": 0,
    "t_backwards": 0
   }
+ },
+ "pod-capture-2026-11-07-2123-s7sleep1.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 47.44030712890623,
+  "rows": 513,
+  "samples": 7044,
+  "sha256": "2b4494eda3777b0264b5191424954cd29c3b5d0398bcdfbf3f017abd923422f1",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 7044,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-2124-s7sleep2.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 60.979289550781246,
+  "rows": 548,
+  "samples": 7612,
+  "sha256": "24132c1d04c4128b4a97e000e62710cc2e549db73f0a9250b58c6ac32d763490",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 7612,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-2125-s7sleep3.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 50.634875732421875,
+  "rows": 510,
+  "samples": 7003,
+  "sha256": "5b695868538a9dca39f5b1f73f4892e9443c9fcda8df6feec1011e0f60d664f0",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 7003,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-2126-s7sleep4.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 99.29012622070312,
+  "rows": 533,
+  "samples": 7329,
+  "sha256": "5f316027fc921eb5560776ebbb97c7eb200e5407b72b9287b16474e4236f3421",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 7329,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-2129-s7sleep5.csv": {
+  "events": {
+   "epoch": 2,
+   "sleep": 1,
+   "stopped": 2
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 43.64170336914063,
+  "rows": 503,
+  "samples": 6914,
+  "sha256": "9ba981127dc6516436382e005e2fff32a16fa647e3479affd0104154de3160ba",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 2,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 6914,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 2,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-2131-s10soak.csv": {
+  "events": {
+   "epoch": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 82.55899047851562,
+  "rows": 1182,
+  "samples": 17376,
+  "sha256": "7c8c23d193401c83e9b6a76b52e08ca87ab7f843d3bc20cc64c48c58cc80958e",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 17376,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 0,
+   "t_backwards": 0
+  }
+ },
+ "pod-capture-2026-11-07-2248-s10blesoak.csv": {
+  "events": {
+   "epoch": 1,
+   "sleep": 1,
+   "stopped": 1
+  },
+  "faults": [],
+  "first_t": 0.0,
+  "gaps": [],
+  "last_t": 2437.446044921875,
+  "rows": 34714,
+  "samples": 512990,
+  "sha256": "5e9db57cb7a4a2ef88339031ae33ee5d64ddd84973ff0e6442d652e26479716a",
+  "stats": {
+   "after_close": 0,
+   "bad": 0,
+   "clock_clamped": 0,
+   "dupes": 0,
+   "epochs": 1,
+   "ignored": 0,
+   "pkt_seq_gaps": 0,
+   "pkt_seq_lost": 0,
+   "pre_info": 0,
+   "reconnects": 0,
+   "samples": 512990,
+   "stale": 0,
+   "stale_stops": 0,
+   "stopped": 1,
+   "t_backwards": 0
+  }
  }
 }

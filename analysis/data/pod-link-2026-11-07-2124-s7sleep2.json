@@ -1,0 +1,59 @@
+{
+ "samples": 7612,
+ "ended": "done",
+ "gaps": [],
+ "faults": [],
+ "stats": {
+  "samples": 7612,
+  "bad": 0,
+  "pre_info": 0,
+  "ignored": 0,
+  "stale": 0,
+  "stale_stops": 0,
+  "after_close": 0,
+  "dupes": 0,
+  "t_backwards": 0,
+  "pkt_seq_gaps": 0,
+  "pkt_seq_lost": 0,
+  "reconnects": 0,
+  "epochs": 2,
+  "clock_clamped": 0,
+  "stopped": 2
+ },
+ "lost_overflow_by_boot": {
+  "4207387726": [
+   0,
+   0
+  ],
+  "3234919007": [
+   0,
+   0
+  ]
+ },
+ "sleeps": [
+  {
+   "reason": "command",
+   "at_s": 15.293,
+   "samples": 3312,
+   "disconnect_after_ms": 147
+  }
+ ],
+ "epochs": [
+  {
+   "boot_id": 4207387726,
+   "reboot": false,
+   "samples_before": 0,
+   "at_s": 2.2
+  },
+  {
+   "boot_id": 3234919007,
+   "reboot": true,
+   "samples_before": 3312,
+   "at_s": 45.236
+  }
+ ],
+ "last_idx": 4299,
+ "next_idx": 4300,
+ "lost_counted": 0,
+ "transport": "ble: BarPod-3027 EF:D6:D5:3A:30:27"
+}

@@ -78,7 +78,11 @@ import java.util.UUID;
  * starts every link without a session). Bluetooth switched off counts as a drop, and the reconnect
  * waits until it's back on. A link that goes 5 s without a packet is dead whatever Android says
  * (once JS's HELLO opened the session the pod's engine sends a NOP after 1 s of silence, and once
- * PUSH is on it pushes a STATUS every second).
+ * PUSH is on it pushes a STATUS every second). One that carried no packet at all since its "ready"
+ * had no session on it: JS never sent its HELLO (the pod is silent until one), so the page is
+ * frozen or gone. That link is given up, "closed" with status 9 (NO_SESSION), not reconnected: the
+ * pod takes one connection, and a link with no session would hold it from everyone (11-07: a
+ * locked phone kept the laptop from ever finding the pod). A live page asks again with connect().
  * Android 13+ only: the pod's address is random static, and only getRemoteLeDevice (API 33) can say
  * so. On 12 a reconnect after a Bluetooth restart waits forever for a public address.
  */
@@ -107,6 +111,7 @@ public class PodLinkPlugin extends Plugin {
     private static final int MAX_133 = 3;                   // GATT_ERROR (133) before a link came up: retry
     private static final int GATT_ERROR = 133;
     private static final int SILENT = 8;                    // our status for a dead link (like a supervision timeout)
+    private static final int NO_SESSION = 9;                // our status: a link given up, nothing on it since "ready" (no HELLO from JS)
 
     // the GATT chain, one operation at a time; a callback only moves it on from its own step
     private enum Step { IDLE, CONNECTING, DISCOVER, MTU, CCCD, READY }
@@ -135,6 +140,7 @@ public class PodLinkPlugin extends Plugin {
     private int link;                  // +1 every time the GATT chain completes ("ready")
     private int session;               // +1 at every close / failed setup: a delayed retry from an older one gives up
     private long lastPacket;           // elapsedRealtime of the latest packet, for the watchdog
+    private int linkPackets;           // packets on this link since its "ready": 0 means JS never opened a session
     private JSArray bf, bw;            // the batch being filled: packets, arrival times
     private boolean flushQueued;
     private BroadcastReceiver adapterRx;
@@ -564,6 +570,7 @@ public class PodLinkPlugin extends Plugin {
         retries = 0;
         link++;
         lastPacket = SystemClock.elapsedRealtime();
+        linkPackets = 0;
         h.postDelayed(watchdog, 1_000);
         flush();                                            // nothing should be waiting (the pod is silent until HELLO), but in order
         BluetoothDevice dev = g.getDevice();
@@ -603,6 +610,14 @@ public class PodLinkPlugin extends Plugin {
     private void checkSilence() {
         if (step != Step.READY) return;
         if (SystemClock.elapsedRealtime() - lastPacket > SILENT_MS) {
+            if (linkPackets == 0) {
+                // not one packet since "ready": no HELLO came from JS, so no page is using this link.
+                // Reconnecting by ourselves would hold the pod's one connection with no session on it.
+                Log.w(TAG, "nothing on the link for " + SILENT_MS + " ms since ready (no session): giving it up");
+                close(null);
+                state("closed", NO_SESSION);
+                return;
+            }
             Log.w(TAG, "no packet for " + SILENT_MS + " ms: the link is dead");
             dropped(SILENT);
             return;
@@ -670,6 +685,7 @@ public class PodLinkPlugin extends Plugin {
 
     private void add(byte[] packet, long w) {
         lastPacket = w;
+        linkPackets++;
         bf.put(Base64.encodeToString(packet, Base64.NO_WRAP));
         bw.put(w);
         if (!flushQueued) {

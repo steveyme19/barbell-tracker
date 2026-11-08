@@ -223,6 +223,10 @@ lives under the prefs key `crpAddress` (the pod's address changed with D45).
   with link + 1); JS answers with its command. Bluetooth switched off counts as a drop (Android can drop the client without a callback:
   an adapter-state receiver, and a 5 s no-frame watchdog, since the pod sends a STATUS every second);
   the reconnect waits until it's back on.
+  A link that carried nothing since "ready" had no HELLO from JS (a frozen page, a stopped
+  harness). That link is given up instead: `closed` with status 9, no autoConnect, and
+  `PodNativeSource` asks again with `connect()` (`rearm()`). This changed on 11-07, after a locked
+  Pixel held the pod's one connection and the laptop could never find it.
   Check it on the phone: `node android/podlink_check.mjs --install [--drop]` (the frames also go
   through the app's own PodStream; `--drop` makes the pod sleep-and-reset over USB to test the
   reconnect). Passed on the Pixel 9 Pro XL 2026-10-25: mtu 247, 13.2 frames/s, 210.7 samples/s with

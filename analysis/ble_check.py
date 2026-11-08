@@ -334,6 +334,8 @@ async def protocol(r, new_link, clock, seconds=15.0, on_usb=True, gravity=(9.3, 
         old = "a HELLO back"
     except crp.CrpTimeout:
         old = "no answer"
+    except crp.CrpLinkError:
+        raise                       # the link refused the HELLO: say so, not "BYE" (no BYE came)
     except crp.CrpError:
         old = "BYE"
     byes = [p for _, _, p, _ in pod.log if p and p["type"] == crp.BYE]

@@ -92,6 +92,8 @@ class BleTarget:
     def __init__(self, address=None):
         self.address = address
         self.name = None
+        self.hint = True                # the no-pod hint until the first connect: after that a miss is
+                                        # mostly the pod asleep, and the hint's PowerShell query slows each try
 
     async def link(self):
         from bleak import BleakScanner          # only here: --usb and --selftest run without bleak
@@ -100,8 +102,8 @@ class BleTarget:
         else:
             dev = await BleakScanner.find_device_by_filter(is_pod, timeout=10)
         if dev is None:
-            raise RuntimeError("no BarPod found" + crp.no_pod_hint())
-        self.address, self.name = dev.address, dev.name or self.name
+            raise RuntimeError("no BarPod found" + (crp.no_pod_hint() if self.hint else ""))
+        self.address, self.name, self.hint = dev.address, dev.name or self.name, False
         return crp.BleakLink(dev)
 
     def __str__(self):

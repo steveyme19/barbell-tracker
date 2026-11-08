@@ -105,6 +105,16 @@ framing level 0); on USB each packet is `[len u16][packet]` (level 1, section 2.
     signal, and a phone's WebView timers throttle with the screen off. So Bluetooth clients send no
     heartbeat (CRPClient `heartbeatMs: 0`).
   - On USB, 3 s without receiving anything ends the session, and USB clients send a NOP every 1 s.
+  - **Clients watch for silence instead** (11-07). With PUSH on, the pod sends at least a STATUS
+    every 1 s. So a client that hears nothing for 5 s calls the link dead, whatever its stack says;
+    it drops the link and reconnects.
+    - Who does this: PodLinkPlugin, and PodWebSource, because some Chrome builds never fire
+      gattserverdisconnected (Android Chrome with Bluetooth switched off).
+    - A late timer tick (a frozen or throttled page) only restarts that clock.
+  - A phone link that carried nothing at all since it came up had no session on it, since the pod
+    is silent until a HELLO. PodLinkPlugin gives such a link up instead of reconnecting by itself
+    (`closed`, status 9), and a live page asks again. The pod takes one connection, and a phone
+    holding it idle shuts everyone else out.
 - **No transaction is ever retried** (CRPClient `txnRetries: 0`). The engine runs a repeated WRITE
   again, and a STOP run twice answers twice.
 

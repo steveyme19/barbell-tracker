@@ -87,10 +87,20 @@ Bluetooth to the XIAO (same time as 4.1).
       `compare_ble_usb.py` proving every BLE sample equals its USB twin with 0 missing. The
       rest (sleep with a phone connected, reconnects in the app, the Android plugin, real sets)
       continues in steps 9-13.*
-      *D45 (11-02 to 11-04): the link moved onto Ansync's CRP, Bluetooth and USB. Code done; on
-      the bench so far: ble_check all PASS, USB CRP 0 gaps, Bluetooth with 3/10/30 s outages
-      matching the USB truth sample for sample. Still to run: the 60 s outage, sleep, Chrome, the
-      Pixel, a soak.*
+      *D45 (11-02 to 11-07): the link moved onto Ansync's CRP, over Bluetooth and USB. On the
+      bench:*
+      - *ble_check all PASS;*
+      - *outages of 3, 10, 30 and 60 s matching the USB truth sample for sample (60 s: exactly the
+        overflow the pod counted);*
+      - *dry-run and real sleeps (5 real, wake on motion);*
+      - *Chrome (pod_browser, pod_reconnect);*
+      - *the Pixel (podlink_check, pod_session_check);*
+      - *both links at once bit for bit;*
+      - *soaks of 26 min over USB and 40.6 min over Bluetooth, 0 gaps, the second ending in a real
+        idle sleep.*
+
+      *Still to run: a soak past the pkt_seq wrap (~77 min), and on the phone the plugin's give-up
+      of a link with no session (11-07 audit, D45).*
 - [ ] **1.5 Battery.** LiPo wiring, charging, runtime test. Read Seeed's battery docs
       carefully before wiring anything.
       *10-30: the leads get soldered straight to the BAT pads, no connector or switch (D38;

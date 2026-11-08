@@ -98,7 +98,7 @@ class Sim:
         self.b.run(3000)                   # the pod samples 3 s before anyone connects
 
     def _to_ble(self, pkt, arrival):
-        if self.ble is not None and self.ble.up:
+        if self.ble is not None and self.ble.up and not self.ble.deaf:
             self.ble.on_packet(bytes(pkt), arrival)
 
     def _link_down(self):                  # the Bench's disconnect, ours or the pod's before sleep
@@ -130,6 +130,7 @@ class SimBle:
         self.sim = sim
         self.on_packet = self.on_down = None
         self.up = False
+        self.deaf = False                  # out of range, not yet noticed: nothing arrives, writes fail
 
     async def open(self):
         b = self.sim.b
@@ -146,6 +147,9 @@ class SimBle:
     def send(self, pkt):
         if not self.up:
             raise OSError("not connected")
+        if self.deaf:                      # as crp.BleakLink does: report the link down, then raise
+            self.down()
+            raise OSError("Could not write value: Unreachable")
         self.sim.b.send_raw(bytes(pkt))
 
     def down(self):
@@ -554,6 +558,40 @@ def ble_sleep(folder):
     return rx, fails
 
 
+def ble_dead_write(folder):
+    """The pod goes out of range half a second before a SLEEP op: the radio is silent and the laptop
+    can't know yet (the pod's 4 s supervision timeout), so the SLEEP's write is the first thing to
+    meet the dead link and fails (bleak: Unreachable). That must read as the link going, not end
+    the run (the 11-07 audit): log_ble reconnects once the pod times out and advertises again, the
+    ring covers the gap, and the pod, which never got the SLEEP, streams on."""
+    sim = Sim(seed=111)
+    rx = Tracked(folder, "ble-dead-write", sim, "ble")
+    when = {}
+
+    def radio():
+        b = sim.b
+        if "deaf" not in when and sim.ble is not None and sim.ble.up and sim.clock() - rx.t0 >= 7.5:
+            when["deaf"] = b.now
+            sim.ble.deaf = True
+        if "deaf" in when and "timeout" not in when and b.now - when["deaf"] >= 4000:
+            when["timeout"] = b.now
+            b.disconnect()                 # the pod's supervision timeout: it drops its side, advertises again
+    sim.every_ms.append(radio)
+    go(sim, (rx, dict(seconds=25, outages=[], sleeps=[(8.0, 0)])))
+    if rx.ended != "done":                 # the bug itself: the failed write ended the run
+        return rx, [f"the run ended {rx.ended!r} at the failed SLEEP write instead of reconnecting"]
+    p = sim.b.pods[0]
+    fails = truth(rx, [(p.boot_id, first_cursor(p.ble), last_head(p.ble))]) + files(rx)
+    st = rx.stream.stats
+    if len(sim.b.pods) != 1 or rx.sleeps or rx.stream.gaps or rx.stream.faults or st["reconnects"] != 1             or st["stopped"] != 1 or rx.ended != "done" or "timeout" not in when:
+        fails.append(f"pods {len(sim.b.pods)}, sleeps {rx.sleeps}, gaps {rx.stream.gaps}, faults {rx.stream.faults}, "
+                     f"reconnects {st['reconnects']}, stopped {st['stopped']}, ended {rx.ended!r}, radio {when}")
+    if not any("SLEEP: CRP: the link refused" in ln for ln in rx.lines):
+        fails.append("no 'SLEEP: CRP: the link refused the packet' line: the failed write wasn't reported as the link going")
+    fails += [f for f in [wire_order(rx, 2)] if f]
+    return rx, fails
+
+
 def ble_mtu_busy(folder):
     sim = Sim(seed=104, native_mtu=False, mtu_after=1200)
     rx = Tracked(folder, "ble-mtu-busy", sim, "ble")
@@ -822,7 +860,7 @@ def selftest(keep=False):
         for f in fails:
             print("      - " + f)
         ok &= not fails
-        for fn in (ble_outage, ble_overflow, ble_sleep, ble_mtu_busy, ble_mtu_23, ble_boot_mismatch, not_a_pod,
+        for fn in (ble_outage, ble_overflow, ble_sleep, ble_dead_write, ble_mtu_busy, ble_mtu_23, ble_boot_mismatch, not_a_pod,
                    usb_beside_ble, usb_quiet, usb_pod_leaves):
             try:
                 rx, fails = fn(folder)

@@ -74,7 +74,7 @@ class FakeChar extends EventTarget {
 }
 
 class FakeDevice extends EventTarget {
-  constructor({ cancelOnDisconnect = true, info = INFO, status = STATUS } = {}) {
+  constructor({ cancelOnDisconnect = true, info = INFO, status = STATUS, silentDisconnect = false } = {}) {
     super();
     this.name = "BarPod-TEST";
     this.calls = [];
@@ -89,6 +89,7 @@ class FakeDevice extends EventTarget {
     this.writeDelayOf = null;         // (hex) => ms that write takes (a write with response the link layer retries)
     this.onNotify = null;
     this.onUnnotify = null;
+    this.mutedLink = 0;               // this connection's radio is gone and nobody says so: nothing arrives
     this.pod = new FakeCrpPod({ info, status });
     this.pod.stopped = F.STOPPED;
     const pending = new Set();        // connects waiting on the gate (Chrome cancels them on disconnect)
@@ -120,7 +121,8 @@ class FakeDevice extends EventTarget {
         if (cancelOnDisconnect) for (const rej of [...pending]) rej(Object.assign(new Error("Connection attempt aborted."), { name: "AbortError" }));
         const was = this.connected;
         this.connected = false;
-        if (was) { dev.pod.down(); dev.dispatchEvent(new Event("gattserverdisconnected")); }
+        // silentDisconnect: a browser that fires nothing even for our own disconnect()
+        if (was) { dev.pod.down(); if (!silentDisconnect) dev.dispatchEvent(new Event("gattserverdisconnected")); }
       },
     };
   }
@@ -128,7 +130,7 @@ class FakeDevice extends EventTarget {
   linkUp() {
     const link = this.link;
     this.pod.up((pkts) => {
-      if (link !== this.link || !this.gatt.connected) return;
+      if (link !== this.link || !this.gatt.connected || link === this.mutedLink) return;
       for (const p of pkts) this.chars.tx?.notify(p);
     });
   }
@@ -283,6 +285,79 @@ async function reconnectSameBoot() {
     `(${d.pod.ctrls.at(-1)}), samples ${before} -> ${got}, gaps ${s.stream.gaps.length}`);
   await s.stop();
 }
+
+/** The radio loses the link and the browser never says so (no gattserverdisconnected, as Android
+ * Chrome with Bluetooth switched off): the stream goes silent. While packets flow (one per 100 ms
+ * here, the pod's STATUS per 1 s scaled down) nothing happens; once they stop, the watchdog calls
+ * the link lost after silenceMs, drops it itself, and the reconnect resumes from the next index with
+ * no gap (the 11-07 audit). */
+async function silentLink(opts = {}) {
+  const d = new FakeDevice(opts);
+  const ev = [];
+  let got = 0;
+  const s = new PodWebSource(() => got++, d, { ...FAST, silenceMs: 300, onEvent: (k, i) => ev.push(`${k}:${typeof i === "string" ? i : ""}`) });
+  const started = s.start();
+  await commanded(d, 0);
+  d.pod.push(DATAS[0]);
+  await started;
+  let k = 1;
+  for (; k < 8; k++) { await sleep(100); d.pod.push(DATAS[k]); }      // 700 ms of traffic
+  const falseAlarm = ev.includes("link:lost");
+  const before = got;
+  d.mutedLink = d.link;
+  const t0 = Date.now();
+  await until(() => ev.includes("link:lost"), 3000, "the watchdog to call the silent link lost");
+  const ms = Date.now() - t0;
+  await until(() => ev.includes("link:back"), 3000, "the link to come back");
+  const from = firstIdx(DATAS[k - 1]) + nOf(DATAS[k - 1]);
+  const want = `0102${le32(bootOf(INFO))}${le32(from)}`;      // STREAM_FROM(seq 2, this boot, next index)
+  d.pod.push(asStream(DATAS[k], 2));
+  await sleep(20);
+  const lost = s.linkEvents.filter((e) => e.kind === "lost");
+  check(!falseAlarm && ms >= 200 && ms < 1500 && lost.length === 1 && /^silent \d+ ms$/.test(lost[0].why ?? "") &&
+    s.reconnects === 1 && d.pod.ctrls.at(-1) === want && got > before && s.stream.gaps.length === 0 && d.calls.includes("disconnect"),
+    `a silent link (no disconnect event${opts.silentDisconnect ? ", not even for our own disconnect()" : ""}): no alarm during traffic, lost ${ms} ms after the last packet (${lost[0]?.why}), ` +
+    `dropped by the source, back with STREAM_FROM the next index, samples ${before} -> ${got}, gaps ${s.stream.gaps.length}`);
+  let ticks = 0;
+  const tick = s.checkSilence.bind(s);
+  s.checkSilence = () => { ticks++; tick(); };              // the interval calls this.checkSilence()
+  await sleep(4 * s.tickMs);
+  await s.stop();                                           // it ticks on during End's handshake, idle
+  const atEnd = ticks;
+  await sleep(4 * s.tickMs);
+  check(atEnd > 0 && ticks === atEnd, `End stops the watchdog (${atEnd} ticks up to the end, ${ticks - atEnd} after it)`);
+}
+
+/** A frozen or throttled page: the event loop is blocked for 1 s while the link is fine, and the
+ * packet that queued meanwhile is delivered just after the overdue tick. The late tick must only
+ * restart the clock, not call a live link dead; and a link muted after that is still caught. */
+async function frozenPage() {
+  const d = new FakeDevice();
+  const ev = [];
+  const s = new PodWebSource(() => {}, d, { ...FAST, silenceMs: 300, onEvent: (k, i) => ev.push(`${k}:${typeof i === "string" ? i : ""}`) });
+  const started = s.start();
+  await commanded(d, 0);
+  d.pod.push(DATAS[0]);
+  await started;
+  let k = 1;
+  for (; k < 4; k++) { await sleep(100); d.pod.push(DATAS[k]); }
+  await new Promise((res) => setImmediate(() => {
+    const t = Date.now() + 1000;
+    while (Date.now() < t) { /* the page frozen for 1 s */ }
+    setImmediate(() => { d.pod.push(DATAS[k++]); res(); });   // its queued packet, after the overdue tick
+  }));
+  for (let j = 0; j < 4; j++, k++) { await sleep(100); d.pod.push(DATAS[k]); }
+  const links = ev.filter((e) => e.startsWith("link:"));
+  d.mutedLink = d.link;
+  const t0 = Date.now();
+  await until(() => ev.includes("link:lost"), 3000, "the muted link to be called lost after the freeze");
+  const ms = Date.now() - t0;
+  check(!links.length && ms < 1500, `a page frozen for 1 s: no false "lost" on a live link (link events before the mute: ` +
+    `${links.join(" ") || "none"}), then a muted link caught ${ms} ms later`);
+  await s.stop();
+}
+
+const silentLinkNoEvent = () => silentLink({ silentDisconnect: true });
 
 async function reconnectAfterSleep() {
   const d = new FakeDevice({ info: SW.info1, status: SW.status1 });
@@ -547,7 +622,7 @@ async function lateConnectAfterEnd() {
 }
 
 for (const t of [connectionOrder, zombie, zombieWithNewOwner, dropWhileStarting, noDataSendsStop, dropWhileStopping,
-  reconnectSameBoot, reconnectAfterSleep, endWhileReconnecting, outageHoldsOff,
+  reconnectSameBoot, silentLink, silentLinkNoEvent, frozenPage, reconnectAfterSleep, endWhileReconnecting, outageHoldsOff,
   dropDuringReconnectSetup, endDuringStuckSetup, endDuringStuckSubscribe, endDuringSetupThenHandshake, endThenSubscribeCompletes,
   endBehindSlowPush, requestDuringSetup, requestDuringStop, sleepDuringSetup, lateConnectAfterEnd]) {
   try { await t(); } catch (e) { check(false, `${t.name}: ${e.stack}`); }

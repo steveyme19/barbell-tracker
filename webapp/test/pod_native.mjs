@@ -23,7 +23,7 @@
 // listeners gone). Frames come from the simulator's "clean" and "sleep-wake-rebase"
 // scenarios (python analysis/make_fake_pod.py first).
 
-import { POD, PodNativeSource } from "../sources.js";
+import { POD, PodNativeSource, PLUGIN_NO_SESSION } from "../sources.js";
 import { FakeCrpPod, PKT, asStream, bootOf, bytes, fixtures, hex, le32, nOf, settle, sleep, u32, until } from "./fake_crp_pod.mjs";
 
 const F = fixtures();
@@ -48,6 +48,7 @@ class FakePlugin {
     this.early = [];                    // packets flushed before connect() resolves (the pod sends none before HELLO)
     this.writeDelay = 0;                // ms a write takes to go out (a slow link)
     this.failCtrl = 0;                  // this many next CTRL writes fail (a GATT busy, not a dropped link)
+    this.connectGate = null;            // a promise connect() waits on (its scan and GATT chain still running)
     this.q = Promise.resolve();         // the plugin runs one GATT operation at a time
   }
   elapsed() { return ELAPSED0 + (Date.now() - this.t0); }
@@ -59,7 +60,7 @@ class FakePlugin {
     const e = { f: hexes.map(b64), w: hexes.map(() => w) };
     for (const fn of this.ls.pod) fn(e);
   }
-  state(state) { for (const fn of this.ls.podState) fn({ state, status: 0, mtu: 247, link: this.link }); }
+  state(state, status = 0) { for (const fn of this.ls.podState) fn({ state, status, mtu: 247, link: this.link }); }
   /** CTRL values written, in call order, done or not (hex). */
   ctrlAttempts() { return this.attempts.map(PKT.ctrlOf).filter((v) => v !== null); }
   /** The link is ready: the pod's packets reach JS while it is this link. */
@@ -70,6 +71,7 @@ class FakePlugin {
   }
   async connect(opts) {
     this.calls.push(`connect:${JSON.stringify(opts)}`);
+    if (this.connectGate) await this.connectGate;
     if (this.connectError) throw new Error(this.connectError);
     this.link++;
     this.linkUp();
@@ -98,6 +100,9 @@ class FakePlugin {
   drop() { this.linked = false; this.pod.down(); this.state("lost"); }
   /** Its GATT chain done on a new link (services, MTU, TX CCCD): "ready". */
   relink() { this.link++; this.linkUp(); this.state("ready"); }
+  /** The plugin gives the link up (nothing on it for 5 s since "ready", PodLinkPlugin's NO_SESSION):
+   * close(null), the pod sees the disconnect, then "closed" with status 9; no autoConnect. */
+  giveUp() { this.calls.push("giveUp"); this.linked = false; this.pod.down(); this.state("closed", PLUGIN_NO_SESSION); }
   /** A drop and the plugin's own reconnect; info / status: a woken pod's new boot. */
   reconnect({ info, status } = {}) {
     this.drop();
@@ -163,6 +168,115 @@ async function reconnectSameBoot() {
     `same-boot reconnect: lost, back, the order again for link 2 (${order.join(" ")}), STREAM_FROM the next index (${p.pod.ctrls.at(-1)}), ` +
     `samples ${before} -> ${got()}, gaps ${s.stream.gaps.length}`);
   await s.stop();
+}
+
+/** The plugin gave the link up as unused (it heard nothing for 5 s: a frozen page's link). A live
+ * page asks again: connect() after the re-arm wait, the order on the new link, STREAM_FROM the next
+ * index, no gap (the 11-07 audit: before this the plugin re-armed itself forever, holding the pod). */
+async function givenUpRearms() {
+  const p = new FakePlugin();
+  const E = events();
+  let got = 0;
+  const s = new PodNativeSource(() => got++, { plugin: p, onEvent: E.onEvent, capture: true, startTimeoutMs: 500, rearmMs: [30, 60] });
+  const started = s.start();
+  await commanded(p, 0);
+  p.pod.push(DATAS[0]);
+  await started;
+  const before = got;
+  const n = p.pod.ctrls.length;
+  // the real path to status 9: a drop, the plugin's autoConnect ("linking", "ready" for link 2), and
+  // nothing on that link (here its writes are refused: the page's HELLO never gets through), then the give-up
+  p.drop();
+  p.state("linking");
+  p.link++;
+  p.state("ready");
+  await sleep(50);
+  const w2 = p.links.filter((l) => l === 2).length;
+  const t0 = Date.now();
+  p.giveUp();
+  await commanded(p, n, "the re-armed link's STREAM command");
+  const ms = Date.now() - t0;
+  const from = u32(DATAS[0], 4) + nOf(DATAS[0]);
+  const want = `0102${le32(bootOf(INFO))}${le32(from)}`;
+  p.pod.push(asStream(DATAS[1], 2));
+  await sleep(10);
+  await sleep(1200);                                       // past link 2's resume() retry: it must stand down
+  const connects = p.calls.filter((c) => c.startsWith("connect:"));
+  const cmds3 = p.writes.filter((h, i) => PKT.ctrlOf(h) !== null && p.links[p.attempts.indexOf(h)] === 3).length;
+  check(E.ev.includes("link:lost") && E.ev.includes("link:back") && connects.length === 2 && connects[1] === 'connect:{"any":false}' &&
+    ms >= 30 && p.pod.ctrls.at(-1) === want && p.pod.ctrls.length === n + 1 && got > before && s.stream.gaps.length === 0 &&
+    s.reconnects === 1 && w2 >= 1 && p.link === 3,
+    `a reconnect's link the plugin gave up (link 2, its HELLO refused): lost once, connect() again after ${ms} ms (${connects[1]}), ` +
+    `the order on link ${p.link}, one STREAM_FROM the next index (${p.pod.ctrls.slice(n).join(" ")}), samples ${before} -> ${got}, gaps ${s.stream.gaps.length}`);
+  await s.stop();
+}
+
+/** End while a re-arm's connect() is in flight (its scan and GATT chain still running, and the plugin
+ * sends no "linking" for a connect()): End waits for its "ready", then the STOP reaches the pod, which
+ * releases the session hold (docs/ble.md 6). */
+async function stopDuringRearmConnect() {
+  const p = new FakePlugin();
+  const s = new PodNativeSource(() => {}, { plugin: p, startTimeoutMs: 500, rearmMs: [10] });
+  const started = s.start();
+  await commanded(p, 0);
+  p.pod.push(DATAS[0]);
+  await started;
+  p.pod.answerStop = true;               // the STOP answered at once: the time measured is End's wait for "ready"
+  let open;
+  p.connectGate = new Promise((r) => { open = r; });
+  p.giveUp();
+  await until(() => p.calls.filter((c) => c.startsWith("connect:")).length === 2, 2000, "the re-arm's connect()");
+  const stopped = s.stop();
+  await sleep(100);
+  p.connectGate = null;
+  open();
+  const t0 = Date.now();
+  await stopped;
+  const ms = Date.now() - t0;
+  check(p.pod.ctrls.at(-1) === "03" && !p.pod.hold && ms < 1000,
+    `End during a re-arm's connect(): it waited for "ready" (${ms} ms after the connect), then STOP (${p.pod.ctrls.slice(1).join(" ")}), the hold released (${!p.pod.hold})`);
+}
+
+/** End in the gap between a re-arm's connect() resolving and its "ready" (the plugin resolves
+ * first, then sends "ready", as two bridge messages): End must still wait for that "ready" and send
+ * its STOP (the second-round review's race). */
+async function stopBetweenResolveAndReady() {
+  const p = new FakePlugin();
+  const s = new PodNativeSource(() => {}, { plugin: p, startTimeoutMs: 500, rearmMs: [10] });
+  const started = s.start();
+  await commanded(p, 0);
+  p.pod.push(DATAS[0]);
+  await started;
+  p.pod.answerStop = true;
+  let open;
+  p.connectGate = new Promise((r) => { open = r; });
+  p.giveUp();
+  await until(() => p.calls.filter((c) => c.startsWith("connect:")).length === 2, 2000, "the re-arm's connect()");
+  p.connectGate = null;
+  let stopped = null;
+  open();
+  setImmediate(() => { stopped = s.stop(); });   // queued before the fake's own setImmediate("ready"): after the resolve
+  await until(() => stopped, 1000, "End");
+  await stopped;
+  check(p.pod.ctrls.at(-1) === "03" && !p.pod.hold,
+    `End between the re-arm's resolve and its "ready": STOP still sent (${p.pod.ctrls.slice(1).join(" ") || "nothing"}), the hold released (${!p.pod.hold})`);
+}
+
+/** End while waiting to re-arm: no connect() after End, and stop() doesn't wait for one. */
+async function stopDuringRearm() {
+  const p = new FakePlugin();
+  const s = new PodNativeSource(() => {}, { plugin: p, startTimeoutMs: 500, rearmMs: [300] });
+  const started = s.start();
+  await commanded(p, 0);
+  p.pod.push(DATAS[0]);
+  await started;
+  p.giveUp();
+  const t0 = Date.now();
+  await s.stop();
+  const ms = Date.now() - t0;
+  await sleep(400);
+  const connects = p.calls.filter((c) => c.startsWith("connect:")).length;
+  check(ms < 200 && connects === 1 && !s.rearming, `End while waiting to re-arm: stop() in ${ms} ms, no connect() after it (${connects} in all)`);
 }
 
 async function sleepAndWake() {
@@ -421,7 +535,7 @@ async function startFails() {
     `a start that fails: the plugin's reason ("${e1?.message}"); no data after the command: STOP, BYE, disconnect ("${e2?.message}")`);
 }
 
-for (const t of [start, reconnectSameBoot, sleepAndWake, sleepDuringReconnect, requestDuringReconnect, stopHandshake, requestDuringStop, stopWhileDown,
+for (const t of [start, reconnectSameBoot, givenUpRearms, stopDuringRearm, stopDuringRearmConnect, stopBetweenResolveAndReady, sleepAndWake, sleepDuringReconnect, requestDuringReconnect, stopHandshake, requestDuringStop, stopWhileDown,
   stopDuringResume, sleepDuringResume, resumeRetry, stopDuringRetry, retryUntilItWorks, newLinkDuringRetry, stopDuringOrder,
   stopWhenOrderFails, stopDuringReread, startFails]) {
   try { await t(); } catch (e) { check(false, `${t.name}: ${e.stack}`); }
