@@ -2,7 +2,7 @@
 # Build and run podcrp's host test on the PC (MinGW gcc): the real CRP engine (../src/crp) and
 # ../podcrp.c with fake hooks, plus podcrp.h from C++. Arduino never compiles this folder.
 #   bash firmware/pod/test/build.sh
-# Once analysis/crp.py exists, its --vectors go in too: the pod's bytes against the Python
+# analysis/crp.py --vectors go in too: the pod's bytes against the Python
 # reference (P1). PYTHON overrides the venv Python. Exit 0 only if every check passed.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -28,13 +28,11 @@ g++ -std=gnu++11 -Wall -Wextra -Werror -g -I"$pod" -o "$out/cpp_check" "$here/cp
 rc=0
 vec=()
 py="${PYTHON:-$repo/analysis/.venv/Scripts/python.exe}"
-if [ -f "$repo/analysis/crp.py" ]; then
-  if "$py" "$repo/analysis/crp.py" --vectors > "$out/vectors.json"; then
-    vec=("$out/vectors.json")
-  else
-    echo "FAIL  analysis/crp.py --vectors didn't run"
-    rc=1
-  fi
+if "$py" "$repo/analysis/crp.py" --vectors > "$out/vectors.json"; then
+  vec=("$out/vectors.json")
+else
+  echo "FAIL  analysis/crp.py --vectors didn't run"
+  rc=1
 fi
 "$out/host_test" ${vec[@]+"${vec[@]}"} || rc=1
 "$out/cpp_check" || rc=1

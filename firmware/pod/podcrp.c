@@ -9,7 +9,9 @@
 //     reported sent: anything else queued already proves the link alive;
 //   - a push (STATUS, DATA) goes only with PUSH on, and on BLE only into an empty spool, a free
 //     slot and a packet that fits; on USB only with 128 B to spare. A refused push sends nothing;
-//   - a disconnect, BYE, END 0xFF or USB silence empties the spool (a HELLO mid-session doesn't).
+//   - a disconnect empties the spool, and on Bluetooth so do BYE and END 0xFF. A HELLO mid-session
+//     doesn't, and a USB session end (BYE, END, silence) keeps its bytes: the port may hold the
+//     start of a packet, and the text resumes after them.
 // The region defines no bulk ops, ever: the engine turns any 4-byte WRITE to a region with
 // bulk_write_open into a bulk channel, and STREAM_LIVE is 4 bytes.
 #include "podcrp.h"
@@ -146,7 +148,7 @@ static crp_status_t r_write(void *ctx, uint32_t reg, const uint8_t *buf, uint32_
     case PODCRP_REG_CTRL:                     // the op table is the sketch's (ble.md 4)
       if (len < 1 || len > PODCRP_CTRL_MAX) return CRP_STATUS_INVALID_VALUE;
       return l->hooks.ctrl ? (crp_status_t)l->hooks.ctrl(l, buf, len) : CRP_STATUS_ACCESS_DENIED;
-    case PODCRP_REG_BENCH:                    // CRP packets contain 'h' and 'w': only these count
+    case PODCRP_REG_BENCH:                    // only the bench characters (pod.ino, top)
       if (len != 1 || buf[0] == 0 || !memchr(PODCRP_BENCH_CHARS, buf[0], sizeof PODCRP_BENCH_CHARS - 1))
         return CRP_STATUS_INVALID_VALUE;
       return l->hooks.bench ? (crp_status_t)l->hooks.bench(l, buf[0]) : CRP_STATUS_ACCESS_DENIED;
@@ -320,8 +322,9 @@ static uint32_t t_recv(void *ctx, uint8_t *buf, uint32_t max_len) {
 
 static uint32_t t_mtu(void *ctx) { return max_pkt((const podcrp_link_t *)ctx); }
 
-// Drop everything waiting in the TX spool. On USB a packet the port already took part of is cut
-// short; the host only sees that after a session end or the port closing.
+// Drop everything waiting in the TX spool. On USB that would cut short a packet the port already
+// took part of, so only podcrp_reset does it there: at a port close, or once the spool is out
+// (usb.ino).
 static void spool_clear(podcrp_link_t *l) {
   if (l->kind == PODCRP_USB) l->u.usb.tail = l->u.usb.used = 0;
   else l->u.ble.first = l->u.ble.n = 0;

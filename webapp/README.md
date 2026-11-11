@@ -62,8 +62,9 @@ Tools (at the bottom): replay a recording (a long file shows up as sets; real ti
 The pod (Chrome on a laptop or Android, https or localhost): tap **Connect pod**, pick
 `BarPod-XXXX` in the browser's list, then **Start session** as usual. The choice sticks
 (**Use the phone** switches back), but after a page reload the browser needs the Connect
-tap once more. The footer shows `pod BarPod-1A2B · 211 Hz · 16/pkt · 45 ms · lost 0 · gaps 0
-· 3.95 V`. Pod data is raw (no phone calibration) until roadmap 1.3. A dropped link
+tap once more. The footer shows `pod BarPod-1A2B · 211 Hz · 16/pkt · MTU 247 · 45 ms · lost 0 ·
+gaps 0 · reconnects 0 · epochs 1 · 3.95 V`. Pod data skips the phone calibration; the pod's own is applied once
+`python analysis/calib_pod.py --install` has put one in the build (D42). A dropped link
 reconnects by itself (ble-plan step 10), and in the app also with the screen off (step 12;
 the pod button: the saved pod, tapped again the nearest one next Start). Laptop: turn
 Bluetooth headphones off, they starve the scan (D28).
@@ -76,17 +77,21 @@ Bluetooth headphones off, they starve the scan (D28).
 | `app.js` | UI wiring: source → session tracker → algorithm → UI |
 | `sets.js` | session mode: finds sets + rest live, ported from `analysis/sets.py`; RPE estimate v0 |
 | `native.js` | Android-app-only extras: save/share files, keep the screen on |
-| `calib.js` | 6-face accelerometer calibration (D23), ported from `analysis/calib.py` |
+| `calib.js` | 6-face accelerometer calibration (D23), ported from `analysis/calib.py`; also applies the pod's own calibration (`pod-calibration.json`, D42) |
 | `lv.js` | load-velocity profile + e1RM (D22), ported from `analysis/lv.py` |
 | `store.js` | session history in IndexedDB: a small record per session + each set's raw samples (history list, resume after the app was killed, export, import, delete) |
 | `export.js` | the session export file (D30): JSON with the raw sets as base64 typed arrays, bit-exact both ways; `analysis/sessions.py` reads it |
-| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`), `PodSource` (the link logic both pod sources share: epochs, outages, the STOP handshake, link.json), `PodWebSource` (the pod over Web Bluetooth; reconnects by itself after a dropout, a reset or a sleep) and `PodNativeSource` (the app: the pod over `PodLinkPlugin`, which reconnects by itself, also with the screen off) |
+| `sources.js` | `PhoneSource` (DeviceMotion), `NativeSensorSource` (app), `ReplaySource` (recordings), `PodStream` (the pod's decoder, a port of `analysis/podlink.py`), `PodCrpLink` (the pod's CRP session: HELLO, the INFO and STATUS reads, PUSH, CTRL, D45), `PodSource` (the link logic both pod sources share: epochs, outages, the STOP handshake, link.json), `PodWebSource` (the pod over Web Bluetooth; reconnects by itself after a dropout, a reset or a sleep) and `PodNativeSource` (the app: the pod over `PodLinkPlugin`, which reconnects by itself, also with the screen off) |
+| `crp/` | Ansync's CRP browser client, vendored (D45); `crp/README-VENDOR.md` lists its two local patches |
 | `gaps.js` | the set cards' data-gap flags from the pod's decoder (a dropout longer than its ring, a restart, a link that never came back) |
 | `reps.js` | the rep algorithm, ported line for line from `analysis/reps.py` |
 | `fileio.js` | read phyphox CSV/zip, write CSV |
 | `plot.js` | tiny canvas plotter |
 | `test/parity.mjs` | checks `reps.js` against `reps.py` |
-| `test/pod.mjs` | checks `PodStream` against `podlink.py` (36 simulator scenarios, bit for bit) |
+| `test/pod.mjs` | checks `PodStream` against `podlink.py` (every `make_fake_pod.py` scenario, as CRP packets and as frames, bit for bit) |
+| `test/crp_wire.mjs` | the vendored CRP client's bytes against `analysis/crp.py --vectors` |
+| `test/fake_crp_pod.mjs` | the fake CRP pod that `pod_web.mjs` and `pod_native.mjs` share |
+| `test/calib_pod.mjs` | `applyPodCalibration` against `calib_pod.py` (D42) |
 | `test/pod_web.mjs` | `PodWebSource`'s failure and reconnect paths against a fake Bluetooth device that behaves like Chrome |
 | `test/pod_native.mjs` | `PodNativeSource` against a fake `PodLinkPlugin` (start, reconnects, a sleep, End mid-reconnect, a retried write) |
 | `test/gaps.mjs` | `gaps.js` on made-up sets |

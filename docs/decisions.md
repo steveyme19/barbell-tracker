@@ -1230,7 +1230,51 @@ open the pod, and its registers are discoverable rather than a frozen table.
     - Every new test fails with the line it guards taken out.
   - Accepted as is: End waits at most 2 s for a re-arm's connect. One still scanning by then is
     dropped without its STOP, which costs the bounded 30 min hold (docs/ble.md 6).
+- **Amended 11-10, a cleanup pass over the link stack** (Quentin: make it cleaner, simpler, work
+  better). No hardware was reachable, so nothing in it ran on the pod or the phone.
+  - *How:* a read-only review of eight areas, each bug claim checked by a skeptic. The changes went
+    in area by area against the tests, with the simulator's six vector files byte-identical
+    throughout. A second review of the finished diff found five small slips, all fixed.
+  - *Removed or folded:*
+    - podlink.py's PodLink v1 USB check (170 lines for a firmware mode D45 deleted) and the v1 UUIDs;
+    - dead parameters and state in make_fake_pod.py, crp.py and log_ble.py;
+    - crp.Session's two send paths, now one;
+    - log_ble's BUSY retry and bench writes, each written twice;
+    - the two pod sources' start(), now shared in PodSource;
+    - repeated boilerplate in log_ble_sim.py and the host test;
+    - docs that still described the v1 plugin (android.md, ble.md, the READMEs, CLAUDE.md).
+  - *Guards that could pass falsely:*
+    - a crashing make_fake_pod scenario left truncated vectors that pod.mjs passed. Now it fails
+      alone, and pod.mjs refuses vectors without the finished-run marker (`fake_pod_runs.csv`);
+    - `podlink.py --write-manifest` rewrote every pin. Now it only adds captures the manifest
+      lacks, so P2 is enforced by the tool, not by care;
+    - an exception inside the simulator froze `log_ble.py --selftest` for good. Now it fails with
+      the traceback;
+    - several JS checks passed with the line they guard removed. Each fails now.
+  - *Behavior fixes, each with a check that fails without it:*
+    - log_ble.py refuses unknown or space-separated flags (`--usb COM5` used to record over
+      Bluetooth), and its reconnect no longer gives up after 10,000 tries;
+    - usb_clock.py: a write timeout, and a bench command's file is removed only once it is sent,
+      never sent twice (`usb_clock.py --selftest`, new);
+    - log_serial.py no longer overwrites a same-minute recording (P2);
+    - a link that drops while hello() waits raises CrpClosed, not "the peer answered HELLO";
+    - PodNativeSource takes each link's MTU from "ready"; the web source reports a stop timeout
+      on a reconnect's link;
+    - the phone and Chrome harnesses fail when their DevTools socket closes, `soak.mjs end` can be
+      run again after a failed pull, and pod_reconnect.mjs saves a failed run's capture.
+  - *Left out on purpose, each needs hardware:*
+    - BleakLink.close() skips bleak's disconnect() after a dropout, leaking its service handles
+      until the process ends. The fix is one line, but that Windows call can hang, so it wants a
+      real pod-side dropout first;
+    - PodLinkPlugin's flags that restate other state (autoConnecting, mtuAsked) and failSetup(),
+      which repeats close(), plus the phone harnesses' shared helpers: with the phone attached;
+    - PodWebTransport's second gattserverdisconnected listener: with Chrome and the pod;
+    - a pod-side guard that drops a Bluetooth link with no session for 30 s: a firmware change.
+  - *Refuted and dropped:* a bound on a WinRT write that never completes (a fault nobody has
+    seen, on a bench-checked path), and two others.
 - **Still to run on hardware:**
+  - first, after the cleanup pass: ble_check.py, log_ble.py on both links, pod_browser.mjs and
+    pod_reconnect.mjs, then podlink_check.mjs and pod_session_check.mjs with the rebuilt APK;
   - the plugin's give-up on the Pixel: a connect with no HELLO must free the pod within about 6 s;
   - the Web watchdog in Chrome on Android with Bluetooth switched off mid-stream;
   - the pkt_seq wrap: a soak past about 77 min, the pod on USB power so it can't idle-sleep;

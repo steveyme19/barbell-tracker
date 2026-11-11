@@ -5,7 +5,7 @@
 // `usb_room` more bytes. Every byte the link sends lands in one log, which the checks read back
 // packet by packet (USB through the level 1 length).
 //
-// With a file argument (analysis/crp.py --vectors, which build.sh passes once crp.py exists) it
+// With a file argument (analysis/crp.py --vectors, which build.sh passes) it
 // also replays the Python reference's pod packets through the engine and requires the same bytes
 // (P1), and requires the client packets this test feeds to be crp.py's.
 #include "../podcrp.h"
@@ -88,7 +88,6 @@ static const char *tohex(const uint8_t *p, size_t n) {
 static const char *rg(uint32_t reg) {                       // a register address, little-endian
   return hx("%02X %02X %02X %02X", reg & 0xFF, (reg >> 8) & 0xFF, (reg >> 16) & 0xFF, reg >> 24);
 }
-static const char *u32h(uint32_t v) { return rg(v); }
 static const char *str_hex(const char *s) {
   uint8_t b[256];
   size_t n = strlen(s);
@@ -103,6 +102,7 @@ static const char *resp(int txn, int st, uint32_t reg, const char *val) {
 
 static void le16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void le32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i)); }
+static uint32_t get32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
 // ================================================================================================
 // The fake sketch
@@ -316,10 +316,13 @@ static int next_status(podcrp_link_t *l) {
   return n >= 8 && b[0] == 0x0C ? b[2] : -1;
 }
 
-static void open_session(podcrp_link_t *l, uint16_t mtu) {
-  podcrp_set_mtu(l, mtu);                   // nothing on USB
+static void hello(podcrp_link_t *l) {       // HELLO, its answer skipped (the MTU as it is)
   req(l, C_HELLO);
   skip_pkt(l);
+}
+static void open_session(podcrp_link_t *l, uint16_t mtu) {
+  podcrp_set_mtu(l, mtu);                   // nothing on USB
+  hello(l);
 }
 static void push_on(podcrp_link_t *l) {
   req(l, wr(0x7E, PODCRP_REG_PUSH, "01"));
@@ -458,9 +461,9 @@ static void t_push_gating(void) {
   check(podcrp_pushes_on(l), "PUSH still 1 after the bad writes");
 
   check(podcrp_push(l, PODCRP_REG_DATA, fr, n16), "DATA push (n 16, 238 B) accepted at MTU 247");
-  expect(l, hx("04 00 %s %s", rg(PODCRP_REG_DATA), tohex(fr, n16)), "its bytes: 04 00 04000100 + the frame (244 B = 247 - 3)");
+  expect(l, wr(0, PODCRP_REG_DATA, tohex(fr, n16)), "its bytes: 04 00 04000100 + the frame (244 B = 247 - 3)");
   check(podcrp_push(l, PODCRP_REG_STATUS, st, 20), "STATUS push accepted");
-  expect(l, hx("04 00 %s %s", rg(PODCRP_REG_STATUS), tohex(st, 20)), "its bytes: 04 00 02000100 + the frame");
+  expect(l, wr(0, PODCRP_REG_STATUS, tohex(st, 20)), "its bytes: 04 00 02000100 + the frame");
 
   F.slots = 0;
   check(!podcrp_push(l, PODCRP_REG_DATA, fr, n16), "push refused with no free slot");
@@ -479,7 +482,7 @@ static void t_push_gating(void) {
   podcrp_set_mtu(l, 79);
   check(!podcrp_push(l, PODCRP_REG_DATA, f5, n5), "MTU 79: a 5-sample frame (6 + 84 > 76) refused");
   check(podcrp_push(l, PODCRP_REG_DATA, f4, n4), "MTU 79: a 4-sample frame (6 + 70 = 76) accepted");
-  expect(l, hx("04 00 %s %s", rg(PODCRP_REG_DATA), tohex(f4, n4)), "its bytes, 76 B");
+  expect(l, wr(0, PODCRP_REG_DATA, tohex(f4, n4)), "its bytes, 76 B");
   podcrp_set_mtu(l, 28);
   check(!podcrp_push(l, PODCRP_REG_STATUS, st, 20), "MTU 28: STATUS push (26 B > 25) refused");
   podcrp_set_mtu(l, 29);
@@ -521,7 +524,7 @@ static void t_spool_fifo(void) {
   next_pkt(l, b);
   check(b[1] == 12 && b[8] == 0x30, "then txn 12 (CAL)");
   check(podcrp_push(l, PODCRP_REG_STATUS, st, 20), "and only then the push");
-  expect(l, hx("04 00 %s %s", rg(PODCRP_REG_STATUS), tohex(st, 20)), "which comes last on the wire");
+  expect(l, wr(0, PODCRP_REG_STATUS, tohex(st, 20)), "which comes last on the wire");
 
   F.slots = 0;
   req(l, rd(40, PODCRP_REG_PROTO));
@@ -893,12 +896,12 @@ static void t_usb_reserve(void) {
   uint32_t tail1 = L.u.usb.tail;
   check(podcrp_push(l, PODCRP_REG_DATA, fr, n16) && L.u.usb.tail < tail1, "a push that starts %u B before the end",
         (unsigned)(PODCRP_USB_SPOOL - tail1));
-  expect(l, hx("04 00 %s %s", rg(PODCRP_REG_DATA), tohex(fr, n16)), "comes out intact");
+  expect(l, wr(0, PODCRP_REG_DATA, tohex(fr, n16)), "comes out intact");
   F.usb_room = 5;
   check(podcrp_push(l, PODCRP_REG_DATA, fr, n16), "a push the port takes 5 B of");
   F.usb_room = -1;
   podcrp_spool_drain(l);
-  expect(l, hx("04 00 %s %s", rg(PODCRP_REG_DATA), tohex(fr, n16)), "the rest follows on the next drain, intact");
+  expect(l, wr(0, PODCRP_REG_DATA, tohex(fr, n16)), "the rest follows on the next drain, intact");
 }
 
 static void t_session_end(void) {
@@ -913,16 +916,14 @@ static void t_session_end(void) {
   check(!podcrp_pushes_on(l) && !podcrp_push(l, PODCRP_REG_STATUS, st, 20), "pushes off and refused");
   req(l, C_READ_INFO);
   expect_none(l, "a READ after BYE is ignored");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   req(l, rd(2, PODCRP_REG_PUSH));
   expect(l, resp(2, 0, PODCRP_REG_PUSH, "00"), "the next session starts with PUSH 0");
   push_on(l);
   req(l, C_END);
   check(F.ends == 2 && F.end_why == PODCRP_END_END && !podcrp_in_session(l) && !podcrp_pushes_on(l),
         "END 0xFF: on_session_end(END) once, pushes off");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   push_on(l);
   int starts = F.starts;
   req(l, C_HELLO);
@@ -946,8 +947,7 @@ static void t_session_end(void) {
   expect_none(l, "the queued READ is gone");
   req(l, C_BYE);
   check(F.ends == 3, "a BYE without a session ends nothing");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   req(l, rd(4, PODCRP_REG_MTU));
   expect(l, resp(4, 0, PODCRP_REG_MTU, "17 00"), "a new link starts at MTU 23");
 
@@ -978,8 +978,7 @@ static void t_session_end(void) {
   F.slots = -1;
   pass(l);
   expect_none(l, "and nothing goes out after it");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   req(l, C_READ_INFO);
   check(next_status(l) == CRP_STATUS_OK && F.info_reads == 2, "the link keeps its MTU: INFO still reads OK");
   F.slots = 0;
@@ -995,8 +994,7 @@ static void t_session_end(void) {
   push_on(l);
   req(l, C_BYE);
   check(F.ends == 1 && F.end_why == PODCRP_END_BYE && !podcrp_pushes_on(l), "USB: BYE ends the session once (BYE)");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   F.usb_room = 0;                           // the host stops reading
   feed(l, C_READ_INFO);
   feed(l, C_BYE);
@@ -1006,8 +1004,7 @@ static void t_session_end(void) {
   pass(l);
   check(next_status(l) == CRP_STATUS_OK, "USB: the RESPONSE then goes out whole");
   expect_none(l, "USB: nothing goes out after it");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   F.usb_room = 0;
   req(l, C_READ_INFO);                      // spooled, and the last packet received
   now += 3000;
@@ -1038,8 +1035,7 @@ static void t_liveness(void) {
         "USB: 3000 ms without receiving ends it (SILENCE), pushes off");
   for (now = 4001; now <= 10000; now += 7) podcrp_tick(l, now);
   check(F.ends == 1, "on_session_end once, not once per tick");
-  req(l, C_HELLO);
-  skip_pkt(l);
+  hello(l);
   check(podcrp_in_session(l), "a new HELLO opens a new session");
 
   l = fresh(PODCRP_USB);
@@ -1056,7 +1052,7 @@ static void t_log(void) {
   now = 1500;
   pass(l);
   check(podcrp_log(l, CRP_LOG_INFO, "pod", "boot"), "taken in a session");
-  expect(l, hx("18 02 %s 03 %s %s", u32h(1500), str_hex("pod"), str_hex("boot")), "LOG = 18 02 <ts 1500> 03 \"pod\" \"boot\"");
+  expect(l, hx("18 02 %s 03 %s %s", rg(1500), str_hex("pod"), str_hex("boot")), "LOG = 18 02 <ts 1500> 03 \"pod\" \"boot\"");
   uint8_t fr[300];
   uint32_t n16 = data_frame(fr, 16);
   push_on(l);
@@ -1152,7 +1148,7 @@ static void t_vectors(const char *path) {
       expect(l, want, "vectors: %s, the pod's BYE to a 0x0A HELLO byte for byte", vname[i]);
       replayed++;
     } else if (n >= 8 && v[0] == 0x0C && v[3] == 0xFF) {
-      uint32_t reg = (uint32_t)v[4] | (uint32_t)v[5] << 8 | (uint32_t)v[6] << 16 | (uint32_t)v[7] << 24;
+      uint32_t reg = get32(v + 4);
       bool frame_reg = reg == PODCRP_REG_INFO || reg == PODCRP_REG_STATUS || reg == PODCRP_REG_CAL;
       if (frame_reg && (v[2] == 0 || v[2] == CRP_STATUS_BUSY)) {   // a READ's answer
         podcrp_link_t *l = fresh(PODCRP_BLE);
@@ -1174,7 +1170,7 @@ static void t_vectors(const char *path) {
         printf("info  vectors: %s, a RESPONSE this test doesn't replay\n", vname[i]);
       }
     } else if (n >= 6 && v[0] == 0x04 && v[1] == 0) {
-      uint32_t reg = (uint32_t)v[2] | (uint32_t)v[3] << 8 | (uint32_t)v[4] << 16 | (uint32_t)v[5] << 24;
+      uint32_t reg = get32(v + 2);
       if (reg != PODCRP_REG_DATA && reg != PODCRP_REG_STATUS) continue;
       podcrp_link_t *l = fresh(PODCRP_BLE);
       open_session(l, 247);
@@ -1190,7 +1186,7 @@ static void t_vectors(const char *path) {
       memcpy(mod, v + 7, ml);
       memcpy(msg, v + 7 + v[6], sl);
       podcrp_link_t *l = fresh(PODCRP_USB);
-      now = (uint32_t)v[2] | (uint32_t)v[3] << 8 | (uint32_t)v[4] << 16 | (uint32_t)v[5] << 24;
+      now = get32(v + 2);
       open_session(l, 0);                   // at the LOG's ts_ms, which the engine stamps
       check(podcrp_log(l, v[1], mod, msg), "vectors: %s, the LOG is taken", vname[i]);
       expect(l, want, "vectors: %s, the pod's LOG byte for byte", vname[i]);
@@ -1218,7 +1214,7 @@ int main(int argc, char **argv) {
   t_liveness();
   t_log();
   if (argc > 1) t_vectors(argv[1]);
-  else printf("SKIP  crp.py --vectors not given (build.sh passes them once analysis/crp.py exists)\n");
+  else printf("SKIP  crp.py --vectors not given (build.sh passes them)\n");
   printf("\n%d PASS, %d FAIL\n", n_pass, n_fail);
   return n_fail ? 1 : 0;
 }

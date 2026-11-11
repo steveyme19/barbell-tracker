@@ -116,10 +116,10 @@ typedef struct {
   void (*on_session_start)(podcrp_link_t *link);
   // A session ended on a live link; why is a PODCRP_END_* (a HELLO mid-session: on_session_start
   // follows). End the link's stream exactly as a disconnect does (ble.md 2.2). Called once per
-  // session. podcrp_reset (a disconnect) doesn't call it. The glue has already emptied the TX
-  // spool (not at HELLO: the new session's answer may be in it), so a live BLE link needs no
-  // podcrp_reset here, which would also put its MTU back to 23. USB goes back to text at BYE, END
-  // and SILENCE (ble.md 2.5), not at HELLO.
+  // session. podcrp_reset (a disconnect) doesn't call it. On Bluetooth the glue has already
+  // emptied the TX spool (not at HELLO: the new session's answer may be in it), so a live link
+  // needs no podcrp_reset here, which would also put its MTU back to 23. USB keeps its spool and
+  // goes back to text once it is out, at BYE, END and SILENCE (ble.md 2.5), not at HELLO.
   void (*on_session_end)(podcrp_link_t *link, uint8_t why);
 } podcrp_hooks_t;
 

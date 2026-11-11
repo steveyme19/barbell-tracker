@@ -282,7 +282,7 @@ uint32_t crpRead(podcrp_link_t* c, uint32_t reg, uint8_t* buf, uint32_t room) {
       if (room < 20) return 0;
       buildStatus(L, buf, 0, head);
       return 20;
-    case PODCRP_REG_CAL:                      // stub until roadmap 1.3: byte 1 = 0, no calibration
+    case PODCRP_REG_CAL:                      // a stub: byte 1 = 0, no calibration (the app applies the pod's, D42)
       if (room < 64) return 0;
       buf[0] = POD_T_CAL;
       return 64;

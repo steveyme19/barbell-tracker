@@ -200,9 +200,10 @@ lives under the prefs key `crpAddress` (the pod's address changed with D45).
   A "Connect pod" tap picks the pod (Web Bluetooth needs a user gesture). Reconnects only
   while the page is visible.
 - **App**: our own plain-Java Capacitor plugin `PodLinkPlugin` (no new dependency, Java 25 safe)
-  and `PodNativeSource` in sources.js. Java is a dumb pipe: it connects, subscribes and hands
-  raw frames to JS in batches (base64, every 50 ms); it never parses them. The one decoder is
-  the `PodStream` in sources.js. Reconnects with `autoConnect` work with the screen off while
+  and `PodNativeSource` in sources.js. Java is a dumb pipe: it connects, subscribes, hands
+  the pod's CRP packets to JS in batches (base64, every 50 ms) and writes JS's packets to RX; it
+  never parses them. The CRP session (`PodCrpLink`) and the one decoder (`PodStream`) are in
+  sources.js. Reconnects with `autoConnect` work with the screen off while
   RecordingService keeps the process alive (checked 2026-10-25, step 12, below).
 - **Not** `@capacitor-community/bluetooth-le` (named here before): Kotlin, needs a bundler
   (P3), one event per notification, reconnects from JS.
@@ -211,18 +212,21 @@ lives under the prefs key `crpAddress` (the pod's address changed with D45).
   plan's v1): the pod's address is random static and only `getRemoteLeDevice` (API 33) can say so;
   on 12 a reconnect after a Bluetooth restart waits forever for a public address (step 11 review).
 - **`PodLinkPlugin.java`** (step 11, built 2026-10-24): `connect({any?})` asks for Nearby
-  devices the first time, tries the saved pod (10 s), else scans 8 s for the PodLink service: the
+  devices the first time, tries the saved pod (10 s), else scans 8 s for the CRP service (0x5090), taking only `BarPod-` names: the
   saved pod the moment it's heard, with none saved the strongest, and never another pod in place of
-  the saved one unless `any: true` (picking a new pod). Then the connection order (services, MTU
-  247, read INFO, read STATUS, the DATA CCCD), the address saved, and it resolves `{name, address,
-  mtu, link, wallMs, elapsedMs}`. `write({b, link?})` (base64, CTRL with response, queued; a command
-  computed for an earlier link is refused), `reread()` (INFO and STATUS again, for the decoder's
-  need-info), `disconnect()`. Events `pod {f: [base64], w: [elapsedRealtime ms]}` every ~50 ms and
+  the saved one unless `any: true` (picking a new pod). Then its part of the connection order (services,
+  MTU 247, the TX CCCD), the address saved, and it resolves `{name, address,
+  mtu, link, wallMs, elapsedMs}`. `write({b, link?})` (base64, one CRP packet, written to RX with
+  response, queued; a packet computed for an earlier link is refused), `disconnect()`. There is no
+  `reread()` since D45: for the decoder's need-info JS reads INFO and STATUS again itself
+  (`PodSource.reread`). Events `pod {f: [base64 packet], w: [elapsedRealtime ms]}` every ~50 ms and
   `podState {state: connecting|linking|ready|lost|closed, status, mtu, link}`. An unrequested drop
   reconnects with autoConnect and runs the chain again ("linking" once its link is up, then "ready"
-  with link + 1); JS answers with its command. Bluetooth switched off counts as a drop (Android can drop the client without a callback:
-  an adapter-state receiver, and a 5 s no-frame watchdog, since the pod sends a STATUS every second);
-  the reconnect waits until it's back on.
+  with link + 1); JS answers with the connection order (HELLO, READ INFO, READ STATUS, PUSH 1), then
+  its command. Bluetooth switched off counts as a drop, and the reconnect waits until it's back on.
+  Android can drop the client without a callback, hence an adapter-state receiver and a 5 s
+  no-packet watchdog: in a session the pod sends a NOP after 1 s of silence, and a STATUS every
+  second once PUSH is on.
   A link that carried nothing since "ready" had no HELLO from JS (a frozen page, a stopped
   harness). That link is given up instead: `closed` with status 9, no autoConnect, and
   `PodNativeSource` asks again with `connect()` (`rearm()`). This changed on 11-07, after a locked
@@ -236,10 +240,11 @@ lives under the prefs key `crpAddress` (the pod's address changed with D45).
 - **`PodNativeSource`** (step 12, 2026-10-25): the app's pod source on the plugin, sharing the link
   logic (epochs, outages reported once, the STOP handshake, link.json) with `PodWebSource` through
   `PodSource`. The pod button picks the pod: the saved one, or after a second tap the nearest one
-  next Start ("Pod: the nearest one"). At "ready" after a reconnect it sends the decoder's command
-  for that link (a failed write on a live link is tried again, 1, 2, 4 s, then every 5 s); End during
-  a reconnect still gets its STOP to the pod (or the pod keeps its session hold): during the
-  plugin's order ("linking") it waits for "ready", at most 2 s. Each part of a resumed session
+  next Start ("Pod: the nearest one"). At "ready" after a reconnect it runs the connection order on
+  the new link, then sends the decoder's command (a step that fails on a live link is tried again,
+  1, 2, 4 s, then every 5 s); End during a reconnect still gets its STOP to the pod (or the pod
+  keeps its session hold): during the plugin's GATT chain ("linking") it waits for "ready", at most
+  2 s. Each part of a resumed session
   writes its own `pod-<k>.json` / `link-<k>.json`. Test without a phone: `node webapp/test/pod_native.mjs`.
   On the phone: `node android/pod_session_check.mjs --install` (a session, the screen off 25 s, the
   pod's `w` with the screen dark, End, the files, the capture replayed through podlink.py, a second

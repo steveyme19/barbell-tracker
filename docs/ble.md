@@ -10,8 +10,9 @@ Change it here first.
 **Two layers.** The PodLink frames (sections 3, 4, 6 and 7) carry the samples and the link's
 story; CRP 0x0B (section 2, D45) carries the frames: Ansync Labs' Channel Register Protocol, over
 Bluetooth and over USB.
-- **Status:** the CRP binding lands in stages (D45: USB at S6, Bluetooth at S7). Until then the pod
-  runs the PodLink v1 GATT table, which this file described up to commit e584069.
+- **Status:** built and bench-checked (D45, 11-04 to 11-07): the pod speaks CRP on both links from
+  fw_build 10 on. The PodLink v1 GATT table it replaced is in this file up to commit e584069 (tag
+  `podlink-v1-final` is the last v1 build).
 
 **The idea.** The pod keeps the record; the radio only carries it. Every IMU sample gets a
 32-bit sample index and its own crystal timestamp when it's read, and waits in a RAM ring
@@ -197,8 +198,8 @@ How writes are answered:
   above MTU - 3 into several notifications, which would break one packet per notification. The pod
   never uses it: it calls `sd_ble_gatts_hvx` and never hands that more than MTU - 3.
 - **UUIDs** are 16-bit values on the Bluetooth base. They are Ansync's convention, not values the
-  Bluetooth SIG assigned. `BLEUuid` keeps a pointer, not a copy (BLEUuid.cpp:185-187), so use
-  separate static values.
+  Bluetooth SIG assigned. A 16-bit `BLEUuid` holds its value, so plain constants do; only a
+  128-bit one keeps a pointer (BLEUuid.cpp:185-187).
 - **Telling the pod apart.** Every Ansync CRP device shares the service, so clients also require all
   three of: the name prefix `BarPod-`, HELLO device_id "BPOD", and, as before, the session's INFO
   serial.
@@ -256,14 +257,14 @@ How writes are answered:
   STREAM command discards a built-but-unsent DATA frame (it belonged to the old stream).
 - Flags:
   - **RESYNC**: the first frame sent after a STREAM command. pkt_seq continuity restarts here.
-    Stays pending until a frame carrying it is accepted by notify().
+    Stays pending until a frame carrying it is accepted by the link.
   - **OVERFLOW**: the samples between the pod's cursor and this frame's first_idx left the ring
     before they were sent, either at a STREAM_FROM clamp or mid-stream when sampling lapped the
     cursor; so it can be on any frame, RESYNC or not. The jump is counted loss, not a protocol
     error. Stays pending until a frame carrying it is accepted. A STREAM command clears any
     pending OVERFLOW before applying its own clamp.
   - **IMU_RESTART**: sample 0 of this frame is the first sample after an IMU restart (50
-    data-ready waits of 20 ms timed out in a row: about 1 s with no samples, pod.ino). The time
+    data-ready waits of 20 ms timed out in a row: about 1 s with no samples, sampler.ino). The time
     hole is just before it, with no index jump. The pod remembers the first index after every
     restart still in the ring (index >= lo), in a table of 40 without duplicates, and always
     starts a frame there, also when resending the ring after an outage, so a resent backlog
@@ -296,7 +297,7 @@ interval (0 on USB) are that link's.
 | 2 | u16 | battery, mV (the cached 5 s reading) |
 | 4 | u32 | ticks_now: RTC2 ticks when this STATUS was built |
 | 8 | u32 | head: the next sample index. In the stream_stopped / going_to_sleep STATUS: the end of the drained stream (stop_head / the final head). |
-| 12 | u16 | lost_overflow: samples the BLE stream skipped since boot (STREAM_FROM clamp-ups plus ring overruns while streaming; each index counted once; USB-side losses not included), saturates at 65535 |
+| 12 | u16 | lost_overflow: samples this link's stream skipped since boot (STREAM_FROM clamp-ups plus ring overruns while streaming; each index counted once; the USB CSV's losses not included), saturates at 65535 |
 | 14 | u16 | missed_drdy: samples the IMU produced but the pod didn't store, since boot (from the data-ready firmware on; always 0 in the polling firmware; IMU-restart holes not included), saturates at 65535 |
 | 16 | u8 | sleep_reason: 0 none, 1 idle, 2 lid-down, 3 low battery, 4 command, 5 IMU lost |
 | 17 | u8 | n_per_packet: samples per DATA frame at the current MTU (n_max) |
@@ -317,7 +318,7 @@ Flags:
 | 0 | u8 | type 0x20 |
 | 1 | u8 | proto, 1 |
 | 2 | u16 | fw_build |
-| 4 | u32 | boot_id: random per boot, never 0. The pod waits (`sd_rand_application_bytes_available_get`, at most 100 ms) until 4 bytes are available, requires `sd_rand_application_vector_get` to return NRF_SUCCESS, and redraws a 0. If that fails it prints `# boot_id RNG failed` and doesn't advertise (USB keeps working), so a repeated id never reaches a phone |
+| 4 | u32 | boot_id: random per boot, never 0. The pod waits (`sd_rand_application_bytes_available_get`, at most 100 ms) until 4 bytes are available, requires `sd_rand_application_vector_get` to return NRF_SUCCESS, and redraws a 0. If that fails it prints `# boot_id RNG failed`, doesn't advertise and refuses the USB switch to CRP (`# usb crp refused`; USB text keeps working), so a repeated id or an INFO with boot_id 0 never goes out |
 | 8 | u32 | serial: `NRF_FICR->DEVICEID[0]` |
 | 12 | f32 | accel_lsb, m/s^2 per count (0.0023928226) |
 | 16 | f32 | gyro_lsb, deg/s per count (0.035) |
@@ -330,8 +331,8 @@ Flags:
 
 ### CAL (0x30), 64 bytes, read
 
-Stub until roadmap 1.3: byte 0 = 0x30, byte 1 = 0 (no calibration), the rest 0. A real
-calibration (per-axis bias and scale) gets its layout in 1.3 without changing the table.
+A stub: byte 0 = 0x30, byte 1 = 0 (no calibration), the rest 0. The pod's calibration is applied
+in the app instead (D42, section 1), so nothing fills it in.
 
 ## 4. CTRL ops (written to the CTRL register, section 2.3; byte 0 = op)
 
@@ -339,7 +340,7 @@ calibration (per-axis bias and scale) gets its layout in 1.3 without changing th
 |---|---|---|
 | 0x01 STREAM_FROM | u8 cmd_seq, u32 boot_id, u32 from_idx (10 B in all) | If boot_id isn't the current one: send a STATUS with boot_mismatch and change nothing else (stream, cursor, hold and the current cmd_seq stay as they were). Otherwise `lo = head > ring_n ? head - ring_n : 0`, `cursor = clamp(from_idx, lo, head)`; if it was clamped up, the skipped samples are counted loss and the first frame has OVERFLOW. Then a STATUS, then DATA carrying this cmd_seq (first frame RESYNC). Sets the session hold. |
 | 0x02 STREAM_LIVE | u8 cmd_seq, u16 back (4 B) | `cursor = head - min(back, head, ring_n)`. A fresh session sends back = 600 (~2.8 s of still lead-in from before Start). Then a STATUS, then DATA carrying this cmd_seq (first frame RESYNC). Sets the session hold. |
-| 0x03 STOP | none (1 B) | Releases the session hold at once. Snapshot `stop_head = head` and drain every sample below it; the frame ending at stop_head has FINAL (no FINAL frame if nothing was pending). Then STATUS with stream_stopped and head = stop_head, and streaming ends. The drain is capped: if DATA can't flow (n_max < 4, or DATA notifications off), or it runs past `1.5 s + backlog / (60 x n_max) s` (backlog = stop_head - cursor at the STOP), the pod sends the stream_stopped STATUS at once and the rest is the phone's stop-tail. If not streaming: the stream_stopped STATUS goes out at once (head = current head). A disconnect or a STREAM command during the drain ends it without a stream_stopped STATUS. |
+| 0x03 STOP | none (1 B) | Releases the session hold at once. Snapshot `stop_head = head` and drain every sample below it; the frame ending at stop_head has FINAL (no FINAL frame if nothing was pending). Then STATUS with stream_stopped and head = stop_head, and streaming ends. The drain is capped: if DATA can't flow (n_max < 4, or pushes off: PUSH 0 or TX notifications off), or it runs past `1.5 s + backlog / (60 x n_max) s` (backlog = stop_head - cursor at the STOP), the pod sends the stream_stopped STATUS at once and the rest is the phone's stop-tail. If not streaming: the stream_stopped STATUS goes out at once (head = current head). A disconnect or a STREAM command during the drain ends it without a stream_stopped STATUS. |
 | 0x10 SLEEP | u8 mode (2 B) | 0 = sleep with motion wake, 1 = sleep with the IMU off. Runs the sleep prologue (section 6). |
 
 - Unknown ops and wrong lengths change nothing; their WRITE is answered INVALID_VALUE.
