@@ -752,8 +752,9 @@ const podOwners = new WeakMap();
  * stop() and close(). app.js treats both as "the pod".
  */
 export class PodSource {
-  constructor(onSample, { onEvent = () => {}, capture = false } = {}) {
+  constructor(onSample, { onEvent = () => {}, capture = false, startTimeoutMs = 10000 } = {}) {
     this.onEvent = onEvent;
+    this.startTimeoutMs = startTimeoutMs;   // no first sample by then: start() fails (tests shorten it)
     this.capture = capture ? { log: [], samples: [] } : null;
     this.closed = false;                // close() ran: a setup still in flight must stop and touch nothing
     this.linkLost = false;
@@ -926,8 +927,8 @@ export class PodSource {
 
   /** STOP, then wait for the pod's stream_stopped STATUS (everything up to its head has arrived,
    * or the tail is counted as a gap) or the link to drop, at most the decoder's stop wait.
-   * send(bytes) writes it to CTRL. up(): the link is still there (a silent wait is a real timeout). */
-  async stopHandshake(send, up = () => !this.linkLost) {
+   * crp: the session it goes over. up(): the link is still there (a silent wait is a real timeout). */
+  async stopHandshake(crp, up = () => !this.linkLost) {
     let done = false;
     let failed = false;
     const stopped = new Promise((res) => { this.stopped = () => { done = true; res(); }; this.wake = res; });
@@ -935,7 +936,7 @@ export class PodSource {
     this.log("stop", "", hexOf(b));
     const wait = this.stream.stopWaitMs();
     try {
-      await send(b);
+      await crp.ctrl(b);
       await Promise.race([stopped, sleepMs(wait)]);
     } catch {
       failed = true;                             // the link went: finish() counts the tail
@@ -952,6 +953,37 @@ export class PodSource {
     const b = this.stream.stopCommand();
     this.log("stop", "", hexOf(b));
     await Promise.race([crp.ctrl(b), sleepMs(1000)]).catch(() => {});
+  }
+
+  /** start()'s wait, the same for both sources: go() (the connection order and the command), then
+   * the first sample. Fails with the reason after startTimeoutMs, or at once when the link drops. */
+  async firstSample(go) {
+    let timer = null;
+    const first = new Promise((res) => { this.gotData = () => { this.gotData = null; res(); }; });
+    const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(this.whyNoData())), this.startTimeoutMs); });
+    const lost = new Promise((_, rej) => { this.lostWait = () => rej(new Error("The pod's link dropped while starting. Try again.")); });
+    try {
+      await Promise.race([go().then(() => first), late, lost]);
+      this.started = true;
+    } finally {
+      clearTimeout(timer);
+      this.lostWait = null;
+    }
+  }
+
+  /** A start that failed. The pod may already hold a session for the STREAM command: release it
+   * (best effort), or it keeps the 30 min idle limit for nothing (docs/ble.md 6). Then close(). */
+  async failStart() {
+    if (this.cmdSent && !this.linkLost && this.crp) await this.stopOnly(this.crp);
+    await this.close();
+  }
+
+  /** Why no sample came (start()'s timeout), from the latest STATUS and the decoder's faults. */
+  whyNoData() {
+    const st = this.stream.ep?.status;
+    if (st && (st.flags & POD.S_MTU_TOO_SMALL)) return "The pod's Bluetooth link is too small (MTU). Try again.";
+    if (this.stream.faults.length) return `Pod: ${this.stream.faults.at(-1)}.`;
+    return `The pod sent no data in ${this.startTimeoutMs / 1000} s.`;
   }
 
   finishStream() {
@@ -1077,18 +1109,18 @@ export class PodWebSource extends PodSource {
    * "asleep" | "back"). capture: keep every packet, command and call (the make_fake_pod.py log
    * format, so podlink.py can replay it) and every decoded sample. backoffMs: waits between
    * reconnect tries, the last one repeating (docs/ble-plan.md 3); connectTimeoutMs: a connect that
-   * hangs (the pod out of range) is cancelled after this. Tests shorten all three.
+   * hangs (the pod out of range) is cancelled after this. silenceMs: no packet this long with PUSH
+   * on and the link counts as dead (checkSilence). Tests shorten them all.
    */
   constructor(onSample, device, { onEvent = () => {}, capture = false, startTimeoutMs = 10000,
     backoffMs = [500, 1000, 2000, 4000, 5000], connectTimeoutMs = 10000, silenceMs = 5000 } = {}) {
-    super(onSample, { onEvent, capture });
+    super(onSample, { onEvent, capture, startTimeoutMs });
     this.device = device;
     this.silenceMs = silenceMs;         // no packet this long with PUSH on: the link is dead (checkSilence)
     this.tickMs = Math.min(1000, Math.max(50, silenceMs / 4));
     this.lastRx = 0;                    // Date.now() of the last packet
     this.lastTick = 0;                  // of the watchdog's last tick
     this.watchdog = null;
-    this.startTimeoutMs = startTimeoutMs;   // no first sample by then: start() fails (tests shorten it)
     this.backoffMs = backoffMs;
     this.connectTimeoutMs = connectTimeoutMs;
     this.transport = null;              // the current connection's PodWebTransport (this.crp runs on it)
@@ -1156,29 +1188,23 @@ export class PodWebSource extends PodSource {
   /** Connect and run the connection order (docs/ble.md 7) over a fresh session. Also the reconnect:
    * the same stream, so its command is STREAM_FROM the next index (or index 0 of a pod that woke up). */
   async setup(attempts = 3) {
-    this.inSetup = true;
-    try {
-      const ch = await this.discover(attempts);
-      this.dropLink();                             // the old connection's session, if any
-      const t = new PodWebTransport(ch.rx, ch.tx, this.device, (u8, ms) => this.packet(u8, ms), (u8) => this.sent(u8));
-      const crp = new PodCrpLink(t, { heartbeatMs: 0 });   // no heartbeat on Bluetooth (docs/ble.md 2.2)
-      this.transport = t;
-      this.crp = crp;
-      this.linkLive = true;
-      this.device.addEventListener("gattserverdisconnected", this.onGone);
-      await ch.tx.startNotifications();            // every packet the pod sends comes on TX, in order (D28)
-      await this.runOrder({ crp, done: 0 });
-      this.linkReady = this.linkLive && crp === this.crp;
-      this.inSetup = false;                        // from here a request is answered as it comes
-      // End came during the order: stop() sends its STOP over this link (the handshake, now that PUSH
-      // is on), and a stream command could reach the pod behind it (as resume() does natively)
-      if (this.stopping) return;
-      await this.orderCommand();
-      // the footer's MTU: Web Bluetooth doesn't tell, the pod's MTU register does
-      crp.mtu().then((m) => { if (m !== null && crp === this.crp && !this.closed) this.mtu = m; }, () => {});
-    } finally {
-      this.inSetup = false;
-    }
+    const ch = await this.discover(attempts);
+    this.dropLink();                               // the old connection's session, if any
+    const t = new PodWebTransport(ch.rx, ch.tx, this.device, (u8, ms) => this.packet(u8, ms), (u8) => this.sent(u8));
+    const crp = new PodCrpLink(t, { heartbeatMs: 0 });   // no heartbeat on Bluetooth (docs/ble.md 2.2)
+    this.transport = t;
+    this.crp = crp;
+    this.linkLive = true;
+    this.device.addEventListener("gattserverdisconnected", this.onGone);
+    await ch.tx.startNotifications();              // every packet the pod sends comes on TX, in order (D28)
+    await this.runOrder({ crp, done: 0 });         // inSetup while it runs; from here a request is answered as it comes
+    this.linkReady = this.linkLive && crp === this.crp;
+    // End came during the order: stop() sends its STOP over this link (the handshake, now that PUSH
+    // is on), and a stream command could reach the pod behind it (as resume() does natively)
+    if (this.stopping) return;
+    await this.orderCommand();
+    // the footer's MTU: Web Bluetooth doesn't tell, the pod's MTU register does
+    crp.mtu().then((m) => { if (m !== null && crp === this.crp && !this.closed) this.mtu = m; }, () => {});
   }
 
   /** The previous connection's transport and session, at a reconnect: that link is gone, so no BYE,
@@ -1192,13 +1218,13 @@ export class PodWebSource extends PodSource {
     crp?.close();
   }
 
-  /** Why no sample came, from the latest STATUS (start()'s 10 s timeout). */
+  /** The Web source's own two reasons, then the shared ones: no connection yet at start()'s timeout
+   * (the pod is asleep, flat or out of range), and an MTU the browser itself may be holding down. */
   whyNoData() {
-    const st = this.stream.ep?.status;
     if (!this.crp) return "Couldn't reach the pod. Bump it to wake it (plug it in if its battery was low), keep it close, and try again.";
+    const st = this.stream.ep?.status;
     if (st && (st.flags & POD.S_MTU_TOO_SMALL)) return "The pod's Bluetooth link is too small (MTU). Try again; if it stays, this browser can't carry the pod.";
-    if (this.stream.faults.length) return `Pod: ${this.stream.faults.at(-1)}.`;
-    return "The pod sent no data in 10 s.";
+    return super.whyNoData();
   }
 
   /** Every packet, stamped for the silence watchdog, then into the decoder. */
@@ -1231,28 +1257,13 @@ export class PodWebSource extends PodSource {
   /** Resolves at the first sample; fails after 10 s (or when the link drops) with the reason. */
   async start() {
     podOwners.set(this.device, this);
-    let timer = null;
-    const first = new Promise((res) => { this.gotData = () => { this.gotData = null; res(); }; });
-    const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(this.whyNoData())), this.startTimeoutMs); });
-    const lost = new Promise((_, rej) => { this.lostWait = () => rej(new Error("The pod's link dropped while starting. Try again.")); });
-    const setup = this.setup();
-    setup.catch(() => {});                       // a setup that outlives the timeout fails quietly
     try {
-      await Promise.race([setup.then(() => first), late, lost]);
-      this.started = true;
+      await this.firstSample(() => this.setup());
       this.lastRx = this.lastTick = Date.now();
       this.watchdog = setInterval(() => this.checkSilence(), this.tickMs);
     } catch (err) {
-      // The pod already holds a session for this command: release it (best effort), or it
-      // keeps the 30 min idle limit for nothing (docs/ble.md 6).
-      if (this.cmdSent && !this.linkLost && this.crp && this.device.gatt.connected) {
-        await Promise.race([this.crp.ctrl(new Uint8Array([POD.OP_STOP])), sleepMs(1000)]).catch(() => {});
-      }
-      await this.close();
+      await this.failStart();
       throw err;
-    } finally {
-      clearTimeout(timer);
-      this.lostWait = null;
     }
   }
 
@@ -1315,8 +1326,8 @@ export class PodWebSource extends PodSource {
       // writes go out in call order
       if (crp.peer === null) crp.hello().catch(() => {});
       await this.stopOnly(crp);
-    } else if (live && (!this.linkLost || this.linkReady)) {
-      await this.stopHandshake((b) => crp.ctrl(b));
+    } else if (live) {
+      await this.stopHandshake(crp, () => this.linkLive);   // also on a reconnect's link not yet reported "back"
     }
     this.finishStream();
     await this.close();
@@ -1416,26 +1427,26 @@ export class PodNativeSource extends PodSource {
    * plugin: Capacitor.Plugins.PodLink (tests hand in a fake). any: pick a new pod (the strongest in
    * range) instead of the saved one. startTimeoutMs: no first sample this long after connect().
    * rearmMs: waits between connect() tries after the plugin gave a link up (the last repeating).
+   * resumeMs: waits between resume()'s tries on a link that stays up (the last repeating).
    */
   constructor(onSample, { onEvent = () => {}, capture = false, plugin = null, any = false, startTimeoutMs = 10000,
-    rearmMs = [1000, 2000, 4000, 5000] } = {}) {
-    super(onSample, { onEvent, capture });
+    rearmMs = [1000, 2000, 4000, 5000], resumeMs = [1000, 2000, 4000, 5000] } = {}) {
+    super(onSample, { onEvent, capture, startTimeoutMs });
     this.plugin = plugin;
     this.any = any;
-    this.startTimeoutMs = startTimeoutMs;
     this.rearmMs = rearmMs;
+    this.resumeMs = resumeMs;
     this.rearming = false;              // connect() tries after the plugin gave a link up
-    this.rearmConnecting = false;       // ...one of them in flight (the plugin sends no "linking" for a connect())
     this.listeners = [];
     this.held = [];                     // packets before connect() resolved: no clock yet (the pod sends none before HELLO)
     this.base = null;                   // wall ms - elapsedRealtime ms, from connect(): arrival = base + w
     this.link = 0;                      // the plugin's link our packets are for
     this.ord = null;                    // the session on this.link: { link, transport, crp, done, p } (order())
     this.ready = false;                 // the plugin said "ready" for this link (TX notifications on)
-    this.linking = false;               // a reconnect's link is up and the plugin runs its GATT chain
+    this.linking = false;               // a link is coming, "ready" will follow: the plugin's own reconnect runs
+                                        // its GATT chain ("linking"), or a re-arm's connect() is in flight
     this.readyWait = null;              // End waiting for that chain to finish
     this.podName = "pod";
-    this.address = null;
   }
 
   get name() { return this.podName; }
@@ -1454,7 +1465,7 @@ export class PodNativeSource extends PodSource {
   onState(e) {
     if (this.closed) return;
     if (e.state === "lost" || (e.state === "closed" && !this.stopping)) {
-      this.ready = this.linking = this.rearmConnecting = false;
+      this.ready = this.linking = false;
       this.ord?.transport.down();                // its open transactions fail now, not 5 s later
       this.readyWait?.();
       this.linkDown();
@@ -1464,8 +1475,9 @@ export class PodNativeSource extends PodSource {
     } else if (e.state === "ready" && this.started) {
       // a reconnect: the plugin's part is done (TX notifications on); the connection order is ours
       this.link = e.link;               // also while End waits: its STOP goes over this link
+      if (e.mtu) this.mtu = e.mtu;      // this link's, not the first one's
       this.ready = true;
-      this.linking = this.rearmConnecting = false;
+      this.linking = false;
       this.readyWait?.();
       if (this.stopping) return;        // End runs the order itself, then its STOP
       this.resume();                    // never rejects: it waits for the next "ready" itself
@@ -1504,7 +1516,7 @@ export class PodNativeSource extends PodSource {
         if (!this.closed && link === this.link && this.ready && !this.asleep) this.linkUp({ link });
         return;
       } catch {
-        await sleepMs(Math.min(1000 * 2 ** k, 5000));
+        await sleepMs(this.resumeMs[Math.min(k, this.resumeMs.length - 1)]);
         // End (no command after its STOP), a newer link (its own resume() runs), a drop, a going_to_sleep
         if (this.closed || this.stopping || link !== this.link || !this.ready || this.asleep) return;
       }
@@ -1522,7 +1534,7 @@ export class PodNativeSource extends PodSource {
       for (let k = 0; ; k++) {
         await sleepMs(this.rearmMs[Math.min(k, this.rearmMs.length - 1)]);
         if (this.closed || this.stopping) return;
-        this.rearmConnecting = true;
+        this.linking = true;              // the plugin sends no "linking" for a connect()
         let ok = false;
         try {
           await this.plugin.connect({ any: false });   // the saved pod: the one this session streams
@@ -1534,7 +1546,7 @@ export class PodNativeSource extends PodSource {
           // a good connect() resolves just before its "ready": the flag holds until onState sees it,
           // so End in between still waits for it and sends its STOP. A failed one sends no "ready"
           if (!ok) {
-            this.rearmConnecting = false;
+            this.linking = false;
             this.readyWait?.();
           }
         }
@@ -1544,19 +1556,11 @@ export class PodNativeSource extends PodSource {
     }
   }
 
-  whyNoData() {
-    const st = this.stream.ep?.status;
-    if (st && (st.flags & POD.S_MTU_TOO_SMALL)) return "The pod's Bluetooth link is too small (MTU). Try again.";
-    if (this.stream.faults.length) return `Pod: ${this.stream.faults.at(-1)}.`;
-    return "The pod sent no data in 10 s.";
-  }
-
   /** connect() (Nearby devices the first time; the saved pod, or a scan), then the connection order
    * and the command; resolves at the first sample. The plugin bounds the connect itself (30 s once
    * allowed). */
   async start() {
     this.plugin ??= globalThis.Capacitor.Plugins.PodLink;
-    let timer = null;
     try {
       // listeners first: the plugin's events can come before connect() resolves
       this.listeners.push(await this.plugin.addListener("pod", (e) => this.onPod(e)));
@@ -1567,26 +1571,13 @@ export class PodNativeSource extends PodSource {
       this.link = info.link;
       this.mtu = info.mtu;
       this.podName = info.name || "pod";
-      this.address = info.address;
       const held = this.held;
       this.held = [];
       for (const e of held) this.onPod(e);
-      const first = new Promise((res) => { this.gotData = () => { this.gotData = null; res(); }; });
-      const lost = new Promise((_, rej) => { this.lostWait = () => rej(new Error("The pod's link dropped while starting. Try again.")); });
-      const late = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(this.whyNoData())), this.startTimeoutMs); });
-      const go = this.order(this.link).then(() => this.orderCommand());
-      await Promise.race([go.then(() => first), late, lost]);
-      this.started = true;
+      await this.firstSample(() => this.order(this.link).then(() => this.orderCommand()));
     } catch (err) {
-      // the pod already holds a session for this command: release it (best effort)
-      if (this.cmdSent && !this.linkLost && this.crp) {
-        await Promise.race([this.crp.ctrl(new Uint8Array([POD.OP_STOP])), sleepMs(1000)]).catch(() => {});
-      }
-      await this.close();
+      await this.failStart();
       throw err;
-    } finally {
-      clearTimeout(timer);
-      this.lostWait = null;
     }
   }
 
@@ -1602,7 +1593,7 @@ export class PodNativeSource extends PodSource {
     // a re-arm's connect() in flight counts as the GATT chain too: without its STOP the pod keeps the
     // session hold (the plugin sends "linking" only for its own reconnects). Best effort, as for
     // "linking": End waits at most 2 s, and a connect still scanning by then is dropped (docs/ble.md 6)
-    if (this.linkLost && (this.linking || this.rearmConnecting) && !this.ready) {
+    if (this.linkLost && this.linking && !this.ready) {
       await new Promise((res) => {
         const t = setTimeout(res, 2000);
         this.readyWait = () => { clearTimeout(t); res(); };
@@ -1614,7 +1605,7 @@ export class PodNativeSource extends PodSource {
       await this.order(this.link).catch(() => {});
       const o = this.ord;                          // done: the order's steps that worked (HELLO .. PUSH)
       if (o?.link === this.link && o.done >= 1 && up() && !this.closed) {
-        if (o.done >= 4) await this.stopHandshake((b) => o.crp.ctrl(b), up);
+        if (o.done >= 4) await this.stopHandshake(o.crp, up);
         else await this.stopOnly(o.crp);
       }
     }

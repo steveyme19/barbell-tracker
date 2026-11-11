@@ -5,8 +5,8 @@
 //   ignored. A version below 0x0B gets BYE. BYE, END 0xFF and the link going down end the session.
 // - READ of INFO, STATUS, CAL, PROTO, PUSH and the MTU register, built when it arrives; BUSY when
 //   8 + len > MTU - 3; ACCESS_DENIED for DATA and CTRL, UNKNOWN_REG for the rest.
-// - WRITE of PUSH (0 or 1) and CTRL (the ops of section 4: OK, INVALID_VALUE for a bad op or length,
-//   BUSY while busy is set), each answered by a RESPONSE.
+// - WRITE of PUSH (0 or 1) and CTRL (the ops of section 4: OK, or INVALID_VALUE for a bad op or
+//   length), each answered by a RESPONSE.
 // - Pushes (a WRITE with txn 0 to DATA or STATUS, by the frame's type) only while the session has
 //   PUSH on (docs/ble.md 5).
 // - The session hold (docs/ble.md 6, `hold`): a taken STREAM command sets it (a STREAM_FROM with
@@ -80,7 +80,7 @@ export function fixtures() {
 // CRP 0x0B (docs/ble.md 2.1)
 const OK = 0, UNKNOWN_REG = 1, ACCESS_DENIED = 2, INVALID_VALUE = 3, BUSY = 8;
 /** The pod's HELLO: ver 0x0B, max_ch 1, max_chunk 244, flags PUSH, device_id "BPOD". */
-export const POD_HELLO = `010b01${le16(244)}01${le32(POD.DEVICE_ID)}`;
+const POD_HELLO = `010b01${le16(244)}01${le32(POD.DEVICE_ID)}`;
 const POD_BYE = `02${le32(0)}${le32(POD.DEVICE_ID)}`;
 const READ_ONLY = [POD.REG_PROTO, POD.REG_INFO, POD.REG_STATUS, POD.REG_CAL, POD.REG_DATA,
   POD.REG_LINK_KIND, POD.REG_LINK_MTU, POD.REG_LINK_N_MAX];
@@ -115,7 +115,6 @@ export class FakeCrpPod {
     this.holdInfo = false;              // INFO reads are answered only at release()
     this.reading = false;               // an INFO read is held
     this.readDelay = 0;                 // ms before a READ is answered (a slow one: nothing else waits for it)
-    this.busy = false;                  // CTRL is answered BUSY (the sleep prologue)
     this.answerStop = false;            // a STOP is answered with stopped (the stream_stopped STATUS)
     this.stopped = null;
     this.onRx = null;                   // (u8): every packet received, before it's handled
@@ -143,7 +142,6 @@ export class FakeCrpPod {
   wake(info, status) {
     this.info = info;
     this.status = status;
-    this.busy = false;
     this.hold = false;                  // a reboot clears the hold
   }
 
@@ -241,7 +239,7 @@ export class FakeCrpPod {
       }
     } else if (reg === POD.REG_CTRL) {
       this.ctrls.push(hex(v));
-      st = this.busy ? BUSY : ctrlOk(v) ? OK : INVALID_VALUE;
+      st = ctrlOk(v) ? OK : INVALID_VALUE;
       if (st === OK) {
         if (v[0] === POD.OP_STOP) this.hold = false;
         else if (v[0] === POD.OP_STREAM_LIVE || (v[0] === POD.OP_STREAM_FROM && u32(hex(v), 2) === bootOf(this.info))) this.hold = true;

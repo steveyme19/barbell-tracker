@@ -11,6 +11,10 @@
 // a new epoch from index 0, through connects that hang until the pickup), drops during a
 // reconnect's setup, End while reconnecting (before or during the setup), a decoder request or a
 // going_to_sleep during the setup, a late connect after End, and an outage's hold-off.
+// The silence watchdog (11-07): a link that goes quiet with no disconnect event is called lost and
+// reconnected (also in a browser that fires nothing for our own disconnect()), a page frozen for a
+// second raises no false alarm, End stops the ticking, and End on a reconnect's link whose STOP
+// goes unanswered still reports the stop timeout.
 // D45: every connect runs the CRP connection order of docs/ble.md 7 (HELLO, READ INFO, READ STATUS,
 // PUSH = 1, the command to CTRL), whose bytes the first test checks along with the capture, which
 // podlink.py must replay to the same samples; End sends BYE before the disconnect, and End during a
@@ -137,6 +141,9 @@ class FakeDevice extends EventTarget {
   drop() { this.gatt.connected = false; this.pod.down(); this.dispatchEvent(new Event("gattserverdisconnected")); }
 }
 
+/** A test's closing End, where the STOP's answer isn't what's checked: the fake pod answers it, so
+ * stop() doesn't wait out the decoder's stop wait (2.5 s and more) for nothing. */
+const end = (s, pod) => { pod.answerStop = true; return s.stop(); };
 let ok = true;
 const check = (good, msg) => { console.log(`${good ? "PASS" : "FAIL"}  ${msg}`); ok &&= Boolean(good); };
 const evOf = (ev) => (k, i) => ev.push(`${k}:${typeof i === "string" ? i : i?.reboot ? "reboot" : ""}`);
@@ -221,7 +228,7 @@ async function zombieWithNewOwner() {
   check(gotA === 0 && gotB > 0 && disconnects === 1 && d.gatt.connected && hellos === 1,
     `a newer session owns the pod: the zombie leaves its connection alone (A ${gotA}, B ${gotB} samples, disconnects ${disconnects}, ` +
     `connected ${d.gatt.connected}, HELLOs ${hellos})`);
-  await b.stop();
+  await end(b, d.pod);
 }
 
 async function dropWhileStarting() {
@@ -283,7 +290,7 @@ async function reconnectSameBoot() {
     JSON.stringify(order) === JSON.stringify(["01", "06", "06", "04", "ctrl"]),
     `same boot: lost once, back after ${connects(d) - 1} reconnect, the whole order again (${order.join(" ")}), STREAM_FROM the next index ` +
     `(${d.pod.ctrls.at(-1)}), samples ${before} -> ${got}, gaps ${s.stream.gaps.length}`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 /** The radio loses the link and the browser never says so (no gattserverdisconnected, as Android
@@ -321,8 +328,8 @@ async function silentLink(opts = {}) {
   let ticks = 0;
   const tick = s.checkSilence.bind(s);
   s.checkSilence = () => { ticks++; tick(); };              // the interval calls this.checkSilence()
-  await sleep(4 * s.tickMs);
-  await s.stop();                                           // it ticks on during End's handshake, idle
+  await sleep(2 * s.tickMs);                                // ticks, but well inside silenceMs: no second "lost" before End
+  await s.stop();
   const atEnd = ticks;
   await sleep(4 * s.tickMs);
   check(atEnd > 0 && ticks === atEnd, `End stops the watchdog (${atEnd} ticks up to the end, ${ticks - atEnd} after it)`);
@@ -354,7 +361,7 @@ async function frozenPage() {
   const ms = Date.now() - t0;
   check(!links.length && ms < 1500, `a page frozen for 1 s: no false "lost" on a live link (link events before the mute: ` +
     `${links.join(" ") || "none"}), then a muted link caught ${ms} ms later`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 const silentLinkNoEvent = () => silentLink({ silentDisconnect: true });
@@ -387,7 +394,7 @@ async function reconnectAfterSleep() {
     hung >= 2 && ev.includes("epoch:reboot") && d.pod.ctrls.at(-1) === want && got > before && s.asleep === null,
     `sleep and wake: "asleep (${asleepBanner})", ${hung} connects timed out while it slept, back as a new epoch, ` +
     `STREAM_FROM(new boot, 0) (${d.pod.ctrls.at(-1)}), samples resume (${before} -> ${got})`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 async function endWhileReconnecting() {
@@ -425,7 +432,7 @@ async function outageHoldsOff() {
   const ms = Date.now() - t0;
   check(ev.includes("link:lost") && ms >= 300 && ms < 600 && connects(d) === 2,
     `outage(300): link lost, no reconnect for ${ms} ms, then back on the first try`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 // a session streaming (cmd_seq 1), for the tests below
@@ -449,7 +456,7 @@ async function dropDuringReconnectSetup() {
   check(ev.filter((e) => e === "link:lost").length === 1 && s.linkEvents.filter((e) => e.kind === "lost").length === 1 &&
     connects(d) === 4 && s.reconnects === 1 && s.linkInfo().linked,
     `drops during the reconnect's setup: one outage reported (${ev.filter((e) => e.startsWith("link")).join(" ")}), back on try ${connects(d) - 1}`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 async function endDuringStuckSetup() {
@@ -488,15 +495,17 @@ async function endDuringStuckSubscribe() {
   await until(() => d.subscribing, 2000, "the reconnect's subscription");
   const n = d.pod.rx.length;
   const c = d.pod.ctrls.length;
+  const t0 = Date.now();
   await s.stop();
+  const ms = Date.now() - t0;                                // 1 s for the setup, 1 s for a STOP nobody can answer
   g.open();
   await sleep(20);
   const rx = d.pod.rx.slice(n);
   // no HELLO answered on that link yet: without our own HELLO first the pod would ignore the STOP
   check(rx[0] === PKT.hello && PKT.ctrlOf(rx[1]) === "03" && JSON.stringify(d.pod.ctrls.slice(c)) === JSON.stringify(["03"]) &&
-    !d.pod.hold && s.capture.log.at(-1)[2] === "finish" && !d.gatt.connected,
+    !d.pod.hold && s.capture.log.at(-1)[2] === "finish" && !d.gatt.connected && ms < 2500,
     `End while a reconnect's subscription is stuck: a HELLO, then the STOP the pod takes (${rx.map((h) => PKT.ctrlOf(h) ?? h.slice(0, 2)).join(" ")}), ` +
-    `no stream command, disconnected`);
+    `no stream command, disconnected, in ${ms} ms (the unanswered STOP waits 1 s at most)`);
 }
 
 async function endDuringSetupThenHandshake() {
@@ -515,6 +524,23 @@ async function endDuringSetupThenHandshake() {
   check(JSON.stringify(after) === JSON.stringify(["03"]) && !d.pod.hold && s.stream.stats.stopped === 1 && !s.stream.faults.length,
     `End during a reconnect's setup that then finishes: no stream command, the STOP handshake runs on the new link and is answered ` +
     `(stopped ${s.stream.stats.stopped}, faults ${JSON.stringify(s.stream.faults)}, CTRL after the drop ${after.join(" ")}, hold ${d.pod.hold})`);
+}
+
+/** The same End, but the pod never answers the STOP on that live link: a real stop timeout, and
+ * it must be reported as one. The link isn't "back" yet at that point (End came before the
+ * reconnect reported it), which used to hide the fault and the capture's stop_timed_out row. */
+async function endDuringSetupStopUnanswered() {
+  const d = new FakeDevice();
+  const { s } = await streaming(d);
+  d.pod.holdInfo = true;
+  d.drop();
+  await until(() => d.pod.reading, 2000, "the reconnect's INFO read");
+  setTimeout(() => d.pod.release(), 100);                    // the setup finishes a moment after End
+  await s.stop();
+  const calls = s.capture.log.filter((r) => r[0] === "call").map((r) => r[2]);
+  check(s.stream.faults.includes("stop timed out") && calls.includes("stop_timed_out=1") && d.pod.ctrls.at(-1) === "03",
+    `End on a reconnect's link whose STOP goes unanswered: the stop timeout is reported (faults ${JSON.stringify(s.stream.faults)}, ` +
+    `capture calls ${calls.filter((c) => c.startsWith("stop_timed_out")).join(" ") || "none"})`);
 }
 
 async function endThenSubscribeCompletes() {
@@ -583,7 +609,7 @@ async function requestDuringSetup() {
   const after = d.pod.ctrls.slice(n);
   check(ev.includes("need-command") && after.length === 1 && after[0].startsWith("01"),
     `a request during the connection order (need-command at the STATUS read): one STREAM command, not two (CTRL ${after.join(" ")})`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 async function sleepDuringSetup() {
@@ -605,7 +631,7 @@ async function sleepDuringSetup() {
   check(!before.includes("link:back") && before.filter((e) => e === "link:lost").length === 1 && s.linkInfo().linked &&
     s.asleep === null && ev.includes("epoch:reboot"),
     `going_to_sleep during a reconnect's setup: no false "back" (${before.filter((e) => e.startsWith("link")).join(" ")}), asleep until the wake, then back`);
-  await s.stop();
+  await end(s, d.pod);
 }
 
 async function lateConnectAfterEnd() {
@@ -623,7 +649,7 @@ async function lateConnectAfterEnd() {
 
 for (const t of [connectionOrder, zombie, zombieWithNewOwner, dropWhileStarting, noDataSendsStop, dropWhileStopping,
   reconnectSameBoot, silentLink, silentLinkNoEvent, frozenPage, reconnectAfterSleep, endWhileReconnecting, outageHoldsOff,
-  dropDuringReconnectSetup, endDuringStuckSetup, endDuringStuckSubscribe, endDuringSetupThenHandshake, endThenSubscribeCompletes,
+  dropDuringReconnectSetup, endDuringStuckSetup, endDuringStuckSubscribe, endDuringSetupThenHandshake, endDuringSetupStopUnanswered, endThenSubscribeCompletes,
   endBehindSlowPush, requestDuringSetup, requestDuringStop, sleepDuringSetup, lateConnectAfterEnd]) {
   try { await t(); } catch (e) { check(false, `${t.name}: ${e.stack}`); }
 }

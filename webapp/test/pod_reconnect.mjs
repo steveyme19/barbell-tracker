@@ -72,15 +72,25 @@ async function act(name, what, cmd = null) {
  */
 function placement(e1, e2, what) {
   if (!TRUTH) { note(`no --truth: ${what}'s placement isn't checked against the pod's USB clock`); return; }
-  const j = JSON.parse(readFileSync(TRUTH, "utf8"));
+  let j;
+  try {
+    j = JSON.parse(readFileSync(TRUTH, "utf8"));
+  } catch (e) {
+    check(false, `${what}: can't read the USB truth ${TRUTH}: ${e.message}`);
+    return;
+  }
   const uniq = [];                                // one entry per USB (re)open: merge reopens of one boot
   for (const b of j.boots) if (!uniq.length || Math.abs(b.base_s - uniq.at(-1).base_s) > 0.05) uniq.push(b);
+  if (uniq.length < 2) {
+    check(false, `${what}: the USB truth has ${uniq.length} boot(s), the placement needs 2 (was usb_clock.py running through the reset?)`);
+    return;
+  }
   const [b1, b2] = uniq.slice(-2);
   const placed = e2.tOffset - e1.tOffset;         // where the decoder put the new epoch
   const mod = b2.base_s - b1.base_s;              // where it is, by the pod's USB stream
   const wraps = Math.round((placed - mod) / j.wrap_s);
   const truth = mod + wraps * j.wrap_s;
-  check(uniq.length >= 2 && Math.abs(placed - truth) <= 0.2,
+  check(Math.abs(placed - truth) <= 0.2,
     `${what}: new epoch placed ${placed.toFixed(3)} s after the old one; the USB truth says ${truth.toFixed(3)} s` +
     `${wraps ? ` (${mod.toFixed(3)} + ${wraps} t_us wrap)` : ""}: error ${((placed - truth) * 1000).toFixed(1)} ms`);
 }
@@ -95,6 +105,15 @@ async function main() {
   const sets = () => js("window.barDebug.session().sets.map((s) => ({ n: s.nReps, startT: s.startT, endT: s.endT, gaps: s.gaps, card: s.card.querySelector('.set-gap').textContent }))");
   const banner = () => js("document.getElementById('podBanner').hidden ? '' : document.getElementById('podBanner').textContent");
   const idxGaps = (L) => L.gapList.filter((g) => !g.kind.startsWith("imu"));
+  let saved = false;
+  // The capture and link.json into analysis/data (P2); tag "-failed": a run that stopped partway.
+  const save = async (csv, L, tag = "") => {
+    const base = `${await js("window.barDebug.session().stamp")}-${NAME}${tag}`;
+    writeFileSync(join(ROOT, "analysis", "data", `pod-capture-${base}.csv`), csv);
+    writeFileSync(join(ROOT, "analysis", "data", `pod-weblink-${base}.json`), JSON.stringify(L, null, 1));
+    saved = true;
+    note(`saved analysis/data/pod-capture-${base}.csv and pod-weblink-${base}.json`);
+  };
   try {
     const picked = await pickPod(ch, note);
     check(picked, `chooser picked ${picked}`);
@@ -179,7 +198,7 @@ async function main() {
       if (HANDS_FREE) await act("sleep", "", "w");   // the dry run: the sleep prologue, then a reset
       else await js("window.barDebug.podSleep(0)");
       await until("!document.getElementById('podBanner').hidden && /asleep/.test(document.getElementById('podBanner').textContent)", 15000, "the asleep banner");
-      check(true, `banner: "${await banner()}"`);
+      note(`banner: "${await banner()}"`);
       await act("pickup", "pick the pod up (it's asleep) and set it down still");
       const t0 = Date.now();
       await until(`window.barDebug.pod()?.linked && window.barDebug.link().epochList.length > ${L0.epochList.length}`, 120000, "the woken pod");
@@ -207,6 +226,7 @@ async function main() {
     check(L.stats.stopped >= 1 && !L.faults.length, `ended: stopped ${L.stats.stopped}, reconnects ${L.reconnects}, epochs ${L.epochs}, ` +
       `gaps ${JSON.stringify(L.gapList.map((g) => `${g.kind} ${g.n}`))}, faults ${JSON.stringify(L.faults)}`);
     const cap = await js("window.barDebug.podCaptureData()");
+    await save(cap.csv, L);                       // before the replay: a replay that fails can't lose the run
     const ref = replayCapture(cap.csv, PYTHON, ROOT);
     if (ref.error) {
       check(false, `python replay failed: ${ref.error}`);
@@ -215,11 +235,15 @@ async function main() {
       check(ref.samples.length === cap.samples.length && worst < 1e-9 && ref.gaps.length === L.gapList.length,
         `podlink.py replay of the capture: ${ref.samples.length} vs ${cap.samples.length} samples, worst diff ${worst}, gaps ${ref.gaps.length} vs ${L.gapList.length}`);
     }
-    const stamp = await js("window.barDebug.session().stamp");
-    writeFileSync(join(ROOT, "analysis", "data", `pod-capture-${stamp}-${NAME}.csv`), cap.csv);
-    writeFileSync(join(ROOT, "analysis", "data", `pod-weblink-${stamp}-${NAME}.json`), JSON.stringify(L, null, 1));
-    note(`saved analysis/data/pod-capture-${stamp}-${NAME}.csv and pod-weblink-${stamp}-${NAME}.json`);
   } finally {
+    // A run that stopped partway: its packets are the ones worth reading (P2). At most 5 s: a call
+    // to a dead Chrome may never answer.
+    if (!saved) {
+      await Promise.race([sleep(5000), (async () => {
+        const csv = await js("window.barDebug?.podCaptureData()?.csv ?? null");
+        if (csv) await save(csv, await link(), "-failed");
+      })()]).catch((e) => note(`the capture was not saved: ${e.message}`));
+    }
     await ch.close();
   }
 }

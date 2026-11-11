@@ -1115,7 +1115,7 @@ function drawLive() {
 function updateFooter() {
   let rate = "--";
   if (source instanceof PodSource) {
-    // pod BarPod-1A2B · 211 Hz · 16/pkt · MTU 247 · 45 ms · lost 0 · gaps 0 · 3.95 V (MTU: the app only)
+    // pod BarPod-1A2B · 211 Hz · 16/pkt · MTU 247 · 45 ms · lost 0 · gaps 0 · reconnects 0 · epochs 1 · 3.95 V
     const n = recent.length;
     const L = source.linkInfo();
     const bits = [n > 10 ? `${Math.round((n - 1) / (recent[n - 1].t - recent[0].t))} Hz` : "--"];
@@ -1395,7 +1395,7 @@ window.barDebug = {
   tracker: () => tracker,
   summary: () => (session ? summaryCSV() : ""),
   calRun: () => calRun,
-  podCapture: false,          // true before Start: keep the pod's frames for downloadPodCapture()
+  podCapture: false,          // true before Start: keep the pod's packets for downloadPodCapture()
   buzzes: () => buzzLog.slice(),
   pod: () => (source instanceof PodSource ? { ...source.linkInfo(), gapList: source.stream.gaps,
     nextIdx: source.stream.ep?.next_idx ?? null, lastIdx: source.stream.ep?.last_idx ?? null,

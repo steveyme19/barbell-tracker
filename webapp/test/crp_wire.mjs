@@ -15,6 +15,7 @@
 //    simulated ms, as make_fake_pod.py's phone did in a few scenarios (clean, BUSY before the MTU
 //    exchange, MTU 23 forever...): its pod answers from data/fake_pod_packets.csv
 //    (python analysis/make_fake_pod.py first).
+// 6. PodCrpLink on its own, against a scripted pod: the HELLO checks, statuses, BYE.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
