@@ -88,15 +88,25 @@ async function sleepPod() {
 }
 
 async function end() {
-  const st = state();
-  const pidEnd = pid();
-  const fgsEnd = fgs();
+  let st = state();
   const { js, close } = await page();
   try {
     const before = await js(STATUS);
-    if (!before.running) throw new Error("no session is running");
-    await js("document.getElementById('endBtn').click()");
+    if (before.running) {
+      // read before End and kept in the state file: an `end` run again (after a failed pull, say) can't read them any more
+      st = { ...st, pidEnd: pid(), fgsAtEnd: fgs(), statusAtEnd: before };
+      writeFileSync(STATE, JSON.stringify(st, null, 1));
+      await js("document.getElementById('endBtn').click()");
+    } else if (!("statusAtEnd" in st) || (await js("window.barDebug.session()?.folder")) !== st.folder
+      || !(await js("Boolean(window.barDebug.podCaptureData())"))) {
+      throw new Error("no session is running");     // nor this soak's ended session still in the page
+    } else {
+      console.log("      this session's End already ran: saving what it left");
+    }
     await until(js, "!document.getElementById('startBtn').disabled", 60000, "End");
+    // stamped once End has finished: a set that End itself closes buzzes after the click, and
+    // check_soak.py only counts buzzes up to endedAt. A rerun keeps the first run's value
+    if (!st.endedAt) { st = { ...st, endedAt: Date.now() }; writeFileSync(STATE, JSON.stringify(st, null, 1)); }
     const out = arg("out", join(ROOT, "analysis", "data", `soak-${st.stamp}`));
     mkdirSync(out, { recursive: true });
     // the app's own files (set CSVs, session.csv, link.json, pod.json)
@@ -115,10 +125,10 @@ async function end() {
     // Android's own record of each vibration: played, or ignored (settings, background)
     const vib = adb("shell", "dumpsys", "vibrator_manager").split("\n").filter((l) => l.includes(APP));
     writeFileSync(join(out, "vibrations.txt"), vib.join("\n") + "\n");
-    const soak = { ...st, endedAt: Date.now(), pidEnd, fgsAtEnd: fgsEnd, batteryEnd: battery(), digest, files, statusAtEnd: before };
+    const soak = { ...st, batteryEnd: battery(), digest, files };
     writeFileSync(join(out, "soak.json"), JSON.stringify(soak, null, 1));
-    console.log(`${pidEnd === st.pid ? "PASS" : "FAIL"}  the app's process lived through the soak (pid ${st.pid} -> ${pidEnd || "gone"})`);
-    console.log(`${fgsEnd ? "PASS" : "FAIL"}  RecordingService still in the foreground at the end`);
+    console.log(`${st.pidEnd === st.pid ? "PASS" : "FAIL"}  the app's process lived through the soak (pid ${st.pid} -> ${st.pidEnd || "gone"})`);
+    console.log(`${st.fgsAtEnd ? "PASS" : "FAIL"}  RecordingService still in the foreground at the end`);
     console.log(`saved ${files.length} app files, the capture (${(n / 1e6).toFixed(1)} MB, ${digest.n} samples), buzzes, vibrations in ${out}`);
     console.log(`battery ${st.battery}% -> ${soak.batteryEnd}% over ${((soak.endedAt - st.startedAt) / 60000).toFixed(1)} min`);
   } finally {

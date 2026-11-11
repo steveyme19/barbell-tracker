@@ -437,8 +437,7 @@ public class PodLinkPlugin extends Plugin {
             h.post(() -> onMtu(g, m, status));
         }
 
-        // Android 13+ hands the value in (the only versions we run on). Don't call super: it calls
-        // the old overload, and the packet would go to JS twice.
+        // Android 13+ hands the value in (the only versions we run on), so this overload is enough.
         @Override
         public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c, byte[] value) {
             if (TX.equals(c.getUuid())) arrived(g, value);
@@ -601,7 +600,7 @@ public class PodLinkPlugin extends Plugin {
     /** "BarPod-E26C" for F5:EA:43:DB:E2:6C: the pod names itself after its address's last two bytes. */
     private static String nameFor(String addr) {
         String hex = addr.replace(":", "");
-        return "BarPod-" + hex.substring(hex.length() - 4).toUpperCase(Locale.ROOT);
+        return NAME_PREFIX + hex.substring(hex.length() - 4).toUpperCase(Locale.ROOT);
     }
 
     /** A ready link that sends nothing for 5 s is dead, whatever Android says (Bluetooth off
@@ -711,7 +710,7 @@ public class PodLinkPlugin extends Plugin {
     }
 
     /** disconnect() and onDestroy: the last batch out, then the link down. why = the podState to
-     * report (null: none, a new connect() follows). */
+     * report (null: none, a new connect() follows or the caller reports its own, as the give-up does). */
     private void close(String why) {
         boolean had = gatt != null || pending != null || permCall != null || wanted;
         wanted = false;

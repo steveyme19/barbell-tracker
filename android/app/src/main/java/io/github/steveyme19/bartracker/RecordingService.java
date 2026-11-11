@@ -19,7 +19,9 @@ import androidx.core.app.ServiceCompat;
  * screen off"). A foreground service of type "health" (fitness tracking; Android 14+
  * wants a type, and this one needs HIGH_SAMPLING_RATE_SENSORS, which we declare) plus a
  * partial wake lock, so the CPU keeps taking sensor events while the phone is locked.
- * The sensor listener itself stays in BarSensorsPlugin; this only keeps the app awake.
+ * The sensor listener stays in BarSensorsPlugin and the pod's link in PodLinkPlugin (its reconnects
+ * and the page that decodes it run under this service too, docs/android.md A4); this only keeps
+ * the app awake.
  */
 public class RecordingService extends Service {
 

@@ -1,4 +1,4 @@
-// Shared by the phone checks (podlink_check.mjs, pod_session_check.mjs): adb, the app's WebView
+// Shared by the phone tools (podlink_check.mjs, pod_session_check.mjs, soak.mjs): adb, the app's WebView
 // over the DevTools protocol (a debug build's WebView can be inspected), and a bench command to the
 // pod over the laptop's USB. Zero install.
 
@@ -58,13 +58,19 @@ export async function page(port = 9334) {
   let id = 0;
   const waiting = new Map();
   ws.onmessage = (m) => { const d = JSON.parse(m.data); waiting.get(d.id)?.(d); waiting.delete(d.id); };
+  // the app died or the cable went: fail every call, open or still to come. Without this they stayed
+  // pending, and the harness ended with exit code 0 and no verdict
+  const gone = { result: { exceptionDetails: { exception: { description: "the app's DevTools connection closed (the app died or the phone was unplugged)" } } } };
+  ws.onclose = () => { for (const f of [...waiting.values()]) f(gone); waiting.clear(); };
   const js = (expr) => new Promise((res, rej) => {
     const n = ++id;
     waiting.set(n, (d) => (d.result?.exceptionDetails ? rej(new Error(d.result.exceptionDetails.exception?.description ?? "page error"))
       : res(d.result?.result?.value)));
+    if (ws.readyState !== WebSocket.OPEN) { waiting.get(n)(gone); waiting.delete(n); return; }
     ws.send(JSON.stringify({ id: n, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true } }));
   });
-  return { js, close: () => { ws.close(); adb("forward", "--remove", `tcp:${port}`); } };
+  // best effort: a failed forward --remove (the phone unplugged) must not replace the real error
+  return { js, close: () => { ws.close(); try { adb("forward", "--remove", `tcp:${port}`); } catch { /* the phone is gone */ } } };
 }
 
 /** A bench command to the pod on the laptop's USB (the pod reads one only while a host holds its
