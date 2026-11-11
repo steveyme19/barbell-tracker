@@ -173,34 +173,16 @@ def capture_of(path):
 
 
 def replay_keyed(path):
-    """A capture through a fresh decoder, by podlink.replay_rows' rules (pkt and frame rows fed,
-    cmd rows checked against command(), stop and call rows replayed, the rest skipped), each
-    sample keyed by (boot_id, index). Returns ({key: sample}, the decoder, keys seen twice)."""
+    """A capture through a fresh decoder (podlink.replay_rows), each sample keyed by
+    (boot_id, index). Returns ({key: sample}, the decoder, keys seen twice)."""
     import podlink as pl
     keyed, twice = {}, [0]
-    s = None
 
-    def on_sample(smp):
+    def on_sample(s, smp):
         k = (s.ep.boot_id, s.ep.last_idx)          # last_idx is set before on_sample is called
         twice[0] += k in keyed
         keyed[k] = smp
-    s = pl.PodStream(on_sample)
-    for kind, arr, payload in pl.read_capture(path):
-        if kind == "pkt":
-            s.packet(bytes.fromhex(payload), arr)
-        elif kind == "frame":
-            s.frame(bytes.fromhex(payload), arr)
-        elif kind == "cmd":
-            b = s.command()
-            if ("none" if b is None else b.hex()) != payload:
-                raise ValueError(f"replayed command {'none' if b is None else b.hex()} != logged {payload}")
-        elif kind == "stop":
-            s.stop_command()
-        elif kind == "call":
-            if payload == "finish":
-                s.finish()
-            elif payload.startswith("stop_timed_out="):
-                s.stop_timed_out()
+    _, s, _ = pl.replay_rows(pl.read_capture(path), on_sample)
     return keyed, s, twice[0]
 
 
@@ -239,7 +221,7 @@ def exact(a_path, b_path):
         cap = capture_of(path)
         try:
             keyed, s, twice = replay_keyed(cap)
-        except (OSError, ValueError, KeyError) as e:
+        except (OSError, ValueError, KeyError, AssertionError) as e:
             check(False, f"{cap.name} doesn't replay: {e}")
             return False
         spans, bad = tiling(keyed, s)

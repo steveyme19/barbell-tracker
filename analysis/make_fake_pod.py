@@ -52,6 +52,7 @@ import math
 import random
 import struct
 import sys
+import traceback
 from pathlib import Path
 
 import crp
@@ -146,7 +147,6 @@ class Link:
         self.status_due = []              # STATUS frames to send before any further DATA
         self.next_status_wall = None
         self.drain = None                 # {"head", "deadline", "kind"} during STOP / sleep
-        self.connect_wall = 0.0
         self.cmd_log = []                 # (op, cursor, head) per STREAM command handled
         self.drain_heads = []             # (kind, head) per finished STOP / sleep drain
         self.rewind = 0                   # test-only fault: resend this many samples on STREAM_FROM
@@ -424,7 +424,6 @@ class Link:
     def on_connect(self):
         b = self.b
         self.connected = True
-        self.connect_wall = b.now
         self.mtu = b.mtu if b.native_mtu else 23
         self.mtu_at = None if b.native_mtu else b.now + b.mtu_delay()
         self.session, self.push = False, 0
@@ -626,12 +625,8 @@ class Pod:
         return raw_for(i)
 
     # ---- frames ----
-    def status_frame(self, extra_flags=0, head=None):
-        return self.ble.status_frame(extra_flags, head)
-
-    def info_frame(self, boot_id=None, proto=1, serial=None):
-        return pl.build_info(self.boot_id if boot_id is None else boot_id,
-                             self.serial if serial is None else serial, self.ring_n,
+    def info_frame(self, proto=1, serial=None):
+        return pl.build_info(self.boot_id, self.serial if serial is None else serial, self.ring_n,
                              wake=self.wake, accel_lsb=self.accel_lsb, gyro_lsb=self.gyro_lsb, proto=proto)
 
     # ---- the pod's loop, every ms ----
@@ -706,9 +701,7 @@ class Client:
         self.txn_retries = 0
         self.pending = {}                 # txn -> {"pkt", "deadline", "retries"}
         self.answers = {}                 # txn -> (status, value), or None: timed out or aborted
-        self.responses = []               # (wall, txn, status, reg) per RESPONSE received
         self.status_reads = []            # (head, decoder nextIdx before it) per STATUS read answered
-        self.timeouts = 0
         self.busy = 0                     # BUSY answers to reads (each retried)
         self.mtu_read = None              # the MTU register, read after the BUSY retries gave up
         self.peer = None                  # the pod's HELLO, parsed
@@ -721,6 +714,7 @@ class Client:
         self.held_seen = False
         self.status_blind_until = None    # test-only: a receiver that misses STATUS frames until then
         self.clock_step = 0.0             # added to every arrival time (a phone clock step)
+        self.need_command = False         # the decoder asked for a command (a reboot seen in a STATUS)
 
     def on_sample(self, smp):
         self.samples.append(smp)
@@ -731,6 +725,9 @@ class Client:
             self.ep_pod[self.stream.ep] = self.bench.pod
         if kind == "gap":
             self.ep_gaps.append((self.stream.ep, info))
+        if kind == "need-command":
+            self.need_command = True      # answered by tick(), or by the connection order's command
+            return
         self.events.append((kind, info))
 
     def wall(self):
@@ -760,7 +757,6 @@ class Client:
             return
         t = p["type"]
         if t == crp.RESPONSE:
-            self.responses.append((self.bench.now, p["txn"], p["status"], p["reg"]))
             if p["txn"] in self.pending:
                 del self.pending[p["txn"]]
                 self.txns.free(p["txn"])
@@ -868,7 +864,7 @@ class Client:
                 if r is None or r[0] != crp.OK:
                     return False
             # a reboot-recovery request from the STATUS read is answered by this command
-            self.events = [e for e in self.events if e[0] != "need-command"]
+            self.need_command = False
             self.command()
             return True
         finally:
@@ -880,7 +876,7 @@ class Client:
         try:
             self.read_frame(pl.REG_INFO)
             self.read_frame(pl.REG_STATUS)
-            self.events = [e for e in self.events if e[0] != "need-command"]
+            self.need_command = False
             self.command()
         finally:
             self.in_connect = False
@@ -924,7 +920,6 @@ class Client:
                 del self.pending[txn]
                 self.txns.free(txn)
                 self.answers[txn] = None
-                self.timeouts += 1
         if self.heartbeat and self.session and self.link_up() and now - self.last_beat >= self.heartbeat:
             self.last_beat = now
             if not self.mute:
@@ -936,8 +931,8 @@ class Client:
                 r = self.stream.stop_timed_out()
                 self.log.append(("call", None, f"stop_timed_out={int(r)}"))
                 self.stop_deadline = None
-        if not self.in_connect and any(k == "need-command" for k, _ in self.events):
-            self.events = [e for e in self.events if e[0] != "need-command"]
+        if not self.in_connect and self.need_command:
+            self.need_command = False
             if self.link_up():
                 self.command()
 
@@ -1126,10 +1121,9 @@ class Bench(Client):
             self.link_down()
             L.on_disconnect()
 
-    def wake(self, boot_id, tick_start=0, **kw):
-        """A wake is a reboot: new boot_id (or the same one, to test the defensive check)."""
-        self.pod_kw.update(kw)
-        self.pod = self.new_pod(boot_id=boot_id, wake=1, tick_start=tick_start)
+    def wake(self, boot_id):
+        """A wake is a reboot: new boot_id (or the same one, to test the defensive check), ticks from 0."""
+        self.pod = self.new_pod(boot_id=boot_id, wake=1, tick_start=0)
 
     # ---- time ----
     def run(self, ms):
@@ -1147,7 +1141,7 @@ class Bench(Client):
 
 
 class UsbHost(Client):
-    """A PC on the pod's USB (docs/ble.md 2.5), as log_ble.py --usb will be: the port opens in
+    """A PC on the pod's USB (docs/ble.md 2.5), as log_ble.py --usb is: the port opens in
     text mode, a level 1 HELLO switches it to CRP, packets come out of a crp.Deframer in arrival
     order. Its own decoder and its own cursor on the pod, beside the phone's on BLE."""
     heartbeat = HEARTBEAT_MS              # USB clients send a NOP every 1 s
@@ -1185,8 +1179,8 @@ class UsbHost(Client):
         if self.bench.pod:
             self.bench.pod.usb.on_close()
 
-    def connect(self, **kw):
-        return self.connection_order(**kw)
+    def connect(self):
+        return self.connection_order()
 
     def send_raw(self, pkt):
         now = self.bench.now
@@ -1295,7 +1289,7 @@ def check(b, expect):
         right = g["idx"] + (g["n"] if g["kind"] in INDEX_KINDS else 0)
         if (ep, right) in t_of and g["t1"] != t_of[(ep, right)]:
             fails.append(f"{g['kind']} gap t1 {g['t1']} != t of index {right}")
-        left = (ep, g["idx"] - 1) if g["kind"] in INDEX_KINDS else (ep, g["idx"] - 1)
+        left = (ep, g["idx"] - 1)
         if left in t_of and g["t0"] != t_of[left]:
             fails.append(f"{g['kind']} gap t0 {g['t0']} != t of index {left[1]}")
 
@@ -1338,12 +1332,6 @@ def check(b, expect):
     return fails
 
 
-def replay(log):
-    """Feed a log into a fresh decoder (podlink.replay_rows: pkt, frame, cmd, stop and call rows;
-    tx and link rows are for reading). Returns (samples, stream, events) or raises."""
-    return pl.replay_rows(log)
-
-
 def frames_of(log):
     """The same run as frame rows, the decoder's input before D45: each packet's frame through the
     adapter (packets without one left out), tx and link rows dropped, the rest as they are."""
@@ -1353,7 +1341,7 @@ def frames_of(log):
             f = pl.crp_frame(bytes.fromhex(payload))
             if f is not None:
                 out.append(("frame", arr, f.hex()))
-        elif kind in ("frame", "cmd", "stop", "call"):
+        elif kind in ("cmd", "stop", "call"):
             out.append((kind, arr, payload))
     return out
 
@@ -1365,14 +1353,14 @@ def received(c, since=float("-inf"), until=float("inf")):
 
 def frames_rx(c, typ):
     """Every frame of one type the decoder was fed (through the adapter)."""
-    return [f for _, f in ((a, pl.crp_frame(p)) for a, p in received(c)) if f is not None and f[:1] == bytes([typ])]
+    return [f for f in (pl.crp_frame(p) for _, p in received(c)) if f is not None and f[:1] == bytes([typ])]
 
 
 # ---------------------------------------------------------------------------------------------
 # scenarios (docs/ble-plan.md step 2 and section 0, then D45's)
 
-def first_cmd(pod, k=0):
-    return pod.cmd_log[k][1]
+def first_cmd(pod):
+    return pod.cmd_log[0][1]
 
 
 def last_drain(pod):
@@ -1397,6 +1385,24 @@ def rebase_error(b, pod1, pod2):
     wall = lambda p, i: p.boot_wall + (p.ticks[i] - p.tick_start) / (TPS * (1 + p.drift))
     t_true = (wall(pod2, i2) - wall(pod1, i1)) / 1000
     return b.samples[k2]["t"] - t_true
+
+
+def run_until(b, cond, what, step=1, limit=60000):
+    """Run step ms at a time until cond() holds. Past limit ms it raises, so a regression fails
+    loudly instead of hanging the whole run."""
+    end = b.now + limit
+    while not cond():
+        if b.now >= end:
+            raise AssertionError(f"{b.name}: never saw {what} in {limit} ms")
+        b.run(step)
+
+
+def one_gap(got):
+    """Gap expectation: exactly one gap of this kind, of at least one sample."""
+    return len(got) == 1 and got[0] > 0
+
+
+ANY = lambda v: True                      # a counter the scenario doesn't pin (it depends on the latencies)
 
 
 def one_info(b):
@@ -1448,9 +1454,9 @@ def sc_lap():
     b.jam_until = b.now + 45000           # connected but jammed past the ring: the cursor is lapped
     b.run(46000); b.run(8000); b.stop(); b.run(3000); b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
-    no_resync = lambda: None if any(g["kind"] == "overflow" for g in b.stream.gaps) else "no overflow gap"
+    lapped = lambda: None if any(g["kind"] == "overflow" for g in b.stream.gaps) else "no overflow gap"
     return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
-               "gaps": {"overflow": p.lost}, "stats": {"stopped": 1}, "extra": {"lap": no_resync}}
+               "gaps": {"overflow": p.lost}, "stats": {"stopped": 1}, "extra": {"lap": lapped}}
 
 
 def sc_pkt_hole():
@@ -1499,8 +1505,7 @@ def sc_sleep_cut():
     b.pod_sleep(4)                        # sleep right away: the 1.5 s drain can't finish
     b.run(3000); b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
-    tail = lambda got: len(got) == 1 and got[0] > 0
-    return b, {"ranges": [(ep, first_cmd(p), p.drain_heads[-1][1])], "gaps": {"sleep-tail": tail},
+    return b, {"ranges": [(ep, first_cmd(p), p.drain_heads[-1][1])], "gaps": {"sleep-tail": one_gap},
                "stats": {"reconnects": 1, "stopped": 1}}
 
 
@@ -1525,14 +1530,12 @@ def sc_stop_then_sleep():
     b.connect(); b.run(300)
     b.stop()
     p = b.pods[0]
-    while not (p.ble.drain and p.ble.drain["kind"] == "stop"):
-        b.run(1)
+    run_until(b, lambda: p.ble.drain and p.ble.drain["kind"] == "stop", "the pod's STOP drain")
     b.run(round(p.ble.drain["deadline"] - b.now - 100))
     b.pod_sleep(2)
     b.run(4000); b.finish()
     ep = b.stream.epochs[0]
-    tail = lambda got: len(got) == 1 and got[0] > 0
-    return b, {"ranges": [(ep, first_cmd(p), p.drain_heads[-1][1])], "gaps": {"sleep-tail": tail},
+    return b, {"ranges": [(ep, first_cmd(p), p.drain_heads[-1][1])], "gaps": {"sleep-tail": one_gap},
                "stats": {"reconnects": 1, "stopped": 1},
                "extra": {"no FINAL on a capped drain": lambda: None if not finals(b) else f"FINAL frames {finals(b)}"}}
 
@@ -1548,12 +1551,8 @@ def sc_stop_final_then_sleep():
     b.connect(); b.run(300)
     b.stop()
     p = b.pods[0]
-    for _ in range(5000):
-        if p.ble.retry is not None and p.ble.retry["bytes"][12] & pl.F_FINAL:
-            break
-        b.run(1)
-    else:
-        raise AssertionError("never caught a built FINAL frame waiting for a slot")
+    run_until(b, lambda: p.ble.retry is not None and p.ble.retry["bytes"][12] & pl.F_FINAL,
+              "a built FINAL frame waiting for a slot", limit=5000)
     b.pod_sleep(4)
     b.run(4000); b.finish()
     ep = b.stream.epochs[0]
@@ -1578,7 +1577,7 @@ def sc_reconnect_stop_before_data():
     b.stop(); b.run(4000); b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
     return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
-               "gaps": {"stop-tail": lambda got: len(got) == 1 and got[0] > 0},
+               "gaps": {"stop-tail": one_gap},
                "stats": {"reconnects": 1, "stopped": 1, "stale_stops": 0}}
 
 
@@ -1693,8 +1692,7 @@ def sc_stop_exact_tail():
     b.disconnect(); b.run(30000)
     b.connect(); b.run(300)
     b.stop()
-    while b.stream.stats["stopped"] < 1:  # until the capped stop is answered
-        b.run(100)
+    run_until(b, lambda: b.stream.stats["stopped"] >= 1, "the capped STOP's answer", step=100)
     b.lat = (7.5, 30.0)                   # the link speeds up again
     b.command(); b.run(5000)              # Start again: the counted tail must not come back
     b.stop()
@@ -1705,7 +1703,7 @@ def sc_stop_exact_tail():
     b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
     return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
-               "gaps": {"stop-tail": lambda got: len(got) == 1 and got[0] > 0},
+               "gaps": {"stop-tail": one_gap},
                "stats": {"reconnects": 1, "stopped": 2}}
 
 
@@ -1719,21 +1717,20 @@ def sc_stop_then_start():
     b.run(15000); b.stop(); b.run(4000); b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
     return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
-               "stats": {"reconnects": 1, "stopped": 1, "stale": lambda v: v >= 0}}
+               "stats": {"reconnects": 1, "stopped": 1, "stale": ANY}}
 
 
 def sc_stop_then_start_late():
     b = Bench("stop-then-start-after-drain", seed=23)
     b.run(3000); b.connect(); b.run(6000)
     b.stop()
-    while not b.pods[0].drain_heads:      # the pod has finished the drain and queued stopped...
-        b.run(1)
+    run_until(b, lambda: b.pods[0].drain_heads, "the end of the STOP drain")   # stopped is queued...
     b.command()                           # ...and Start goes out before that STATUS arrives
     b.run(8000); b.stop(); b.run(3000); b.finish()
     p = b.pods[0]; ep = b.stream.epochs[0]
     return b, {"ranges": [(ep, first_cmd(p), last_drain(p))],
                "stats": {"stale_stops": lambda v: v <= 1, "stopped": lambda v: v in (1, 2),
-                         "stale": lambda v: v >= 0}}
+                         "stale": ANY}}
 
 
 def sc_stop_timeout_late():
@@ -1764,8 +1761,8 @@ def sc_stop_start_lost():
     p = b.pods[0]; ep = b.stream.epochs[0]
     kinds = lambda: None if all(g["kind"] != "stop-tail" for g in b.stream.gaps) else "finish called it a stop-tail"
     return b, {"ranges": [(ep, first_cmd(p), end_known(b, ep))], "true_loss": true_end - nxt,
-               "gaps": {"lost-tail": lambda got: len(got) == 1 and got[0] > 0},
-               "stats": {"stale": lambda v: v >= 0, "stale_stops": lambda v: v <= 1, "reconnects": 1},
+               "gaps": {"lost-tail": one_gap},
+               "stats": {"stale": ANY, "stale_stops": lambda v: v <= 1, "reconnects": 1},
                "extra": {"kind": kinds}}
 
 
@@ -1797,7 +1794,7 @@ def sc_stop_timeout_finish():
     ep = b.stream.epochs[0]; p = b.pods[0]
     flagged = lambda: None if all(g.get("lower_bound") for g in b.stream.gaps if g["kind"] == "stop-tail") else "stop-tail not lower_bound"
     return b, {"ranges": [(ep, first_cmd(p), end_known(b, ep))], "true_loss": true_end - nxt,
-               "gaps": {"stop-tail": lambda got: len(got) == 1 and got[0] > 0},
+               "gaps": {"stop-tail": one_gap},
                "stats": {"reconnects": 1}, "faults": ["stop timed out"], "extra": {"lower bound": flagged}}
 
 
@@ -1832,7 +1829,7 @@ def sc_lost_tail_catchup():
     e1, e2 = b.stream.epochs
     flagged = lambda: None if all(g.get("lower_bound") for g in b.stream.gaps if g["kind"] == "lost-tail") else "lost-tail not lower_bound"
     return b, {"ranges": [(e1, first_cmd(p1), end_known(b, e1)), (e2, 0, last_drain(p2))],
-               "true_loss": true_end - nxt, "gaps": {"lost-tail": lambda got: len(got) == 1 and got[0] > 0},
+               "true_loss": true_end - nxt, "gaps": {"lost-tail": one_gap},
                "stats": {"epochs": 2, "reconnects": 1, "stopped": 1}, "extra": {"lower bound": flagged}}
 
 
@@ -1850,7 +1847,7 @@ def sc_same_boot_id():
     e1, e2 = b.stream.epochs
     return b, {"ranges": [(e1, first_cmd(p1), end_known(b, e1)), (e2, 0, last_drain(p2))],
                "true_loss": true_end - nxt, "gaps": {"lost-tail": lambda got: len(got) <= 1},
-               "stats": {"epochs": 2, "reconnects": 1, "stopped": 1, "stale": lambda v: v >= 0},
+               "stats": {"epochs": 2, "reconnects": 1, "stopped": 1, "stale": ANY},
                "faults": ["reboot without a new boot_id"]}
 
 
@@ -1872,7 +1869,7 @@ def sc_boot_mismatch():
     e1, e2 = b.stream.epochs
     return b, {"ranges": [(e1, first_cmd(p1), end_known(b, e1)), (e2, 0, last_drain(p2))],
                "true_loss": true_end - nxt, "gaps": {"lost-tail": lambda got: len(got) <= 1},
-               "stats": {"epochs": 2, "reconnects": 1, "stopped": 1, "ignored": lambda v: v >= 0},
+               "stats": {"epochs": 2, "reconnects": 1, "stopped": 1, "ignored": ANY},
                "faults": ["boot mismatch"]}
 
 
@@ -1882,7 +1879,7 @@ def sc_other_pod():
     b.disconnect(); b.run(500)
     # the phone briefly connects to a neighbour's pod, then reads an INFO from the future (proto 2)
     b.feed_read(pl.REG_INFO, b.pod.info_frame(serial=0xBEEF))
-    b.feed_read(pl.REG_STATUS, b.pod.status_frame())
+    b.feed_read(pl.REG_STATUS, b.pod.ble.status_frame())
     none1 = b.command()
     b.feed_read(pl.REG_INFO, b.pod.info_frame(proto=2))
     none2 = b.command()
@@ -2374,73 +2371,80 @@ SCENARIOS = [sc_clean, sc_scale, sc_reconnect_rewind, sc_overflow, sc_lap, sc_pk
 def runs_of(b, expect):
     """(vector name, client, expectation) per decoder a scenario checks: the phone's, then a PC's."""
     out = []
-    if expect.get("ble", True) is not False:
+    if expect.get("ble", True):
         out.append((b.name, b, expect))
     if "usb" in expect:
         out.append((b.name + "/usb" if out else b.name, b.usb, expect["usb"]))
     return out
 
 
-def run_all(write=True, quiet=False):
-    """Run every scenario. Returns the number of failed scenarios."""
-    if write:
-        DATA.mkdir(exist_ok=True)
-        files = {k: open(DATA / f"fake_pod_{k}.csv", "w", newline="")
-                 for k in ("packets", "frames", "expected", "gaps", "stats", "events")}
-        stat_keys = list(pl.PodStream(lambda s: None).stats)
-        files["packets"].write("scenario,step,kind,arrival_ms,payload\n")
-        files["frames"].write("scenario,step,kind,arrival_ms,payload\n")
-        files["expected"].write("scenario,t,ax,ay,az,gx,gy,gz\n")
-        files["gaps"].write("scenario,kind,n,idx,t0,t1,lower_bound\n")
-        files["stats"].write("scenario," + ",".join(stat_keys) + ",faults\n")
-        files["events"].write("scenario,k,kind,info\n")
-    n_fail = 0
+def run_all():
+    """Run every scenario and write the vectors. Returns the number of failed scenarios."""
+    DATA.mkdir(exist_ok=True)
+    files = {k: open(DATA / f"fake_pod_{k}.csv", "w", newline="")
+             for k in ("packets", "frames", "expected", "gaps", "stats", "events")}
+    stat_keys = list(pl.PodStream(lambda s: None).stats)
+    files["packets"].write("scenario,step,kind,arrival_ms,payload\n")
+    files["frames"].write("scenario,step,kind,arrival_ms,payload\n")
+    files["expected"].write("scenario,t,ax,ay,az,gx,gy,gz\n")
+    files["gaps"].write("scenario,kind,n,idx,t0,t1,lower_bound\n")
+    files["stats"].write("scenario," + ",".join(stat_keys) + ",faults\n")
+    files["events"].write("scenario,k,kind,info\n")
+    done = DATA / "fake_pod_runs.csv"     # written last, and only if every scenario ran: the vectors
+    done.unlink(missing_ok=True)          # are whole (webapp/test/pod.mjs refuses them without it)
+    n_fail, crashed, names = 0, 0, []
     for sc in SCENARIOS:
-        b, expect = sc()
+        try:
+            b, expect = sc()
+            runs = [(name, c, check(c, exp)) for name, c, exp in runs_of(b, expect)]
+        except Exception:                 # one crashed scenario fails alone: the rest still get a verdict
+            print(f"FAIL  {sc.__name__}: crashed")
+            traceback.print_exc(file=sys.stdout)
+            n_fail += 1
+            crashed += 1
+            continue
         sc_failed = False
-        for name, c, exp in runs_of(b, expect):
-            fails = check(c, exp)
+        for name, c, fails in runs:
+            names.append(name)
             logs = {"packets": c.log, "frames": frames_of(c.log)}
             rev = []
             for which, log in logs.items():
                 try:                          # the replay must reproduce everything from the log alone
-                    rs, rst, rev_w = replay(log)
+                    rs, rst, rev_w = pl.replay_rows(log)
                     if rs != c.samples:
                         fails.append(f"replay ({which}): samples differ")
                     if rst.gaps != c.stream.gaps or rst.stats != c.stream.stats or rst.faults != c.stream.faults:
                         fails.append(f"replay ({which}): gaps / stats / faults differ")
-                    if [k for k, _ in rev_w] != [k for k, _ in c.events if k != "need-command"] and \
-                            [k for k, _ in rev_w if k != "need-command"] != [k for k, _ in c.events if k != "need-command"]:
+                    if [k for k, _ in rev_w if k != "need-command"] != [k for k, _ in c.events]:
                         fails.append(f"replay ({which}): events differ")
                     if which == "packets":
                         rev = rev_w
                 except AssertionError as e:
                     fails.append(f"replay ({which}): {e}")
             sc_failed |= bool(fails)
-            if not quiet:
-                gaps = ", ".join(f"{g['kind']} {g['n']}" for g in c.stream.gaps) or "no gaps"
-                note = f"  ({b.note})" if b.note and c is b else ""
-                print(f"{'PASS' if not fails else 'FAIL'}  {name:28} {len(c.samples):6} samples, {gaps}{note}")
-                for f in fails:
-                    print(f"      - {f}")
-            if write:
-                for which, log in logs.items():
-                    for k, (kind, arr, payload) in enumerate(log):
-                        files[which].write(f"{name},{k},{kind},{'' if arr is None else arr},{payload}\n")
-                for s in c.samples:
-                    files["expected"].write(f"{name},{s['t']!r},{s['ax']!r},{s['ay']!r},{s['az']!r},"
-                                            f"{s['gx']!r},{s['gy']!r},{s['gz']!r}\n")
-                for g in c.stream.gaps:
-                    files["gaps"].write(f"{name},{g['kind']},{g['n']},{g['idx']},{g['t0']!r},{g['t1']!r},"
-                                        f"{int(bool(g.get('lower_bound')))}\n")
-                files["stats"].write(name + "," + ",".join(str(c.stream.stats[k]) for k in stat_keys)
-                                     + "," + "|".join(c.stream.faults) + "\n")
-                for k, (kind, info) in enumerate(rev):
-                    files["events"].write(f"{name},{k},{kind},{'' if info is None or isinstance(info, dict) else info}\n")
+            gaps = ", ".join(f"{g['kind']} {g['n']}" for g in c.stream.gaps) or "no gaps"
+            note = f"  ({b.note})" if b.note and c is b else ""
+            print(f"{'PASS' if not fails else 'FAIL'}  {name:28} {len(c.samples):6} samples, {gaps}{note}")
+            for f in fails:
+                print(f"      - {f}")
+            for which, log in logs.items():
+                for k, (kind, arr, payload) in enumerate(log):
+                    files[which].write(f"{name},{k},{kind},{'' if arr is None else arr},{payload}\n")
+            for s in c.samples:
+                files["expected"].write(f"{name},{s['t']!r},{s['ax']!r},{s['ay']!r},{s['az']!r},"
+                                        f"{s['gx']!r},{s['gy']!r},{s['gz']!r}\n")
+            for g in c.stream.gaps:
+                files["gaps"].write(f"{name},{g['kind']},{g['n']},{g['idx']},{g['t0']!r},{g['t1']!r},"
+                                    f"{int(bool(g.get('lower_bound')))}\n")
+            files["stats"].write(name + "," + ",".join(str(c.stream.stats[k]) for k in stat_keys)
+                                 + "," + "|".join(c.stream.faults) + "\n")
+            for k, (kind, info) in enumerate(rev):
+                files["events"].write(f"{name},{k},{kind},{'' if info is None or isinstance(info, dict) else info}\n")
         n_fail += sc_failed
-    if write:
-        for f in files.values():
-            f.close()
+    for f in files.values():
+        f.close()
+    if not crashed:
+        done.write_text("run\n" + "".join(f"{n}\n" for n in names))
     return n_fail
 
 

@@ -43,11 +43,11 @@ import sys
 import time
 
 import crp
+import log_ble
 import podlink as pl
 
 V1_SERVICE = "9ba40001-6de5-429c-b225-8134b9953e9d"   # PodLink v1's table: gone since D45
 EVENT_BITS = pl.S_BOOT_MISMATCH | pl.S_STREAM_STOPPED | pl.S_GOING_TO_SLEEP
-BUSY_RETRY_S, BUSY_FOR_S = 0.2, 3.0    # a BUSY read is retried every 200 ms for 3 s (ble.md 5)
 REG_BOOT_ID, REG_SERIAL, REG_FW_BUILD, REG_HEAD, REG_NAME = 0x00020005, 0x00020006, 0x00020007, 0x00020003, 0x0002000E
 # what discovery must find (docs/ble.md 2.3; a group's base, offset 0, isn't counted or walked)
 GROUPS = {
@@ -113,17 +113,11 @@ class Pod:
     async def request(self, build, timeout=None):
         """(status, value) of any client request: build(txn) -> packet. The Session's own request
         path (its txn ids, its timeout), for the discovery queries it has no method for."""
-        return await self.session._request(build, timeout)
+        return await self.session.request(build, timeout)
 
     async def read_retry(self, reg):
         """(status, value, BUSY answers) of a READ with the BUSY retry (docs/ble.md 5)."""
-        t0, busy = self.clock(), 0
-        while True:
-            st, val = await self.session.read(reg)
-            if st != crp.BUSY or self.clock() - t0 + BUSY_RETRY_S > BUSY_FOR_S:
-                return st, val, busy + (st == crp.BUSY)
-            busy += 1
-            await asyncio.sleep(BUSY_RETRY_S)
+        return await log_ble.read_retry(self.session, reg, self.clock)
 
     async def frame(self, reg):
         st, val, _ = await self.read_retry(reg)
@@ -140,9 +134,9 @@ async def open_pod(new_link, clock):
     return pod
 
 
-async def protocol(r, new_link, clock, seconds=15.0, on_usb=True, gravity=(9.3, 10.4), discovery=True,
-                   name=None, after_open=None):
-    """Sections 3, 4 and 6 to 10 (and 5 with discovery): everything from a link to the pod on. new_link()
+async def protocol(r, new_link, clock, seconds=15.0, on_usb=True, gravity=(9.3, 10.4), name=None,
+                   after_open=None):
+    """Sections 3 to 10: everything from a link to the pod on. new_link()
     gives a fresh, unopened link per connection; clock() is seconds. after_open(pod) runs once the
     first link is up (the GATT table check). gravity=None skips the |a| check (a simulated pod)."""
     sleep = asyncio.sleep
@@ -209,33 +203,32 @@ async def protocol(r, new_link, clock, seconds=15.0, on_usb=True, gravity=(9.3, 
         r.check(got == want, f"{what}: {status_name(got)} (want {status_name(want)})")
 
     # ---- 5. discovery (Ansync's dashboard lists the registers this way) ----
-    if discovery:
-        st, v = await pod.request(lambda txn: crp.query_device(txn, 0))
-        groups = struct.unpack_from("<I", v, 5)[0] if st == crp.OK and len(v) >= 9 else None
-        dev_name = v[9:].decode(errors="replace") if st == crp.OK else None
-        r.check(groups == 3 and (name is None or dev_name == name),
-                f"QUERY_DEVICE: {groups} groups, name {dev_name!r} (want 3{', ' + repr(name) if name else ''})")
-        for base, want in GROUPS.items():
-            st, v = await pod.request(lambda txn: crp.query_group(txn, base))
-            count = struct.unpack_from("<I", v, 5)[0] if st == crp.OK and len(v) >= 9 else None
-            names, off = [], 1
-            while count and len(names) < count and off < 64:
-                st, v = await pod.request(lambda txn: crp.query_reg(txn, base + off))
-                if st == crp.OK and len(v) >= 12:
-                    names.append(v[12:12 + v[11]].decode(errors="replace"))
-                off += 1
-            r.check(count == len(want) and names == want,
-                    f"group 0x{base:08x}: count {count}, names {names} (want {len(want)})")
-        mirrors = {"BOOT_ID": (await pod.u(REG_BOOT_ID, "<I"), info["boot_id"]),
-                   "SERIAL": (await pod.u(REG_SERIAL, "<I"), info["serial"]),
-                   "FW_BUILD": (await pod.u(REG_FW_BUILD, "<H"), info["fw_build"])}
-        head = await pod.u(REG_HEAD, "<I")
-        st, nm = await s.read(REG_NAME)
-        nm = nm.rstrip(b"\x00").decode(errors="replace") if st == crp.OK else None
-        r.check(all(a == b for a, b in mirrors.values()) and head is not None and st_r and head >= st_r["head"]
-                and (name is None or nm == name),
-                f"state mirrors: {', '.join(f'{k} {a}' for k, (a, _) in mirrors.items())}, HEAD {head}, NAME {nm!r} "
-                f"(INFO and the STATUS read agree)")
+    st, v = await pod.request(lambda txn: crp.query_device(txn, 0))
+    groups = struct.unpack_from("<I", v, 5)[0] if st == crp.OK and len(v) >= 9 else None
+    dev_name = v[9:].decode(errors="replace") if st == crp.OK else None
+    r.check(groups == 3 and (name is None or dev_name == name),
+            f"QUERY_DEVICE: {groups} groups, name {dev_name!r} (want 3{', ' + repr(name) if name else ''})")
+    for base, want in GROUPS.items():
+        st, v = await pod.request(lambda txn: crp.query_group(txn, base))
+        count = struct.unpack_from("<I", v, 5)[0] if st == crp.OK and len(v) >= 9 else None
+        names, off = [], 1
+        while count and len(names) < count and off < 64:
+            st, v = await pod.request(lambda txn: crp.query_reg(txn, base + off))
+            if st == crp.OK and len(v) >= 12:
+                names.append(v[12:12 + v[11]].decode(errors="replace"))
+            off += 1
+        r.check(count == len(want) and names == want,
+                f"group 0x{base:08x}: count {count}, names {names} (want {len(want)})")
+    mirrors = {"BOOT_ID": (await pod.u(REG_BOOT_ID, "<I"), info["boot_id"]),
+               "SERIAL": (await pod.u(REG_SERIAL, "<I"), info["serial"]),
+               "FW_BUILD": (await pod.u(REG_FW_BUILD, "<H"), info["fw_build"])}
+    head = await pod.u(REG_HEAD, "<I")
+    st, nm = await s.read(REG_NAME)
+    nm = nm.rstrip(b"\x00").decode(errors="replace") if st == crp.OK else None
+    r.check(all(a == b for a, b in mirrors.values()) and head is not None and st_r and head >= st_r["head"]
+            and (name is None or nm == name),
+            f"state mirrors: {', '.join(f'{k} {a}' for k, (a, _) in mirrors.items())}, HEAD {head}, NAME {nm!r} "
+            f"(INFO and the STATUS read agree)")
 
     # ---- 6. PUSH = 0 sends nothing, PUSH = 1 the STATUS at 1 Hz ----
     i0 = len(pod.log)
@@ -334,8 +327,8 @@ async def protocol(r, new_link, clock, seconds=15.0, on_usb=True, gravity=(9.3, 
         old = "a HELLO back"
     except crp.CrpTimeout:
         old = "no answer"
-    except crp.CrpLinkError:
-        raise                       # the link refused the HELLO: say so, not "BYE" (no BYE came)
+    except crp.CrpClosed:
+        raise                       # the link refused the HELLO or went while we waited: not a BYE
     except crp.CrpError:
         old = "BYE"
     byes = [p for _, _, p, _ in pod.log if p and p["type"] == crp.BYE]

@@ -199,5 +199,11 @@ const same = names.packets.join("|") === names.frames.join("|");
 const orphans = [...statsWant.keys()].filter((n) => !names.packets.includes(n));
 if (!same) console.log("FAIL  the two vector files hold different runs");
 if (orphans.length) console.log(`FAIL  stats rows without a replay: ${orphans.join(", ")}`);
+// make_fake_pod.py writes fake_pod_runs.csv last, and only when every scenario ran: without it the
+// vectors are a killed or crashed run's leftovers, and a short set would pass here
+const runsFile = path.join(DATA, "fake_pod_runs.csv");
+const whole = existsSync(runsFile) &&
+  readFileSync(runsFile, "utf8").split(/\r?\n/).filter((l) => l.length).slice(1).join("|") === names.packets.join("|");
+if (!whole) console.log("FAIL  the vectors aren't a finished make_fake_pod.py run's (no fake_pod_runs.csv, or other runs): run it again");
 console.log(`\n${nRuns - nFail}/${nRuns} replays PASS (JS PodStream vs Python podlink: ${names.packets.length} runs x packets and frames)`);
-process.exit(nFail || !same || orphans.length ? 1 : 0);
+process.exit(nFail || !same || orphans.length || !whole ? 1 : 0);

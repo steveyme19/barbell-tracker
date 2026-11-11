@@ -3,19 +3,22 @@ The pod's clock against the PC's, from its USB stream: a truth for where a decod
 new epoch after a reset (docs/ble-plan.md step 10, "the epoch gap within 0.2 s of a stopwatch").
 
     python usb_clock.py out.json [COMx] [--seconds=N] [--cmd-file=PATH] [--samples=PREFIX]
+    python usb_clock.py --selftest        # the --cmd-file rules on a stub port, no hardware
 
 Every CSV line t_us arrives on the PC a little after the pod printed it, so per boot the smallest
 (PC time - t_us) is that boot's wall-clock origin (when its RTC2 read 0), to about a millisecond
 (USB polls every 1 ms; the pod prints every loop pass, ~5 ms). A reset re-enumerates the port: it
 reopens and starts the next boot. out.json is rewritten every 2 s:
-  {"clock": "perf_counter", "boots": [{"base_s", "lines", "first_t_us", "last_t_us"}]}
+  {"clock": "perf_counter", "wrap_s", "boots": [{"base_s", "lines", "first_t_us", "last_t_us"}],
+   "sends": [{"pc", "cmd"}]}
 Only differences between bases mean anything (perf_counter is the PC's monotonic clock), and that
 is what a decoder's epoch offsets are compared with: t_offset2 - t_offset1 = base2 - base1.
 The pod prints t_us as a u32 (it wraps every 2^32 us = 71.6 min): wraps while this runs are
 counted, but a boot that had already wrapped before the port opened has a base off by whole
 wraps, so compare bases modulo wrap_s (seen 2026-10-24: a 2 h old boot, one wrap).
 --cmd-file: this holds the pod's only USB port, so it also sends its bench commands: when PATH
-appears, its bytes go to the pod (e.g. h: hang, the watchdog resets it) and PATH is removed.
+appears, its bytes go to the pod (e.g. h: hang, the watchdog resets it) and PATH is removed once
+they are sent.
 --samples: also every sample, one CSV per boot (PREFIX-b1.csv, -b2.csv, ...; the boot's
 "samples_csv"), in log_serial.py's columns but with t = the pod's own t_us (wraps unwrapped) in
 seconds: the truth compare_ble_usb.py checks a Bluetooth recording against (the step 12 soak).
@@ -54,6 +57,7 @@ def main():
     csv = None                                    # this boot's samples file (--samples)
     boots = []
     sends = []                                    # {"pc", "cmd"}: the bench commands sent
+    sent = None                                   # a command sent whose file wouldn't go yet (still held open)
     t_end = None if seconds is None else time.perf_counter() + seconds
     last_write = 0.0
 
@@ -66,7 +70,7 @@ def main():
             time.sleep(0.05)
             continue
         try:
-            s = serial.Serial(name, 115200, timeout=0.2)
+            s = serial.Serial(name, 115200, timeout=0.2, write_timeout=1.0)   # no timeout: a write to a port that went can hang (D45)
         except (serial.SerialException, OSError):
             time.sleep(0.05)
             continue
@@ -77,10 +81,20 @@ def main():
             while t_end is None or time.perf_counter() < t_end:
                 if cmd_file is not None and cmd_file.exists():
                     cmd = cmd_file.read_bytes()
-                    cmd_file.unlink()
-                    s.write(cmd)
-                    sends.append({"pc": time.perf_counter(), "cmd": cmd.decode("ascii", "replace")})
-                    write()
+                    if cmd and cmd != sent:           # empty: its writer isn't done yet, next pass
+                        if s.write(cmd) != len(cmd):  # pyserial returns short, without raising, on an aborted write
+                            raise serial.SerialException("short write")   # the file stays: sent after the reopen
+                        sent = cmd
+                        sends.append({"pc": time.perf_counter(), "cmd": cmd.decode("ascii", "replace")})
+                        write()
+                    if cmd:
+                        try:
+                            cmd_file.unlink()         # gone = sent (pod_reconnect.mjs waits for that)
+                            sent = None
+                        except OSError:
+                            pass                      # still held by its writer: only the unlink again, never the send
+                elif cmd_file is not None:
+                    sent = None                       # someone else removed it: the next file is a new command
                 raw = s.readline()
                 pc = time.perf_counter()
                 ln = raw.decode("ascii", "ignore").strip()
@@ -128,5 +142,92 @@ def main():
     print(f"{len(boots)} boots: " + ", ".join(f"base {b['base_s']:.4f} s ({b['lines']} lines)" for b in boots))
 
 
+def selftest():
+    """The --cmd-file rules against a stub port (no hardware): the port is opened with a write
+    timeout, a command is sent exactly once and its file removed only after that, and a file that
+    can't be removed yet (its writer still holds it, or it is read-only) is never sent twice and
+    never taken for the port going away. Each has been a bug here (11-10)."""
+    import contextlib
+    import io
+    import os
+    import stat
+    import tempfile
+    import threading
+
+    class StubPort:                               # a pod: a CSV line every 5 ms, every write kept
+        opens, written, timeouts = 0, [], []
+
+        def __init__(self, name, baud, timeout=None, write_timeout=None):
+            StubPort.opens += 1
+            StubPort.timeouts.append(write_timeout)
+            self.t = 0
+
+        def readline(self):
+            time.sleep(0.005)
+            self.t += 4700
+            return f"{self.t},0.1,0.2,9.8,0.0,0.0,0.0\n".encode()
+
+        def write(self, b):
+            StubPort.written.append(bytes(b))
+            return len(b)
+
+        def close(self):
+            pass
+
+    def held(cmd):                                # its writer keeps the file open 300 ms
+        time.sleep(0.2)
+        with open(cmd, "wb", buffering=0) as f:
+            f.write(b"w")
+            time.sleep(0.3)
+
+    def read_only(cmd):                           # a file that can't be removed at all
+        time.sleep(0.2)
+        cmd.write_bytes(b"h")
+        os.chmod(cmd, stat.S_IREAD)
+
+    def three(cmd):                               # the same command three times, each its own file
+        for _ in range(3):
+            time.sleep(0.2)
+            cmd.write_bytes(b"i")
+            while cmd.exists():
+                time.sleep(0.01)
+
+    ok = True
+
+    def check(good, msg):
+        nonlocal ok
+        print(f"{'PASS' if good else 'FAIL'}  {msg}")
+        ok = ok and bool(good)
+
+    real, argv = serial.Serial, sys.argv
+    serial.Serial = StubPort
+    try:
+        for seconds, feeder, want, gone, what in (
+                (1.5, held, [b"w"], True, "a file its writer still holds"),
+                (1.0, read_only, [b"h"], False, "a read-only file"),
+                (1.5, three, [b"i"] * 3, True, "the same command three times")):
+            sys.argv = ["usb_clock.py", "", "COM99", f"--seconds={seconds}"]
+            folder = Path(tempfile.mkdtemp(prefix="usb_clock-"))
+            sys.argv[1] = str(folder / "out.json")
+            sys.argv.append(f"--cmd-file={folder / 'cmd'}")
+            StubPort.opens, StubPort.written, StubPort.timeouts = 0, [], []
+            feed = threading.Thread(target=feeder, args=(folder / "cmd",))
+            feed.start()
+            with contextlib.redirect_stdout(io.StringIO()):
+                main()
+            feed.join()
+            sends = [s["cmd"] for s in json.loads((folder / "out.json").read_text())["sends"]]
+            check(StubPort.written == want and sends == [w.decode() for w in want] and StubPort.opens == 1
+                  and (folder / "cmd").exists() != gone and StubPort.timeouts == [1.0],
+                  f"{what}: sent {len(StubPort.written)} time(s), logged {sends}, the port opened {StubPort.opens} time(s) "
+                  f"with write_timeout {StubPort.timeouts[0]}, the file {'gone' if not (folder / 'cmd').exists() else 'still there'}")
+    finally:
+        serial.Serial, sys.argv = real, argv
+    print("PASS" if ok else "FAIL")
+    return ok
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(0 if selftest() else 1)
     main()

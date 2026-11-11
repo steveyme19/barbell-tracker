@@ -7,7 +7,8 @@ Usage (close the Arduino Serial Monitor first, it holds the port):
     python log_serial.py COM5 --seconds=30     # stops by itself after 30 s
 
 Saves data/bar-xiao-YYYY-MM-DD-HHMM[-name].csv with the same columns as the app's Save
-CSV. Time comes from the XIAO's own clock (D4). Every 2 s it prints the real sample rate,
+CSV, never over an earlier run (a -2, -3 suffix in the same minute, P2). Time comes from the
+XIAO's own clock (D4). Every 2 s it prints the real sample rate,
 gaps, the wiggle of |a| (the rest noise, D20), the gyro offset and which axis points up.
 
 Needs pyserial once:  pip install pyserial
@@ -109,7 +110,11 @@ def main():
     name = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--name=")), "")
     seconds = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--seconds=")), None)
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
-    out = Path(__file__).parent / "data" / f"bar-xiao-{stamp}{'-' + name if name else ''}.csv"
+    tag = stamp + (f"-{name}" if name else "")
+    data = Path(__file__).parent / "data"
+    out, k = data / f"bar-xiao-{tag}.csv", 2
+    while out.exists():                     # never over an earlier run (P2), as log_ble.py does
+        out, k = data / f"bar-xiao-{tag}-{k}.csv", k + 1
     print(f"Recording {args[0]} to {out.name}. Ctrl+C to stop.")
     try:
         n, gaps, dur = record(serial_lines(args[0]), out, seconds)

@@ -41,6 +41,7 @@ the Bluetooth headphones off (they starve the laptop's scanning, D28); --usb nee
 """
 
 import asyncio
+import itertools
 import json
 import signal
 import struct
@@ -63,10 +64,6 @@ USB_QUIET_S = 3.0                  # USB: nothing from the pod this long, the po
 USB_TEXT_B = 64                    # USB: this much text where packets should be = the pod went back to its CSV
 
 
-def now_ms():
-    return time.time() * 1000      # the arrival clock: wall time, like the browser's Date.now()
-
-
 def new_path(folder, prefix, tag, ext):
     """data/<prefix>-<tag>.<ext>, or -2, -3... if a run in the same minute already used it."""
     p = folder / f"{prefix}-{tag}.{ext}"
@@ -81,6 +78,18 @@ def is_pod(dev, adv):
     """A BarPod's advertisement: Ansync's CRP service plus our name prefix."""
     name = adv.local_name or dev.name or ""
     return crp.SERVICE_UUID in [u.lower() for u in adv.service_uuids] and name.startswith(NAME_PREFIX)
+
+
+async def read_retry(session, reg, clock):
+    """(status, value, BUSY answers) of a READ with the BUSY retry (docs/ble.md 5): every 200 ms
+    for 3 s. A status that's still BUSY after that is returned as it is. ble_check.py uses it too."""
+    t0, busy = clock(), 0
+    while True:
+        st, val = await session.read(reg)
+        if st != crp.BUSY or clock() - t0 + BUSY_RETRY_S > BUSY_FOR_S:
+            return st, val, busy + (st == crp.BUSY)
+        busy += 1
+        await asyncio.sleep(BUSY_RETRY_S)
 
 
 # ---- where the pod is: a fresh, unopened link per connect ----
@@ -159,7 +168,6 @@ class Receiver:
         self.link = None               # this connection's link and CRP session (new ones per connect)
         self.tapped = None
         self.session = None
-        self.peer = None               # the pod's HELLO, parsed
         self.linked = False            # connected and set up
         self.lost_link = asyncio.Event()
         self.stopped = asyncio.Event()
@@ -264,17 +272,12 @@ class Receiver:
     async def read_frame(self, reg):
         """A READ with the BUSY retry (docs/ble.md 5): every 200 ms for 3 s, then the MTU register
         (10 B, fits at MTU 23) says why. Returns the value; anything but OK raises."""
-        t0 = self.clock()
-        while True:
-            st, val = await self.session.read(reg)
-            if st != crp.BUSY:
-                break
-            self.busy += 1
-            if self.clock() - t0 + BUSY_RETRY_S > BUSY_FOR_S:
-                st, v = await self.session.read(pl.REG_LINK_MTU)
-                mtu = struct.unpack("<H", v)[0] if st == crp.OK and len(v) == 2 else None
-                raise RuntimeError(f"the link's MTU is too small (BUSY for {BUSY_FOR_S:g} s; the pod says MTU {mtu})")
-            await asyncio.sleep(BUSY_RETRY_S)
+        st, val, busy = await read_retry(self.session, reg, self.clock)
+        self.busy += busy
+        if st == crp.BUSY:
+            st, v = await self.session.read(pl.REG_LINK_MTU)
+            mtu = struct.unpack("<H", v)[0] if st == crp.OK and len(v) == 2 else None
+            raise RuntimeError(f"the link's MTU is too small (BUSY for {BUSY_FOR_S:g} s; the pod says MTU {mtu})")
         if st != crp.OK:
             raise RuntimeError(f"READ 0x{reg:08x}: {crp.STATUS_NAMES.get(st, st)}")
         return val
@@ -304,7 +307,7 @@ class Receiver:
         await self.release()
         link = await self.target.link()
         self.lost_link.clear()
-        self.link, self.peer = link, None
+        self.link = link
         self.tapped = Tapped(link, self)
         self.session = crp.Session(self.tapped, tap=self.packet)   # before open: nothing goes untapped
         await link.open()
@@ -312,7 +315,6 @@ class Receiver:
         peer = await self.session.hello()
         if peer["device_id"] != pl.DEVICE_ID:
             raise RuntimeError(f"not a BarPod: HELLO device_id 0x{peer['device_id']:08x}")
-        self.peer = peer
         await self.read_frame(pl.REG_INFO)
         await self.read_frame(pl.REG_STATUS)
         st = await self.session.write(pl.REG_PUSH, b"\x01")
@@ -324,26 +326,26 @@ class Receiver:
         self.connected_at = self.clock()
         self.n_at_connect = self.n
 
+    async def bench_write(self, what, reg, value, row):
+        """A write the bench asked for, not the decoder: logged as a ctrl row (not "cmd":
+        replay_rows checks those against command()). The pod may sleep or reset before its answer
+        arrives, so a link that goes meanwhile is only said."""
+        self.log("ctrl", "", row)
+        try:
+            st = await self.session.write(reg, value)
+            if st != crp.OK:
+                self.say(f"      the pod answered {what} {crp.STATUS_NAMES.get(st, st)}")
+        except crp.CrpError as e:
+            self.say(f"      {what}: {e}")
+
     async def sleep_command(self, mode):
         b = bytes([pl.OP_SLEEP, mode])
-        self.log("ctrl", "", b.hex())   # not "cmd": replay() checks those against command()
-        try:
-            st = await self.session.write(pl.REG_CTRL, b)
-            if st != crp.OK:
-                self.say(f"      the pod answered SLEEP {crp.STATUS_NAMES.get(st, st)}")
-        except crp.CrpError as e:      # the pod may drop the link before its answer arrives
-            self.say(f"      SLEEP: {e}")
+        await self.bench_write("SLEEP", pl.REG_CTRL, b, b.hex())
 
     async def bench_command(self, c):
         """USB only: the BENCH register (docs/ble.md 2.3), the bench characters over CRP: w is the
         dry run of a sleep, then a reset (check_sleep.py --no-pickup)."""
-        self.log("ctrl", "", f"bench {c}")
-        try:
-            st = await self.session.write(pl.REG_BENCH, c.encode())
-            if st != crp.OK:
-                self.say(f"      the pod answered BENCH {c} {crp.STATUS_NAMES.get(st, st)}")
-        except crp.CrpError as e:      # the pod may reset before its answer arrives
-            self.say(f"      BENCH {c}: {e}")
+        await self.bench_write(f"BENCH {c}", pl.REG_BENCH, c.encode(), f"bench {c}")
 
     async def drop(self, bye=False):
         """Take the link down. bye: end the CRP session first (a run's end; USB goes back to text)."""
@@ -363,7 +365,7 @@ class Receiver:
 
     async def reconnect(self, give_up):
         """Back to streaming after a dropout: the same PodStream, so STREAM_FROM(next index)."""
-        for k in range(10000):
+        for k in itertools.count():         # until give_up(): Ctrl+C, --seconds or --until-wake
             await asyncio.sleep(BACKOFF[k] if k < len(BACKOFF) else 5)
             if give_up():
                 return False
@@ -374,7 +376,6 @@ class Receiver:
             except Exception as e:      # radio off, out of range, WinRT object closed, no port: try again
                 self.say(f"      reconnect try {k + 1}: {type(e).__name__}: {e}")
                 await self.drop()
-        return False
 
     async def stop(self):
         """STOP and wait for stream_stopped (everything up to its head arrived, or the tail is
@@ -428,8 +429,8 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, bench
     await rx.connect()
     rx.say(f"Streaming from {rx.target}. Ctrl+C stops.")
     outages = sorted(outages, key=lambda o: o[1])
-    sleeps = sorted(sleeps)
-    benches = sorted(benches)
+    todo = sorted([(at, f"SLEEP op, mode {mode}", rx.sleep_command, mode) for at, mode in sleeps]
+                  + [(at, f"BENCH {c}", rx.bench_command, c) for at, c in benches], key=lambda w: w[0])
     t_print = 0
     while not give_up():
         await asyncio.sleep(0.25)
@@ -450,7 +451,6 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, bench
         if why:                        # USB quiet, or a Bluetooth session ended with the link up
             rx.say(f"  {el():6.1f} s: the session went ({why}), reconnecting")
             await rx.drop()
-            rx.lost_link.set()
         while rx.pending and rx.linked:          # the decoder asked (a reboot, a stale INFO)
             kind = rx.pending.pop(0)
             try:
@@ -462,15 +462,10 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, bench
                 if rx.linked:
                     raise
                 break                  # the link went meanwhile: the reconnect's own order answers it
-        if sleeps and el() >= sleeps[0][0] and rx.linked:
-            at, mode = sleeps.pop(0)
-            rx.say(f"  {el():6.1f} s: SLEEP op, mode {mode}")
-            await rx.sleep_command(mode)
-            continue
-        if benches and el() >= benches[0][0] and rx.linked:
-            at, c = benches.pop(0)
-            rx.say(f"  {el():6.1f} s: BENCH {c}")
-            await rx.bench_command(c)
+        if todo and el() >= todo[0][0] and rx.linked:
+            _, what, send, value = todo.pop(0)
+            rx.say(f"  {el():6.1f} s: {what}")
+            await send(value)
             continue
         if outages and el() >= outages[0][1]:
             dur, at = outages.pop(0)
@@ -479,11 +474,10 @@ async def run(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, bench
             t_end = clock() + dur
             while clock() < t_end and not quit_flag():
                 await asyncio.sleep(0.25)
-            rx.lost_link.clear()
             if not await rx.reconnect(give_up):
                 break
             continue
-        if rx.lost_link.is_set() and not rx.linked:
+        if not rx.linked:              # the link went (it said so, or we dropped it above)
             asleep = rx.sleeps and rx.sleeps[-1]["samples"] == rx.n
             rx.say(f"  {el():6.1f} s: " + ("the pod went to sleep, reconnecting when it wakes" if asleep
                                            else "link lost, reconnecting"))
@@ -510,8 +504,16 @@ async def session(rx, seconds, outages, quit_flag, sleeps=(), until_wake=None, b
         await rx.stop()                # STOP (releases the pod's hold), then the tail is counted
 
 
+FLAGS = ("name", "seconds", "address", "usb", "outage", "sleep", "until-wake", "bench")
+
+
+def args(name):
+    """Every value of a --name=value flag, in order."""
+    return [a.split("=", 1)[1] for a in sys.argv if a.startswith(f"--{name}=")]
+
+
 def arg(name, conv=str, default=None):
-    return next((conv(a.split("=", 1)[1]) for a in sys.argv if a.startswith(f"--{name}=")), default)
+    return next((conv(v) for v in args(name)), default)
 
 
 def main():
@@ -521,29 +523,22 @@ def main():
     if "--selftest" in sys.argv:
         import log_ble_sim
         return 0 if log_ble_sim.selftest() else 1
+    stray = [a for a in sys.argv[1:] if not a.startswith(tuple(f"--{k}=" for k in FLAGS))]
+    if stray:                          # a typo would run on a default: --usb COM5 records over Bluetooth
+        sys.exit(f"unknown argument(s) {' '.join(stray)}: every flag is --name=value (see --help)")
     name = arg("name", default="")
     seconds = arg("seconds", float)
     address = arg("address")
     port = arg("usb")
+    if port == "":                     # --usb= with nothing after it would fall to Bluetooth
+        sys.exit("--usb=COMx: no port given")
     if port and address:
         sys.exit("--usb and --address: pick one link")
-    outages = []
-    for a in sys.argv:
-        if a.startswith("--outage="):
-            d, at = a.split("=", 1)[1].split("@")
-            outages.append((float(d), float(at)))
-    sleeps = []
-    for a in sys.argv:
-        if a.startswith("--sleep="):
-            at, _, mode = a.split("=", 1)[1].partition(":")
-            sleeps.append((float(at), int(mode or 0)))
-    benches = []
-    for a in sys.argv:
-        if a.startswith("--bench="):
-            c, _, at = a.split("=", 1)[1].partition("@")
-            if not port or len(c) != 1:
-                sys.exit("--bench=c@T: one bench character, and only with --usb")
-            benches.append((float(at), c))
+    outages = [(float(d), float(at)) for d, at in (v.split("@") for v in args("outage"))]
+    sleeps = [(float(at), int(mode or 0)) for at, _, mode in (v.partition(":") for v in args("sleep"))]
+    benches = [(float(at), c) for c, _, at in (v.partition("@") for v in args("bench"))]
+    if benches and not (port and all(len(c) == 1 for _, c in benches)):
+        sys.exit("--bench=c@T: one bench character, and only with --usb")
     until_wake = arg("until-wake", float)
     tag = datetime.now().strftime("%Y-%m-%d-%H%M") + (f"-{name}" if name else "")
     data = Path(__file__).parent / "data"

@@ -1,7 +1,8 @@
 // Shared by the real-Chrome bench checks (pod_browser.mjs, pod_reconnect.mjs): a minimal
-// DevTools-protocol client on Node's own WebSocket, Chrome with a throwaway profile, the
-// Bluetooth chooser answered through CDP's DeviceAccess domain, and the capture replayed
-// through the Python reference decoder (P1). Zero install.
+// DevTools-protocol client on Node's own WebSocket, Chrome with a throwaway profile and the
+// Bluetooth chooser answered through CDP's DeviceAccess domain. Also replayCapture and worstDiff:
+// a capture replayed through the Python reference decoder (P1), which pod_web.mjs (no Chrome)
+// and android/pod_session_check.mjs use too. Zero install.
 
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -27,6 +28,8 @@ async function cdp(wsUrl) {
     }
   };
   const send = (method, params = {}) => new Promise((res, rej) => {
+    // a send on a closed socket is dropped without a word, and the call would wait for good
+    if (ws.readyState !== WebSocket.OPEN) { rej(new Error("Chrome closed the DevTools connection")); return; }
     pending.set(++id, { res, rej });
     ws.send(JSON.stringify({ id, method, params }));
   });
@@ -110,15 +113,15 @@ export function replayCapture(csv, python, root) {
   const csvPath = join(dir, "capture.csv");
   writeFileSync(csvPath, csv);
   const py = spawnSync(python, ["-c", [
-    "import csv, json, sys",
+    "import json, sys",
     "sys.path.insert(0, sys.argv[2])",
-    "import make_fake_pod as m",
-    "log = [(r['kind'], float(r['arrival_ms']) if r['arrival_ms'] else None, r['payload']) for r in csv.DictReader(open(sys.argv[1]))]",
-    "smp, st, ev = m.replay(log)",
+    "import podlink as pl",
+    "smp, st, ev = pl.replay_rows(pl.read_capture(sys.argv[1]))",
     "print(json.dumps({'samples': smp, 'gaps': st.gaps, 'faults': st.faults}))",
   ].join("\n"), csvPath, join(root, "analysis")], { encoding: "utf8", maxBuffer: 1 << 28 });
   rmSync(dir, { recursive: true, force: true });
-  if (py.status !== 0) return { error: py.stderr.slice(-500) };
+  if (py.error) return { error: `could not run ${python}: ${py.error.message} (set PYTHON to the venv's python, an absolute path)` };
+  if (py.status !== 0) return { error: py.stderr.slice(-500) || `python exited with ${py.status ?? py.signal}` };
   return JSON.parse(py.stdout);
 }
 

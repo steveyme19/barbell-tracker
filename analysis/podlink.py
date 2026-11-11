@@ -14,8 +14,11 @@ Standard library only.
 Since D45 the frames travel inside CRP (docs/ble.md 2, analysis/crp.py): crp_frame() takes a
 frame out of a packet, and PodStream itself never sees CRP.
 
-The frame builders at the bottom (build_data, build_status, build_info) are the pod's side,
-used by the simulator in make_fake_pod.py.
+The frame builders (build_data, build_status, build_info, build_cal) are the pod's side, used by
+the simulator in make_fake_pod.py.
+
+    python podlink.py --replay-all        # every committed capture still decodes the same (P2)
+    python podlink.py --write-manifest    # pin the captures the manifest doesn't have yet
 """
 
 import math
@@ -33,14 +36,7 @@ DEVICE_ID = 0x444F5042                     # the pod's HELLO device_id, "BPOD" (
 FRAME_READS = (REG_INFO, REG_STATUS, REG_CAL)   # an OK RESPONSE to a READ of these carries a frame
 FRAME_PUSHES = (REG_DATA, REG_STATUS)           # so does a push (WRITE txn 0) to these
 
-# ---- constants (docs/ble.md sections 1 to 4) ----
-SERVICE = "9ba40001-6de5-429c-b225-8134b9953e9d"
-DATA_UUID = "9ba40002-6de5-429c-b225-8134b9953e9d"
-CTRL_UUID = "9ba40003-6de5-429c-b225-8134b9953e9d"
-STATUS_UUID = "9ba40004-6de5-429c-b225-8134b9953e9d"
-INFO_UUID = "9ba40005-6de5-429c-b225-8134b9953e9d"
-CAL_UUID = "9ba40006-6de5-429c-b225-8134b9953e9d"
-
+# ---- frame constants (docs/ble.md 3 and 4) ----
 T_DATA, T_STATUS, T_INFO, T_CAL = 0x01, 0x10, 0x20, 0x30
 F_RESYNC, F_OVERFLOW, F_IMU_RESTART, F_FINAL = 0x01, 0x02, 0x04, 0x08
 S_USB, S_CHARGING, S_BATT_LOW, S_STREAMING = 0x01, 0x02, 0x04, 0x08
@@ -520,158 +516,23 @@ def build_cal():
     return bytes([T_CAL, 0]) + bytes(62)
 
 
-# ---- step 4 bench check: the pod's frames over USB against its own CSV (docs/ble-plan.md) ----
-def usb_check(lines, seconds):
-    """Read the pod's USB stream (firmware/pod with PKT_OVER_USB): CSV lines plus P / S / I
-    frame lines. Check every CSV sample appears in exactly one DATA frame with the same time
-    and values, frames are continuous, and STATUS / INFO decode. Returns (ok, report lines)."""
-    csv, frames, status, info = [], [], [], []
-    t_first = None
-    import time
-    t_end = time.time() + seconds
-    for line in lines:
-        line = line.strip()
-        if time.time() > t_end:
-            break
-        if not line or line.startswith("#"):
-            continue
-        if line[:2] in ("P ", "S ", "I "):
-            try:
-                f = decode_frame(bytes.fromhex(line[2:]))
-            except ValueError:
-                f = None
-            if f is None:
-                frames.append(None)
-                continue
-            {"P": frames, "S": status, "I": info}[line[0]].append(f)
-            continue
-        parts = line.split(",")
-        if len(parts) == 7:
-            try:
-                csv.append((int(parts[0]),) + tuple(float(p) for p in parts[1:]))
-            except ValueError:
-                pass
-    out, ok = [], True
-
-    def fail(msg):
-        nonlocal ok
-        ok = False
-        out.append("FAIL  " + msg)
-
-    bad = sum(1 for f in frames if f is None)
-    frames = [f for f in frames if f is not None]
-    out.append(f"{len(csv)} CSV samples, {len(frames)} DATA frames, {len(status)} STATUS, {len(info)} INFO")
-    if bad:
-        fail(f"{bad} frame lines didn't decode")
-    if not frames or not csv:
-        fail("no frames or no CSV")
-        return ok, out
-
-    # frames: continuous indices and pkt_seq, RESYNC on the first, no OVERFLOW
-    if not frames[0]["flags"] & F_RESYNC:
-        fail("first frame has no RESYNC")
-    nxt, seq = None, None
-    for f in frames:
-        if nxt is not None and f["first_idx"] != nxt:
-            fail(f"index jump: frame starts at {f['first_idx']}, expected {nxt}")
-        if seq is not None and f["pkt_seq"] != (seq + 1) & 0xFFFF:
-            fail(f"pkt_seq {f['pkt_seq']} after {seq}")
-        if f["flags"] & F_OVERFLOW:
-            fail(f"OVERFLOW at index {f['first_idx']}")
-        nxt, seq = f["first_idx"] + f["n"], f["pkt_seq"]
-
-    # every frame sample, by its t_us (the CSV's clock is the same extended RTC2 count)
-    by_t = {}
-    for f in frames:
-        for k, (dt, gx, gy, gz, ax, ay, az) in enumerate(f["samples"]):
-            ticks = (f["t0"] + dt) & 0xFFFFFFFF
-            t_us = (ticks * 15625 // 512) & 0xFFFFFFFF
-            if t_us in by_t:
-                fail(f"two frame samples at t_us {t_us}")
-            by_t[t_us] = (f["first_idx"] + k, (ax * ACCEL_LSB, ay * ACCEL_LSB, az * ACCEL_LSB,
-                                               gx * GYRO_LSB, gy * GYRO_LSB, gz * GYRO_LSB))
-    # the overlap window: from the first framed sample to the last one
-    lo = min(by_t)
-    hi = max(by_t)
-    window = [r for r in csv if lo <= r[0] <= hi]
-    matched, worst_a, worst_g = 0, 0.0, 0.0
-    for r in window:
-        if r[0] not in by_t:
-            fail(f"CSV sample at t_us {r[0]} is in no frame")
-            continue
-        matched += 1
-        idx, v = by_t[r[0]]
-        worst_a = max(worst_a, *(abs(v[j] - r[1 + j]) for j in range(3)))
-        worst_g = max(worst_g, *(abs(v[3 + j] - r[4 + j]) for j in range(3)))
-    if matched != len(by_t):
-        fail(f"{len(by_t)} framed samples but only {matched} CSV lines in their window")
-    # accel: calcAccel * G in float32 can round past the print precision by up to ~6e-6
-    if worst_a > 0.00005 + 1e-5 or worst_g > 0.0005 + 1e-6:
-        fail(f"values: worst |da| {worst_a:.6f} m/s^2, |dg| {worst_g:.5f} deg/s (CSV prints 4 / 3 decimals)")
-    out.append(f"matched {matched} CSV samples one-to-one; worst |da| {worst_a:.6f} m/s^2, "
-               f"|dg| {worst_g:.5f} deg/s (print precision 0.00005 / 0.0005)")
-
-    # STATUS: head never goes back, ticks_now increase (unwrapped), head >= what was framed
-    prev_h = prev_t = None
-    for st in status:
-        if prev_h is not None and st["head"] < prev_h:
-            fail(f"STATUS head went back {prev_h} -> {st['head']}")
-        if prev_t is not None and int32(st["ticks_now"] - prev_t) <= 0:
-            fail("STATUS ticks_now didn't increase")
-        prev_h, prev_t = st["head"], st["ticks_now"]
-    if status:
-        out.append(f"STATUS ok: head {status[0]['head']} -> {status[-1]['head']}, "
-                   f"n_per_packet {status[-1]['n_per_packet']}, battery {status[-1]['battery_mv']} mV")
-    else:
-        fail("no STATUS")
-    if info:
-        i = info[-1]
-        good = (i["proto"] == 1 and i["boot_id"] != 0 and i["odr"] == 208 and i["tick_hz"] == 32768
-                and abs(i["accel_lsb"] - ACCEL_LSB) < 1e-9 and abs(i["gyro_lsb"] - GYRO_LSB) < 1e-9)
-        (out.append if good else fail)(f"INFO: proto {i['proto']}, boot_id 0x{i['boot_id']:08x}, serial "
-                                       f"0x{i['serial']:08x}, ring_n {i['ring_n']}, odr {i['odr']}, wake {i['wake']}")
-    else:
-        fail("no INFO")
-
-    # timing from the CSV (log_serial's rule: a gap is dt > 1.5 x the median)
-    t = [r[0] for r in csv]
-    dts = [(b - a) & 0xFFFFFFFF for a, b in zip(t, t[1:])]
-    med = sorted(dts)[len(dts) // 2]
-    # a hole is fine only right before a frame that says IMU_RESTART (the pod restarted the IMU)
-    restart_us = {(f["t0"] * 15625 // 512) & 0xFFFFFFFF for f in frames if f["flags"] & F_IMU_RESTART}
-    holes = [(a, b) for (a, b), d in zip(zip(t, t[1:]), dts) if d > 1.5 * med]
-    excused = [h for h in holes if h[1] in restart_us]
-    gaps = len(holes) - len(excused)
-    if excused:
-        out.append(f"{len(excused)} IMU restart hole(s), each followed by an IMU_RESTART frame (ok)")
-    if len(restart_us) != len(excused):
-        fail(f"{len(restart_us)} IMU_RESTART frame(s) but {len(excused)} matching hole(s)")
-    dts = [d for d in dts if d <= 1.5 * med]       # jitter without the restart holes
-    mean = sum(dts) / len(dts)
-    std = (sum((d - mean) ** 2 for d in dts) / len(dts)) ** 0.5 / 1000
-    rate = 1e6 / mean
-    first_tick = frames[0]["t0"]
-    last_tick = (frames[-1]["t0"] + frames[-1]["samples"][-1][0]) & 0xFFFFFFFF
-    wraps = (last_tick >> 24) - (first_tick >> 24)
-    out.append(f"timing: {rate:.2f} Hz, {gaps} gaps, dt std {std:.4f} ms; RTC2 24-bit wraps crossed: {wraps}")
-    if gaps:
-        fail(f"{gaps} gaps in the CSV")
-    if std > 0.1:
-        fail(f"dt std {std:.4f} ms > 0.1 ms")
-    return ok, out
-
-
 # ---- replaying captures (the make_fake_pod.py vector format, P2) ----
 MANIFEST = "data/pod-capture-manifest.json"   # relative to analysis/
 
 
-def replay_rows(rows):
+def replay_rows(rows, on_sample=None):
     """Feed capture rows (kind, arrival_ms, payload) into a fresh decoder, checking every logged
     command against the one the decoder builds. Returns (samples, stream, events) or raises.
     pkt rows (a received CRP packet) go through packet(), frame rows (captures from before D45)
-    straight to frame(); tx rows (packets sent) and link rows are for reading only."""
+    straight to frame(); tx rows (packets sent) and link rows are for reading only.
+    on_sample(stream, sample), if given, sees each sample as it comes out (stream.ep is its epoch)."""
     samples, events = [], []
-    s = PodStream(samples.append, lambda k, i: events.append((k, i)))
+
+    def keep(smp):
+        samples.append(smp)
+        if on_sample:
+            on_sample(s, smp)
+    s = PodStream(keep, lambda k, i: events.append((k, i)))
     for kind, arr, payload in rows:
         if kind == "pkt":
             s.packet(bytes.fromhex(payload), arr)
@@ -725,30 +586,43 @@ def capture_digest(rows):
 
 def replay_all(write=False):
     """Every committed pod-capture-*.csv against the manifest (P2: old recordings keep decoding
-    the same). write=True records the manifest instead, from the decoder as it is now."""
+    the same). write=True first pins the captures the manifest doesn't have yet, from the decoder
+    as it is now. A capture already pinned is only ever checked: to change a pin on purpose, delete
+    its entry from the manifest first."""
     import glob
     import json
     import os
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, MANIFEST)
-    files = sorted(glob.glob(os.path.join(here, "data", "pod-capture-*.csv")))
-    got = {os.path.basename(p): capture_digest(read_capture(p)) for p in files}
+    want = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            want = json.load(f)
+    got = {}
+    for p in sorted(glob.glob(os.path.join(here, "data", "pod-capture-*.csv"))):
+        try:                        # through JSON once, so a digest compares equal to the manifest's copy
+            got[os.path.basename(p)] = json.loads(json.dumps(capture_digest(read_capture(p))))
+        except Exception as e:      # one capture that no longer replays is that capture's FAIL
+            got[os.path.basename(p)] = {"error": f"doesn't replay: {type(e).__name__}: {e}"}
     if write:
+        new = {n: d for n, d in got.items() if n not in want and "error" not in d}
+        want.update(new)
         with open(path, "w", newline="\n") as f:
-            json.dump(got, f, indent=1, sort_keys=True)
+            json.dump(want, f, indent=1, sort_keys=True)
             f.write("\n")
-        print(f"wrote {MANIFEST}: {len(got)} captures")
-        return True
-    with open(path) as f:
-        want = json.load(f)
+        for n in sorted(new):
+            print(f"NEW   {n}")
+        print(f"wrote {MANIFEST}: {len(new)} new, {len(want)} captures")
     ok = True
     for name in sorted(set(want) | set(got)):
         if name not in got:
             print(f"FAIL  {name}: in the manifest, file missing")
+        elif "error" in got[name]:
+            print(f"FAIL  {name}: {got[name]['error']}")
         elif name not in want:
             print(f"FAIL  {name}: not in the manifest")
-        elif json.loads(json.dumps(got[name])) != want[name]:
-            diff = [k for k in want[name] if json.loads(json.dumps(got[name].get(k))) != want[name][k]]
+        elif got[name] != want[name]:
+            diff = [k for k in sorted(set(want[name]) | set(got[name])) if got[name].get(k) != want[name].get(k)]
             print(f"FAIL  {name}: {', '.join(diff)} differ")
         else:
             print(f"PASS  {name}: {got[name]['samples']} samples, {len(got[name]['gaps'])} gaps")
@@ -760,36 +634,6 @@ def replay_all(write=False):
 
 if __name__ == "__main__":
     import sys
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if "--replay-all" in sys.argv or "--write-manifest" in sys.argv:
         sys.exit(0 if replay_all(write="--write-manifest" in sys.argv) else 1)
-    if "--usb" in sys.argv and args:
-        secs = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--seconds=")), 600.0)
-        # --stall=S: send the bench command i after S s (the IMU stops, the pod restarts it), so
-        # the run must show exactly one hole, excused by an IMU_RESTART frame
-        stall = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--stall=")), None)
-        import serial
-        import time
-        def lines():
-            when = stall
-            with serial.Serial(args[0], 115200, timeout=1) as s:
-                s.reset_input_buffer()
-                s.readline()
-                t0 = time.time()
-                while True:
-                    if when is not None and time.time() - t0 > when:
-                        s.write(b"i")
-                        when = None
-                    raw = s.readline()
-                    if raw:
-                        yield raw.decode("ascii", errors="ignore")
-        print(f"Reading {args[0]} for {secs:.0f} s ...")
-        good, report = usb_check(lines(), secs)
-        if stall is not None and not any(r.startswith("1 IMU restart hole") for r in report):
-            good = False
-            report.append("FAIL  --stall: expected exactly 1 IMU restart hole")
-        for r in report:
-            print(r)
-        print("PASS" if good else "FAIL")
-        sys.exit(0 if good else 1)
-    sys.exit("usage: python podlink.py --usb COMx [--seconds=600] [--stall=20]")
+    sys.exit("usage: python podlink.py --replay-all | --write-manifest")

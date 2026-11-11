@@ -48,7 +48,7 @@ def check(good, msg):
 
 
 def replay(rows):
-    """The capture through a fresh decoder, like make_fake_pod.replay, also keeping each sample's
+    """The capture through a fresh decoder, like podlink.replay_rows, also keeping each sample's
     epoch, each boot's lost_overflow range (as log_ble.py's receiver does), the arrival of the frame
     that revealed each gap (None for one finish() records) and, per frame, (arrival, the last
     sample t the decoder had kept after it). A pkt row (a CRP packet, D45) counts as a frame when

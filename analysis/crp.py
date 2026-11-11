@@ -20,17 +20,21 @@ The pod's registers and frames live in podlink.py, not here.
     await s.close()                            # BYE
     await link.close()
 
-    python crp.py --selftest     # builders, parser, deframer, Session and SerialLink on fakes (no hardware)
+    python crp.py --selftest     # builders, parser, deframer, Session and both links on fakes (no hardware)
     python crp.py --vectors      # canonical packets as JSON, for webapp/test/crp_wire.mjs
 """
 
 import asyncio
+import gc
 import inspect
 import json
+import random
 import struct
+import subprocess
 import sys
 import threading
 import time
+import types
 
 # ---- constants (firmware/pod/src/crp/crp/crp_types.h, protocol 0x0B) ----
 VERSION = 0x0B
@@ -88,7 +92,7 @@ class CrpClosed(CrpError):
 
 
 class CrpLinkError(CrpClosed, OSError):
-    """A transaction whose packet the link refused (a port that's gone, a Bluetooth link past its
+    """A packet the link refused (a port that's gone, a Bluetooth link past its
     supervision timeout). A CrpClosed, so a caller's handler for "the link went" takes it, and still
     an OSError, as the link's own error was. Before the 11-07 audit the link's error came through
     raw, and log_ble's SLEEP, BENCH and decoder-request handlers (all `except CrpError`) let it end
@@ -380,40 +384,37 @@ class Session:
 
     # ---- outbound ----
     async def send(self, pkt):
-        """One raw packet, no transaction (a NOP, a push, an END)."""
-        r = self.link.send(pkt)
-        if inspect.isawaitable(r):
-            await r
-
-    async def send_nop(self):
-        await self.send(nop())
+        """One packet to the link. A link that refuses it raises CrpLinkError, so the caller sees the
+        link going, not a transport's own exception type."""
+        try:
+            r = self.link.send(pkt)
+            if inspect.isawaitable(r):
+                await r
+        except CrpError:
+            raise
+        except Exception as e:
+            raise CrpLinkError(f"CRP: the link refused the packet ({type(e).__name__}: {e})") from e
 
     async def hello(self, ver=VERSION, max_ch=4, max_chunk=512, flags=0, device_id=0, timeout=None):
         """Send HELLO (CRPClient.sendHello's defaults) and wait for the peer's. Returns it parsed.
-        A BYE instead (the peer refuses our version) raises CrpError."""
+        A BYE instead (the peer refuses our version) raises CrpError; a link that goes, or a
+        close(), while waiting raises CrpClosed."""
         self.device_id = device_id
-        fut = asyncio.get_running_loop().create_future()
-        self._hello_wait = fut
-
-        async def go():
-            await self._send_txn(hello(ver, max_ch, max_chunk, flags, device_id))
-            return await fut
+        fut = self._hello_wait = asyncio.get_running_loop().create_future()
         try:
-            return await asyncio.wait_for(go(), self.timeout if timeout is None else timeout)
-        except TimeoutError:
-            raise CrpTimeout("CRP: no HELLO from the peer") from None
+            return await self._answered(hello(ver, max_ch, max_chunk, flags, device_id), fut, timeout,
+                                        "no HELLO from the peer")
         finally:
             if self._hello_wait is fut:
                 self._hello_wait = None
-            _retrieved(fut)
 
     async def read(self, reg, timeout=None):
         """(status, value) of a READ. Any status comes back as is (BUSY included); a timeout raises."""
-        return await self._request(lambda txn: read(txn, reg), timeout)
+        return await self.request(lambda txn: read(txn, reg), timeout)
 
     async def write(self, reg, value, timeout=None):
         """The status of a WRITE."""
-        status, _ = await self._request(lambda txn: write(txn, reg, value), timeout)
+        status, _ = await self.request(lambda txn: write(txn, reg, value), timeout)
         return status
 
     async def close(self):
@@ -429,33 +430,30 @@ class Session:
             pass                    # a dead link can't take the BYE, and that's fine
         self._end("closed", reset=True)
 
-    async def _request(self, build_pkt, timeout):
+    async def request(self, build_pkt, timeout=None):
+        """(status, value) of any request: build_pkt(txn) -> packet. read() and write() go through
+        it; ble_check.py uses it for the discovery queries, which have no method here."""
         txn = self.txns.alloc()
         fut = asyncio.get_running_loop().create_future()
         self.pending[txn] = fut     # before sending: an answer can beat the write's own confirmation
-
-        async def go():
-            await self._send_txn(build_pkt(txn))
-            return await fut
         try:
-            return await asyncio.wait_for(go(), self.timeout if timeout is None else timeout)
-        except TimeoutError:
-            raise CrpTimeout(f"CRP: txn {txn} timed out") from None
+            return await self._answered(build_pkt(txn), fut, timeout, f"txn {txn} timed out")
         finally:
             if self.pending.get(txn) is fut:        # not answered or aborted: free it here
                 del self.pending[txn]
                 self.txns.free(txn)
-            _retrieved(fut)
 
-    async def _send_txn(self, pkt):
-        """send() for a transaction (HELLO, READ, WRITE): a link that refuses the packet raises
-        CrpLinkError, so the caller sees the link going, not a transport's own exception type."""
-        try:
+    async def _answered(self, pkt, fut, timeout, late):
+        """Send pkt and wait for fut, its answer, both inside one timeout (`late` is its message)."""
+        async def go():
             await self.send(pkt)
-        except CrpError:
-            raise
-        except Exception as e:
-            raise CrpLinkError(f"CRP: the link refused the packet ({type(e).__name__}: {e})") from e
+            return await fut
+        try:
+            return await asyncio.wait_for(go(), self.timeout if timeout is None else timeout)
+        except TimeoutError:
+            raise CrpTimeout(f"CRP: {late}") from None
+        finally:
+            _retrieved(fut)
 
     # ---- inbound ----
     def _on_packet(self, pkt, arrival_ms):
@@ -500,7 +498,10 @@ class Session:
         if reset:
             self.txns.reset()
         if self._hello_wait is not None and not self._hello_wait.done():
-            self._hello_wait.set_exception(CrpError(f"CRP: the peer answered HELLO with {why}"))
+            # a BYE or END is the peer's answer (it refuses our version); a link that went, or our own
+            # close(), is no answer at all
+            self._hello_wait.set_exception(
+                CrpError(f"CRP: the peer answered HELLO with {why}") if why in ("bye", "end") else err)
 
     def _start_beat(self):
         self._stop_beat()
@@ -521,12 +522,11 @@ class Session:
                 return                              # the link is gone; its on_down says so
 
 
-# ---- links (thin; used from S6/S7 on, not tested on hardware here) ----
+# ---- links (thin: the selftest runs them on fakes, log_ble.py and ble_check.py on the pod) ----
 class SerialLink:
     """CRP over USB serial, level 1 framing. A reader thread deframes and hands each packet to the
     event loop with the time its last bytes arrived. `port` is a port name (opened with pyserial)
     or an open serial-like object (read / write / in_waiting), which close() leaves open."""
-    level = 1
     heartbeat = 1.0                 # USB clients send a NOP every 1 s (docs/ble.md 2.2)
     write_timeout = 1.0             # a CDC write takes well under 1 ms; with no timeout, a write to a
                                     # pod unplugged mid-run held the event loop for 97 s (11-07 soak)
@@ -605,8 +605,6 @@ def bt_audio_connected():
     """Names of Bluetooth audio devices connected right now (Windows; [] elsewhere or if the query
     fails). Their audio link starves the laptop's Bluetooth scanning, so the pod looks dead (D28),
     which has bitten more than once: the tools name them when a scan finds no pod."""
-    import subprocess
-    import sys
     if sys.platform != "win32":
         return []
     # a present audio endpoint named after a paired Bluetooth device, e.g. "Headphones (soundcore
@@ -635,7 +633,6 @@ def no_pod_hint():
 class BleakLink:
     """CRP over Bluetooth, level 0: one notification on TX = one packet, one write to RX = one
     packet. Writes go with response, one at a time behind a lock. Needs bleak."""
-    level = 0
     heartbeat = None                # Bluetooth clients send no heartbeat (docs/ble.md 2.2)
 
     def __init__(self, address_or_device, timeout=10.0):
@@ -670,10 +667,6 @@ class BleakLink:
         self._went_down = True
         if self.on_down:
             self.on_down()
-
-    @property
-    def mtu(self):
-        return self.client.mtu_size if self.client else None
 
     async def send(self, pkt):
         """A write that fails is the link going down: within the pod's 4 s supervision timeout
@@ -730,7 +723,6 @@ class _FakeLink:
     """A level 0 link in memory. What the Session sends goes to `peer` (a function: packet ->
     reply packets), whose replies arrive on the next loop pass, like notifications. async_send makes
     send() take 10 ms, so a reply beats the write's confirmation, as a BLE write with response can."""
-    level = 0
 
     def __init__(self, peer=None, heartbeat=None, async_send=False):
         self.peer = peer
@@ -813,6 +805,24 @@ def _fake_device(reads, writes, hello_reply):
     return answer
 
 
+def _raised(exc, fn, *args):
+    """Whether fn(*args) raises an `exc` (anything else goes through and stops the selftest)."""
+    try:
+        fn(*args)
+    except exc:
+        return True
+    return False
+
+
+async def _araised(exc, aw):
+    """The same for an awaitable."""
+    try:
+        await aw
+    except exc:
+        return True
+    return False
+
+
 def _check_packets(check):
     # exact bytes, written out from crp_packet.c's offsets (a round trip alone would pass a
     # symmetric mistake such as big-endian on both sides)
@@ -884,26 +894,17 @@ def _check_packets(check):
     check(parse(b"\x00\x01\x02") == {"type": NOP} and parse(hello() + b"\xff") == parse(hello())
           and parse(bye() + b"\x01")["device_id"] == 0,
           "like the engine, a NOP is a NOP at any length, and bytes past a fixed packet's end are ignored")
-    try:
-        log(0, 0, "x" * 256, "")
-        check(False, "a 256-byte LOG module is refused")
-    except ValueError:
-        check(True, "a 256-byte LOG module is refused")
+    check(_raised(ValueError, log, 0, 0, "x" * 256, ""), "a 256-byte LOG module is refused")
 
 
 def _check_framing(check):
-    import random
     pkts = [hello(), read(1, 0x00010001), write(2, 0x00010005, b"\x02\x01\x58\x02"), nop(),
             response(1, OK, 0x00010001, bytes(32)), push(0x00010004, bytes(238)), end(), bytes([LOG]) + bytes(1023)]
     stream = b"".join(frame_l1(p) for p in pkts)
     check(frame_l1(hello())[:4] == b"\x0a\x00\x01\x0b",
           "frame_l1(HELLO) starts 0A 00 01 0B, the bytes that switch the pod's USB to CRP")
     for n in (0, 1025):
-        try:
-            frame_l1(bytes(n))
-            check(False, f"frame_l1 refuses {n} bytes")
-        except ValueError:
-            check(True, f"frame_l1 refuses {n} bytes")
+        check(_raised(ValueError, frame_l1, bytes(n)), f"frame_l1 refuses {n} bytes")
 
     d = Deframer()
     check(d.feed(stream) == pkts and d.dropped == 0 and d.pending == 0,
@@ -1008,13 +1009,10 @@ async def _check_session(check):
     # a timeout, no retry, the late answer ignored, the next id moves on
     n_sent = len(link.sent)
     t0 = loop.time()
-    try:
-        await s.read(SILENT, timeout=0.05)
-        check(False, "an unanswered READ times out")
-    except CrpTimeout:
-        dt = loop.time() - t0
-        check(0.04 <= dt < 0.5 and link.sent[n_sent:] == [read(5, SILENT)] and 5 not in s.txns.in_use,
-              f"an unanswered READ times out after {dt * 1000:.0f} ms, sent once (no retry), its txn freed")
+    timed_out = await _araised(CrpTimeout, s.read(SILENT, timeout=0.05))
+    dt = loop.time() - t0
+    check(timed_out and 0.04 <= dt < 0.5 and link.sent[n_sent:] == [read(5, SILENT)] and 5 not in s.txns.in_use,
+          f"an unanswered READ times out after {dt * 1000:.0f} ms, sent once (no retry), its txn freed")
     taps.clear()
     link.deliver(response(5, OK, SILENT, b"late"))
     r = await s.read(INFO_R)
@@ -1030,11 +1028,8 @@ async def _check_session(check):
 
     # a send that fails frees its txn and raises
     link.fail = True
-    try:
-        await s.read(INFO_R)
-        check(False, "a failed send raises")
-    except OSError:
-        check(7 not in s.txns.in_use and not s.pending, "a failed send raises at once and frees its txn")
+    check(await _araised(OSError, s.read(INFO_R)) and 7 not in s.txns.in_use and not s.pending,
+          "a failed send raises at once and frees its txn")
     link.fail = False
     await s.read(INFO_R)
     check(link.sent[-1] == read(8, INFO_R), "and the pointer moved on, as CRPClient's does (txn 8 next)")
@@ -1065,11 +1060,7 @@ async def _check_session(check):
             link4.on_down()
         else:
             link4.deliver(pkt)
-        try:
-            await task
-            ok = False
-        except CrpClosed:
-            ok = True
+        ok = await _araised(CrpClosed, task)
         await s4.read(INFO_R)
         nxt = 1 if reset else 3
         check(alive and ok and s4.ended == why and link4.sent[-1] == read(nxt, INFO_R),
@@ -1097,11 +1088,7 @@ async def _check_session(check):
 
     # hello that fails
     s7 = Session(_FakeLink(_fake_device({}, {}, None)))
-    try:
-        await s7.hello(timeout=0.05)
-        check(False, "hello() with no answer times out")
-    except CrpTimeout:
-        check(True, "hello() with no answer times out")
+    check(await _araised(CrpTimeout, s7.hello(timeout=0.05)), "hello() with no answer times out")
     s8 = Session(_FakeLink(_fake_device({}, {}, bye(0, 0x444F5042))))
     try:
         await s8.hello(ver=0x0A, timeout=1)
@@ -1110,99 +1097,23 @@ async def _check_session(check):
         check(False, "a BYE in answer to HELLO fails hello() at once, not by timeout")
     except CrpError:
         check(not s8.active, "a BYE in answer to HELLO (a too-old version) fails hello() at once")
-
-    # the allocator itself, against CRPClient's semantics
-    t = TxnAllocator()
-    ids = [t.alloc() for _ in range(255)]
-    try:
-        t.alloc()
-        full = False
-    except CrpError:
-        full = True
-    t.free(5)
-    t.free(200)
-    t.free(3)
-    again = [t.alloc(), t.alloc(), t.alloc()]
-    check(ids == list(range(1, 256)) and full and again == [3, 5, 200],
-          "ids 1..255, the 256th in flight refused, then the freed ones in round-robin order from the pointer")
-    t = TxnAllocator()
-    seq = []
-    for _ in range(257):
-        seq.append(t.alloc())
-        t.free(seq[-1])
-    check(seq[:3] == [1, 2, 3] and seq[254:] == [255, 1, 2], "freed ids still go round robin: ... 255, 1, 2")
-
-    # SerialLink end to end on an in-memory port: text first, packets split 3 bytes per read
-    lead = b"a,b\n123,0.5,0.25\r\n# boot\n"
-    fake = _FakeSerial(dev, lead)
-    sl = SerialLink(fake)
-    staps = []
-    s9 = Session(sl, heartbeat=0, tap=lambda p, ms: staps.append((p, ms)))
-    await sl.open()
-    t_open = now_ms()
-    peer = await s9.hello()
-    r = await s9.read(INFO_R)
-    await s9.close()
-    await sl.close()
-    check(peer == parse(pod) and r == (OK, info) and sl.deframer.dropped == len(lead)
-          and bytes(fake.written) == frame_l1(hello()) + frame_l1(read(1, INFO_R)) + frame_l1(bye())
-          and [p for p, _ in staps] == [pod, response(1, OK, INFO_R, info)]
-          and all(t_open - 1 <= ms <= now_ms() for _, ms in staps) and not sl._thread.is_alive(),
-          "SerialLink: level 1 out, text before the HELLO dropped, split replies reassembled, "
-          "arrival ms from the reader, the thread stopped")
-    check(SerialLink.heartbeat == 1.0 and SerialLink.level == 1 and BleakLink.heartbeat is None and BleakLink.level == 0,
-          "link defaults: USB level 1 with a 1 s NOP, Bluetooth level 0 with none")
-
-    # an unplugged pod: the write fails (pyserial raises, or times out) and that's the link going down,
-    # reported once; without write_timeout the write itself hung the event loop for 97 s (11-07)
-    class _Gone(_FakeSerial):
-        def write(self, b):
-            raise OSError("the port is gone")
-    gone = _Gone(dev)
-    sg = SerialLink(gone)
-    downs = []
-    s10 = Session(sg, heartbeat=0)
-    s10_down = sg.on_down
-    sg.on_down = lambda: (downs.append(1), s10_down())
-    await sg.open()
-    raised = 0
-    for _ in range(2):
-        try:
-            await s10.send(nop())
-        except OSError:
-            raised += 1
-    by_write = list(downs) == [1] and not s10.active and s10.ended == "link down"
-    sg._loop.call_soon(sg._down)                 # the reader thread seeing it too
+    link13 = _FakeLink(_fake_device({}, {}, None))
+    s13 = Session(link13)
+    waiting = asyncio.create_task(s13.hello(timeout=1))
     await asyncio.sleep(0.01)
-    await sg.close()
-    check(raised == 2 and by_write and downs == [1],
-          "SerialLink: a failed write raises and reports the link down, once, however many see it")
-    import sys, types
-    seen = {}
-    class _Owned(_FakeSerial):
-        def close(self):
-            seen["closed"] = True
-    fake_mod = types.SimpleNamespace(Serial=lambda *a, **k: seen.update(k) or _Owned(dev))
-    real_mod = sys.modules.get("serial")
-    sys.modules["serial"] = fake_mod
+    link13.on_down()
     try:
-        sp = SerialLink("COM99")
-        await sp.open()
-        await sp.close()
-    finally:
-        if real_mod is None:
-            del sys.modules["serial"]
-        else:
-            sys.modules["serial"] = real_mod
-    check(seen.get("write_timeout") == SerialLink.write_timeout and 0 < SerialLink.write_timeout <= 2 and seen.get("closed"),
-          f"SerialLink opens a real port with a write timeout ({seen.get('write_timeout')} s), so a gone port can't hold the loop")
+        await waiting
+        went = None
+    except CrpError as e:
+        went = e
+    check(isinstance(went, CrpClosed) and "link down" in str(went) and "answered" not in str(went),
+          f"a link that drops under hello() fails it as the link going, not as the peer's answer ({went})")
 
     # a link that refuses a transaction's packet: the caller gets CrpLinkError (a CrpClosed, so
     # "the link went" handlers take it, and still an OSError), and the future that the link's down
     # report failed meanwhile is retrieved, so asyncio logs nothing (the 11-07 audit's finding)
-    import gc
     logged = []
-    loop = asyncio.get_running_loop()
     old_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _l, ctx: logged.append(ctx.get("message", "")))
     try:
@@ -1240,6 +1151,91 @@ async def _check_session(check):
         hello_err = e
     check(isinstance(hello_err, CrpLinkError), f"so does a HELLO the link refuses ({type(hello_err).__name__})")
 
+
+def _check_allocator(check):
+    # the allocator itself, against CRPClient's semantics
+    t = TxnAllocator()
+    ids = [t.alloc() for _ in range(255)]
+    full = _raised(CrpError, t.alloc)
+    t.free(5)
+    t.free(200)
+    t.free(3)
+    again = [t.alloc(), t.alloc(), t.alloc()]
+    check(ids == list(range(1, 256)) and full and again == [3, 5, 200],
+          "ids 1..255, the 256th in flight refused, then the freed ones in round-robin order from the pointer")
+    t = TxnAllocator()
+    seq = []
+    for _ in range(257):
+        seq.append(t.alloc())
+        t.free(seq[-1])
+    check(seq[:3] == [1, 2, 3] and seq[254:] == [255, 1, 2], "freed ids still go round robin: ... 255, 1, 2")
+
+
+async def _check_links(check):
+    INFO_R = 0x00010001
+    info = bytes(range(32))
+    pod = hello(VERSION, 1, 244, FLAG_PUSH, 0x444F5042)
+    dev = _fake_device({INFO_R: (OK, info)}, {}, pod)
+
+    # SerialLink end to end on an in-memory port: text first, packets split 3 bytes per read
+    lead = b"a,b\n123,0.5,0.25\r\n# boot\n"
+    fake = _FakeSerial(dev, lead)
+    sl = SerialLink(fake)
+    staps = []
+    s9 = Session(sl, heartbeat=0, tap=lambda p, ms: staps.append((p, ms)))
+    await sl.open()
+    t_open = now_ms()
+    peer = await s9.hello()
+    r = await s9.read(INFO_R)
+    await s9.close()
+    await sl.close()
+    check(peer == parse(pod) and r == (OK, info) and sl.deframer.dropped == len(lead)
+          and bytes(fake.written) == frame_l1(hello()) + frame_l1(read(1, INFO_R)) + frame_l1(bye())
+          and [p for p, _ in staps] == [pod, response(1, OK, INFO_R, info)]
+          and all(t_open - 1 <= ms <= now_ms() for _, ms in staps) and not sl._thread.is_alive(),
+          "SerialLink: level 1 out, text before the HELLO dropped, split replies reassembled, "
+          "arrival ms from the reader, the thread stopped")
+    check(SerialLink.heartbeat == 1.0 and BleakLink.heartbeat is None,
+          "link defaults: USB sends a NOP every 1 s, Bluetooth none")
+
+    # an unplugged pod: the write fails (pyserial raises, or times out) and that's the link going down,
+    # reported once; without write_timeout the write itself hung the event loop for 97 s (11-07)
+    class _Gone(_FakeSerial):
+        def write(self, b):
+            raise OSError("the port is gone")
+    gone = _Gone(dev)
+    sg = SerialLink(gone)
+    downs = []
+    s10 = Session(sg, heartbeat=0)
+    s10_down = sg.on_down
+    sg.on_down = lambda: (downs.append(1), s10_down())
+    await sg.open()
+    raised = [await _araised(OSError, s10.send(nop())) for _ in range(2)]
+    by_write = list(downs) == [1] and not s10.active and s10.ended == "link down"
+    sg._loop.call_soon(sg._down)                 # the reader thread seeing it too
+    await asyncio.sleep(0.01)
+    await sg.close()
+    check(all(raised) and by_write and downs == [1],
+          "SerialLink: a failed write raises and reports the link down, once, however many see it")
+    seen = {}
+    class _Owned(_FakeSerial):
+        def close(self):
+            seen["closed"] = True
+    fake_mod = types.SimpleNamespace(Serial=lambda *a, **k: seen.update(k) or _Owned(dev))
+    real_mod = sys.modules.get("serial")
+    sys.modules["serial"] = fake_mod
+    try:
+        sp = SerialLink("COM99")
+        await sp.open()
+        await sp.close()
+    finally:
+        if real_mod is None:
+            del sys.modules["serial"]
+        else:
+            sys.modules["serial"] = real_mod
+    check(seen.get("write_timeout") == SerialLink.write_timeout and 0 < SerialLink.write_timeout <= 2 and seen.get("closed"),
+          f"SerialLink opens a real port with a write timeout ({seen.get('write_timeout')} s), so a gone port can't hold the loop")
+
     # BleakLink: a write that fails reports the link down at once, once, and bleak's own disconnect
     # callback after it reports nothing more
     class _DeadClient:
@@ -1251,11 +1247,7 @@ async def _check_session(check):
     bl.client = _DeadClient()
     bdowns = []
     bl.on_down = lambda: bdowns.append(1)
-    try:
-        await bl.send(nop())
-        braised = False
-    except OSError:
-        braised = True
+    braised = await _araised(OSError, bl.send(nop()))
     at_once = list(bdowns)
     bl._down()                                  # bleak's disconnected_callback, later
     check(braised and at_once == [1] and bdowns == [1],
@@ -1268,20 +1260,15 @@ def _check_vectors(check):
     need = ["hello", "pod_hello_ble", "read_info", "write_ctrl", "nop", "bye", "response_info",
             "response_busy", "push_data", "push_status", "log"]
     check(len(set(names)) == len(names) and all(n in names for n in need),
-          f"--vectors: {len(v)} unique names, the {len(need)} the notes ask for among them")
+          f"--vectors: {len(v)} unique names, the {len(need)} core ones among them")
     pk = {x["name"]: bytes.fromhex(x["hex"]) for x in v}
     check(all(parse(b) is not None and build(parse(b)) == b for b in pk.values()),
           "every vector parses and rebuilds to itself")
     check(len(pk["push_data"]) == 244 and len(pk["response_info"]) == 40 and len(pk["push_status"]) == 26,
           "push_data is 244 B (MTU 247 - 3), response_info 8 + 32, push_status 6 + 20")
-    try:
-        import podlink
-        dec = podlink.decode_frame
-    except Exception as e:                      # podlink.py is someone else's file: don't fail on it
-        print(f"SKIP  the vector frames against podlink.decode_frame (podlink didn't import: {e!r})")
-        return
+    import podlink                              # here, not at the top: podlink imports crp
     fr = [(n, parse(pk[n])["value"]) for n in ("response_info", "push_data", "push_status")]
-    got = [dec(f) for _, f in fr]
+    got = [podlink.decode_frame(f) for _, f in fr]
     check(all(g is not None for g in got) and [g["type"] for g in got] == [0x20, 0x01, 0x10]
           and got[0]["proto"] == 1 and got[1]["n"] == 16 and got[2]["head"] == got[1]["first_idx"] + 16,
           "the INFO, DATA and STATUS inside them are valid PodLink frames (podlink.decode_frame)")
@@ -1296,7 +1283,9 @@ def selftest():
 
     _check_packets(check)
     _check_framing(check)
+    _check_allocator(check)
     asyncio.run(_check_session(check))
+    asyncio.run(_check_links(check))
     _check_vectors(check)
     ok = all(res)
     print(f"{'PASS' if ok else 'FAIL'}  {sum(res)}/{len(res)} checks")

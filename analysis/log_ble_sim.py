@@ -6,6 +6,7 @@ USB cable), on an asyncio loop that runs on simulated time: minutes of streaming
 same every run. Then the tools that read those files run on them, as after a bench run.
 
     python log_ble_sim.py          # or: python log_ble.py --selftest
+    python log_ble_sim.py --keep   # the same, and keep each run's files (it prints the folder)
 
 Each run is checked against the simulator's ground truth (never the decoder's own numbers):
   - values: every sample = the pod's raw counts x its scale factors, exactly; t spacing = its ticks;
@@ -18,6 +19,8 @@ Runs:
   ble-outage      Bluetooth, a 3 s drop: nothing lost; compare_ble_usb.py against the pod's own CSV
   ble-overflow    a 45 s drop, past the 38.8 s ring: one overflow gap = the pod's lost_overflow rise
   ble-sleep       the SLEEP op, a wake 5 s later, --until-wake: check_sleep.py passes
+  ble-dead-write  the radio goes deaf 0.5 s before a SLEEP op: the failed write reads as the link
+                  going, the run reconnects and nothing is lost (the 11-07 audit)
   ble-mtu-busy    a late MTU exchange: INFO BUSY, retried; one INFO, no reconnect
   ble-mtu-23      an MTU stuck at 23: the run gives up (the MTU register says 23), writes nothing
   ble-boot-mismatch  a reset in an outage, a stale INFO at the reconnect: boot_mismatch, then the
@@ -45,6 +48,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import ble_check
@@ -56,8 +60,8 @@ import make_fake_pod as m
 import podlink as pl
 
 HERE = Path(__file__).parent
-JSON_KEYS = {"samples", "ended", "gaps", "faults", "stats", "lost_overflow_by_boot", "sleeps", "epochs",
-             "last_idx", "next_idx", "lost_counted"}       # what check_sleep, compare_ble_usb and check_soak read
+JSON_KEYS = {"samples", "ended", "gaps", "faults", "stats", "lost_overflow_by_boot", "sleeps", "epochs", "transport",
+             "last_idx", "next_idx", "lost_counted"}       # what check_sleep and compare_ble_usb read, plus three for a reader
 
 
 class VirtualLoop(asyncio.SelectorEventLoop):
@@ -352,11 +356,11 @@ def discovery_pin():
 class Tracked(lb.Receiver):
     """log_ble's Receiver, also keeping each sample and its (boot_id, index): the truth's key."""
 
-    def __init__(self, folder, name, sim, kind, target=None, clock=None):
+    def __init__(self, folder, name, sim, kind, target=None):
         self.emits, self.smp, self.lines = [], [], []
         self.paths = [folder / f"{p}-{name}.{e}" for p, e in (("bar-pod", "csv"), ("pod-capture", "csv"), ("pod-link", "json"))]
         self.sim = sim
-        super().__init__(self.paths[0], self.paths[1], target or SimTarget(sim, kind), clock=clock or sim.clock,
+        super().__init__(self.paths[0], self.paths[1], target or SimTarget(sim, kind), clock=sim.clock,
                          say=self.lines.append)
 
     def on_sample(self, s):
@@ -366,22 +370,38 @@ class Tracked(lb.Receiver):
         super().on_sample(s)
 
 
+def run_sim(sim, work):
+    """Run the coroutine work to its end on a VirtualLoop, the simulator driven beside it. If the
+    simulator itself raises (make_fake_pod, or a run's every_ms action), that ends the run with its
+    exception: the receivers' clock is the simulator's, so they would wait on a stopped clock for good."""
+    async def main():
+        task, drive = asyncio.ensure_future(work), asyncio.ensure_future(sim.drive())
+        try:
+            await asyncio.wait([task, drive], return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                drive.result()             # drive() never returns: this raises what stopped it
+            return task.result()
+        finally:
+            drive.cancel()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)    # a cancelled receiver still closes its link
+    loop = VirtualLoop()
+    try:
+        return loop.run_until_complete(main())
+    finally:
+        loop.close()
+
+
 def go(sim, *runs):
     """Run receivers to their end on the virtual loop: runs = (receiver, log_ble.session kwargs).
     Then their files are written, as log_ble.main() does."""
-    async def main():
-        drive = asyncio.ensure_future(sim.drive())
-        try:
-            await asyncio.gather(*(lb.session(rx, quit_flag=lambda: False, **kw) for rx, kw in runs))
-        finally:
-            drive.cancel()
-    loop = VirtualLoop()
+    async def sessions():
+        await asyncio.gather(*(lb.session(rx, quit_flag=lambda: False, **kw) for rx, kw in runs))
     try:
-        loop.run_until_complete(main())
+        run_sim(sim, sessions())
     finally:
-        loop.close()
-    for rx, _ in runs:
-        rx.close(rx.paths[2])
+        for rx, _ in runs:
+            rx.close(rx.paths[2])
 
 
 # ---- checks ----
@@ -455,7 +475,8 @@ def sent(rx):
 
 def wire_order(rx, n_connects):
     """Each connect's opening on the wire, byte for byte: HELLO, READ INFO, READ STATUS, PUSH = 1
-    and CTRL with the logged command, txn ids 1 to 4 (a fresh Session per connect)."""
+    and CTRL with the logged command, txn ids 1 to 4 (a fresh Session per connect). Returns
+    failure strings."""
     rows = pl.read_capture(rx.paths[1])
     cmds = [p for k, _, p in rows if k == "cmd"]
     tx = sent(rx)
@@ -469,7 +490,9 @@ def wire_order(rx, n_connects):
             k += 1
         got.append(tx[k:k + 5])
         k += 5
-    return None if got == want and len(cmds) >= n_connects else f"the connection order on the wire: {[[x.hex() for x in g] for g in got]}"
+    if got == want and len(cmds) >= n_connects:
+        return []
+    return [f"the connection order on the wire: {[[x.hex() for x in g] for g in got]}"]
 
 
 def quietly(fn, *a):
@@ -480,18 +503,19 @@ def quietly(fn, *a):
     return r, out.getvalue()
 
 
-def usb_truth(pod, path):
-    """The pod's own CSV, as log_serial.py records it from USB text mode (make_fake_pod.csv_line)."""
-    lines = (m.csv_line(pod, i).decode() for i in range(pod.head))
-    quietly(log_serial.record, lines, path)
+def against_csv(rx, pod):
+    """compare_ble_usb.py on a run against the pod's own CSV, as log_serial.py records it from USB
+    text mode (make_fake_pod.csv_line). Returns failure strings."""
+    usb_csv = rx.paths[0].with_name(rx.paths[0].name.replace("bar-pod", "bar-xiao", 1))
+    quietly(log_serial.record, (m.csv_line(pod, i).decode() for i in range(pod.head)), usb_csv)
+    good, out = quietly(cbu.compare, str(usb_csv), str(rx.paths[0]), str(rx.paths[2]))
+    return [] if good else ["compare_ble_usb.py against the pod's CSV:\n" + out]
 
 
-def first_cursor(link):
-    return link.cmd_log[0][1]
-
-
-def last_head(link):
-    return link.drain_heads[-1][1]
+def streamed(link):
+    """truth()'s range for a boot streamed on this link (a pod's .ble or .usb) from its first
+    command's cursor to the head of its last STOP or sleep drain: (boot_id, start, end)."""
+    return link.pod.boot_id, m.first_cmd(link), m.last_drain(link)
 
 
 # ---- the runs ----
@@ -500,18 +524,13 @@ def ble_outage(folder):
     rx = Tracked(folder, "ble-outage", sim, "ble")
     go(sim, (rx, dict(seconds=20, outages=[(3.0, 8.0)])))
     p = sim.b.pods[0]
-    fails = truth(rx, [(p.boot_id, first_cursor(p.ble), last_head(p.ble))]) + files(rx)
+    fails = truth(rx, [streamed(p.ble)]) + files(rx)
     st = rx.stream.stats
     if rx.stream.gaps or rx.stream.faults or st["reconnects"] != 1 or st["stopped"] != 1 or rx.ended != "done":
         fails.append(f"gaps {rx.stream.gaps}, faults {rx.stream.faults}, reconnects {st['reconnects']}, "
                      f"stopped {st['stopped']}, ended {rx.ended!r}")
-    fails += [f for f in [wire_order(rx, 2)] if f]
-    usb_csv = folder / "bar-xiao-ble-outage.csv"
-    usb_truth(p, usb_csv)
-    good, out = quietly(cbu.compare, str(usb_csv), str(rx.paths[0]), str(rx.paths[2]))
-    if not good:
-        fails.append("compare_ble_usb.py against the pod's CSV:\n" + out)
-    return rx, fails
+    fails += wire_order(rx, 2)
+    return rx, fails + against_csv(rx, p)
 
 
 def ble_overflow(folder):
@@ -519,17 +538,12 @@ def ble_overflow(folder):
     rx = Tracked(folder, "ble-overflow", sim, "ble")
     go(sim, (rx, dict(seconds=75, outages=[(45.0, 5.0)])))
     p = sim.b.pods[0]
-    fails = truth(rx, [(p.boot_id, first_cursor(p.ble), last_head(p.ble))]) + files(rx)
+    fails = truth(rx, [streamed(p.ble)]) + files(rx)
     over = [g["n"] for g in rx.stream.gaps if g["kind"] == "overflow"]
     rng = rx.lost_by_boot.get(str(p.boot_id))
     if len(over) != 1 or over[0] != p.lost or not rng or rng[1] - rng[0] != p.lost or rx.ended != "done":
         fails.append(f"overflow gaps {over}, the pod lost {p.lost}, its lost_overflow {rng}, ended {rx.ended!r}")
-    usb_csv = folder / "bar-xiao-ble-overflow.csv"
-    usb_truth(p, usb_csv)
-    good, out = quietly(cbu.compare, str(usb_csv), str(rx.paths[0]), str(rx.paths[2]))
-    if not good:
-        fails.append("compare_ble_usb.py against the pod's CSV:\n" + out)
-    return rx, fails
+    return rx, fails + against_csv(rx, p)
 
 
 def ble_sleep(folder):
@@ -546,8 +560,7 @@ def ble_sleep(folder):
     rx = Tracked(folder, "ble-sleep", sim, "ble")
     go(sim, (rx, dict(seconds=60, outages=[], sleeps=[(6.0, 0)], until_wake=3.0)))
     p1, p2 = sim.b.pods
-    fails = truth(rx, [(p1.boot_id, first_cursor(p1.ble), last_head(p1.ble)),
-                       (p2.boot_id, 0, last_head(p2.ble))]) + files(rx)
+    fails = truth(rx, [streamed(p1.ble), (p2.boot_id, 0, m.last_drain(p2))]) + files(rx)
     st = rx.stream.stats
     if st["epochs"] != 2 or st["stopped"] != 2 or rx.stream.faults or rx.ended != "done":
         fails.append(f"epochs {st['epochs']}, stopped {st['stopped']}, faults {rx.stream.faults}, ended {rx.ended!r}")
@@ -581,14 +594,15 @@ def ble_dead_write(folder):
     if rx.ended != "done":                 # the bug itself: the failed write ended the run
         return rx, [f"the run ended {rx.ended!r} at the failed SLEEP write instead of reconnecting"]
     p = sim.b.pods[0]
-    fails = truth(rx, [(p.boot_id, first_cursor(p.ble), last_head(p.ble))]) + files(rx)
+    fails = truth(rx, [streamed(p.ble)]) + files(rx)
     st = rx.stream.stats
-    if len(sim.b.pods) != 1 or rx.sleeps or rx.stream.gaps or rx.stream.faults or st["reconnects"] != 1             or st["stopped"] != 1 or rx.ended != "done" or "timeout" not in when:
+    if len(sim.b.pods) != 1 or rx.sleeps or rx.stream.gaps or rx.stream.faults or st["reconnects"] != 1 \
+            or st["stopped"] != 1 or "timeout" not in when:
         fails.append(f"pods {len(sim.b.pods)}, sleeps {rx.sleeps}, gaps {rx.stream.gaps}, faults {rx.stream.faults}, "
-                     f"reconnects {st['reconnects']}, stopped {st['stopped']}, ended {rx.ended!r}, radio {when}")
+                     f"reconnects {st['reconnects']}, stopped {st['stopped']}, radio {when}")
     if not any("SLEEP: CRP: the link refused" in ln for ln in rx.lines):
         fails.append("no 'SLEEP: CRP: the link refused the packet' line: the failed write wasn't reported as the link going")
-    fails += [f for f in [wire_order(rx, 2)] if f]
+    fails += wire_order(rx, 2)
     return rx, fails
 
 
@@ -597,7 +611,7 @@ def ble_mtu_busy(folder):
     rx = Tracked(folder, "ble-mtu-busy", sim, "ble")
     go(sim, (rx, dict(seconds=8, outages=[])))
     p = sim.b.pods[0]
-    fails = truth(rx, [(p.boot_id, first_cursor(p.ble), last_head(p.ble))]) + files(rx)
+    fails = truth(rx, [streamed(p.ble)]) + files(rx)
     infos = sum(1 for k, _, h in pl.read_capture(rx.paths[1])
                 if k == "pkt" and (pl.crp_frame(bytes.fromhex(h)) or b"")[:1] == bytes([pl.T_INFO]))
     st = rx.stream.stats
@@ -624,14 +638,14 @@ def usb_beside_ble(folder):
     usb = Tracked(folder, "both-usb", sim, "usb")
     go(sim, (ble, dict(seconds=30, outages=[])), (usb, dict(seconds=24, outages=[(4.0, 8.0)])))
     p = sim.b.pods[0]
-    fails = [f"ble: {f}" for f in truth(ble, [(p.boot_id, first_cursor(p.ble), last_head(p.ble))]) + files(ble)]
-    fails += [f"usb: {f}" for f in truth(usb, [(p.boot_id, first_cursor(p.usb), last_head(p.usb))]) + files(usb)]
+    fails = [f"ble: {f}" for f in truth(ble, [streamed(p.ble)]) + files(ble)]
+    fails += [f"usb: {f}" for f in truth(usb, [streamed(p.usb)]) + files(usb)]
     for name, rx, rec in (("ble", ble, 0), ("usb", usb, 1)):
         st = rx.stream.stats
         if rx.stream.gaps or rx.stream.faults or st["reconnects"] != rec or st["stopped"] != 1 or rx.ended != "done":
             fails.append(f"{name}: gaps {rx.stream.gaps}, faults {rx.stream.faults}, reconnects {st['reconnects']}, "
                          f"stopped {st['stopped']}, ended {rx.ended!r}")
-    fails += [f"usb: {f}" for f in [wire_order(usb, 2)] if f]
+    fails += [f"usb: {f}" for f in wire_order(usb, 2)]
     modes = [(mo, why) for _, mo, why in p.usb.mode_log]
     if modes != [("crp", "hello"), ("text", "closed"), ("crp", "hello"), ("text", "bye")]:
         fails.append(f"the pod's USB modes {modes}: want CRP, text at the close, CRP, text at the BYE")
@@ -675,7 +689,7 @@ def usb_quiet(folder):
     rx = Tracked(folder, "usb-quiet", sim, "usb")
     go(sim, (rx, dict(seconds=20, outages=[])))
     p = sim.b.pods[0]
-    fails = truth(rx, [(p.boot_id, first_cursor(p.usb), last_head(p.usb))]) + files(rx)
+    fails = truth(rx, [streamed(p.usb)]) + files(rx)
     st = rx.stream.stats
     if rx.stream.gaps or rx.stream.faults or st["reconnects"] != 1 or rx.ended != "done" or len(sim.usb) != 2:
         fails.append(f"gaps {rx.stream.gaps}, faults {rx.stream.faults}, reconnects {st['reconnects']}, "
@@ -697,7 +711,7 @@ def usb_pod_leaves(folder):
     p = sim.b.pods[0]
     ep = rx.stream.epochs[0]
     end = max(ep.status["head"], max(i for _, i in rx.emits) + 1)
-    fails = truth(rx, [(p.boot_id, first_cursor(p.usb), end)]) + files(rx)
+    fails = truth(rx, [(p.boot_id, m.first_cmd(p.usb), end)]) + files(rx)
     texts = [(mo, why) for _, mo, why in p.usb.mode_log if mo == "text"]
     stops = [x for x in sent(rx) if x[:1] == bytes([crp.WRITE]) and x[2:6] == pl.REG_CTRL.to_bytes(4, "little") and x[6:] == b"\x03"]
     tails = [g for g in rx.stream.gaps if g["kind"].endswith("-tail")]
@@ -731,7 +745,7 @@ def ble_boot_mismatch(folder):
     p1, p2 = sim.b.pods
     # the old boot is known up to the last head the phone heard, or the last sample if DATA came after it
     end1 = max(rx.stream.epochs[0].status["head"], max(i for b, i in rx.emits if b == p1.boot_id) + 1)
-    fails = truth(rx, [(p1.boot_id, first_cursor(p1.ble), end1), (p2.boot_id, 0, last_head(p2.ble))]) + files(rx)
+    fails = truth(rx, [(p1.boot_id, m.first_cmd(p1), end1), (p2.boot_id, 0, m.last_drain(p2))]) + files(rx)
     st = rx.stream.stats
     tails = [g for g in rx.stream.gaps if g["kind"] == "lost-tail"]      # at most one, a lower bound
     others = [g for g in rx.stream.gaps if g["kind"] != "lost-tail"]
@@ -740,7 +754,7 @@ def ble_boot_mismatch(folder):
             or others or rx.ended != "done":
         fails.append(f"faults {rx.stream.faults} (want boot mismatch), epochs {st['epochs']}, reconnects "
                      f"{st['reconnects']}, stopped {st['stopped']}, gaps {rx.stream.gaps}, ended {rx.ended!r}")
-    fails += [f for f in [wire_order(rx, 2)] if f]
+    fails += wire_order(rx, 2)
     cmds = [p for k, _, p in pl.read_capture(rx.paths[1]) if k == "cmd"]
     tx = sent(rx)
     k = next((i for i, x in enumerate(tx) if x == crp.hello() and i > 0), None)     # the reconnect's HELLO
@@ -779,7 +793,7 @@ class ForeignBle:
 def not_a_pod(folder):
     """HELLO from a CRP device that isn't a BarPod: the run stops right there, sending nothing more
     (no READ, no PUSH, no CTRL), and still writes its three files."""
-    loop = VirtualLoop()
+    sim = Sim(seed=112)                    # its pod stays idle: only the clock is used
     sent_pkts = []
 
     class Target:
@@ -791,12 +805,8 @@ def not_a_pod(folder):
         def __str__(self):
             return "a foreign CRP device"
 
-    rx = Tracked(folder, "not-a-pod", None, "ble", target=Target(), clock=loop.time)
-    try:
-        loop.run_until_complete(lb.session(rx, seconds=5, outages=[], quit_flag=lambda: False))
-    finally:
-        loop.close()
-    rx.close(rx.paths[2])
+    rx = Tracked(folder, "not-a-pod", sim, "ble", target=Target())
+    go(sim, (rx, dict(seconds=5, outages=[])))
     fails = files(rx)
     if "not a BarPod" not in rx.ended or f"0x{ForeignBle.DEVICE_ID:08x}" not in rx.ended or sent_pkts != [crp.hello()]:
         fails.append(f"ended {rx.ended!r}, sent {[x.hex() for x in sent_pkts]} (want: stopped at the HELLO, nothing else sent)")
@@ -818,9 +828,9 @@ def scan_filter():
     return [f"is_pod({what}) = {not want}, want {want}" for what, a, want in cases if lb.is_pod(a, a) != want]
 
 
-def ble_check_sim(folder):
+def ble_check_sim():
     """ble_check.protocol on the simulated pod (seconds 15 of streaming, as the bench default), with
-    section 5 on the discovery answers above."""
+    section 5 on the discovery answers above. Returns (failure strings, checks run)."""
     sim = Sim(seed=109)
     lines = []
     r = ble_check.Report(say=lines.append)
@@ -828,18 +838,8 @@ def ble_check_sim(folder):
     async def new_link():
         return SimBle(sim)
 
-    async def main():
-        drive = asyncio.ensure_future(sim.drive())
-        try:
-            await ble_check.protocol(r, new_link, sim.clock, seconds=15.0, on_usb=False, gravity=None,
-                                     discovery=True, name=SIM_NAME)
-        finally:
-            drive.cancel()
-    loop = VirtualLoop()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
+    run_sim(sim, ble_check.protocol(r, new_link, sim.clock, seconds=15.0, on_usb=False, gravity=None,
+                                    name=SIM_NAME))
     n = sum(1 for x in lines if x.startswith(("PASS", "FAIL")))
     fails = [x for x in lines if x.startswith("FAIL")]
     sec5 = ["QUERY_DEVICE"] + [f"group 0x{g:08x}" for g in ble_check.GROUPS] + ["state mirrors"]
@@ -848,51 +848,40 @@ def ble_check_sim(folder):
         fails.append(f"section 5 didn't pass (or didn't run): {missing}")
     if n < 40:
         fails.append(f"only {n} checks ran")
-    return r, fails, n
+    return fails, n
+
+
+def report(name, what, fails, said=()):
+    """One run's PASS / FAIL line, its failures and, after a failure, the receiver's last lines.
+    True if it passed."""
+    print(f"{'PASS' if not fails else 'FAIL'}  {name:16} {what}")
+    for f in fails:
+        print("      - " + f.replace("\n", "\n        "))
+    if fails and said:
+        print("        the receiver said:\n        " + "\n        ".join(said[-25:]))
+    return not fails
 
 
 def selftest(keep=False):
     folder = Path(tempfile.mkdtemp(prefix="log_ble_sim-"))
     ok = True
     try:
-        fails = scan_filter()
-        print(f"{'PASS' if not fails else 'FAIL'}  {'scan-filter':16} the CRP service and the BarPod- name, both required")
-        for f in fails:
-            print("      - " + f)
-        ok &= not fails
+        ok &= report("scan-filter", "the CRP service and the BarPod- name, both required", scan_filter())
         for fn in (ble_outage, ble_overflow, ble_sleep, ble_dead_write, ble_mtu_busy, ble_mtu_23, ble_boot_mismatch, not_a_pod,
                    usb_beside_ble, usb_quiet, usb_pod_leaves):
             try:
                 rx, fails = fn(folder)
-                what = f"{rx.n} samples, gaps {[(g['kind'], g['n']) for g in rx.stream.gaps]}, ended {rx.ended!r}"
+                what, said = f"{rx.n} samples, gaps {[(g['kind'], g['n']) for g in rx.stream.gaps]}, ended {rx.ended!r}", rx.lines
             except Exception as e:
-                import traceback
-                rx, fails, what = None, [traceback.format_exc()], f"{type(e).__name__}: {e}"
-            name = fn.__name__.replace("_", "-")
-            print(f"{'PASS' if not fails else 'FAIL'}  {name:16} {what}")
-            for f in fails:
-                print("      - " + f.replace("\n", "\n        "))
-            if fails and rx is not None:
-                print("        the receiver said:\n        " + "\n        ".join(rx.lines[-25:]))
-            ok &= not fails
-        try:
-            fails, n = discovery_pin()
-        except Exception:
-            import traceback
-            fails, n = [traceback.format_exc()], 0
-        print(f"{'PASS' if not fails else 'FAIL'}  {'sim-discovery':16} {n} of host_test.c's discovery vectors, byte for byte")
-        for f in fails:
-            print("      - " + f)
-        ok &= not fails
-        try:
-            r, fails, n = ble_check_sim(folder)
-        except Exception:
-            import traceback
-            fails, n = [traceback.format_exc()], 0
-        print(f"{'PASS' if not fails else 'FAIL'}  {'ble-check':16} {n} checks of ble_check.py on the simulated pod")
-        for f in fails:
-            print("      - " + f)
-        ok &= not fails
+                what, fails, said = f"{type(e).__name__}: {e}", [traceback.format_exc()], ()
+            ok &= report(fn.__name__.replace("_", "-"), what, fails, said)
+        for name, fn, what in (("sim-discovery", discovery_pin, "{} of host_test.c's discovery vectors, byte for byte"),
+                               ("ble-check", ble_check_sim, "{} checks of ble_check.py on the simulated pod")):
+            try:
+                fails, n = fn()
+            except Exception:
+                fails, n = [traceback.format_exc()], 0
+            ok &= report(name, what.format(n), fails)
     finally:
         if keep:
             print(f"files kept in {folder}")
